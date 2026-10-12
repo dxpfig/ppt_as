@@ -154,7 +154,8 @@ def start(timeout: float = 300.0) -> dict:
                     'detail': f'已启动（{label}，日志 {LOG}）'}
         time.sleep(0.5)
     return {**current, 'started': False,
-            'detail': f'{label} 已启动但 {timeout:.0f} 秒内没有监听 {current["host"]}:{current["port"]}，详见 {LOG}。'}
+            'detail': (f'{label} 已启动但 {timeout:.0f} 秒内没有监听 {current["host"]}:{current["port"]}；'
+                       f'Studio 使用自己的配置端口（见 {LOG}），请确认 AGENTSCOPE_STUDIO_URL 的端口与之一致。')}
 
 
 def stop() -> None:
