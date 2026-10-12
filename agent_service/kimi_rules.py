@@ -167,6 +167,22 @@ background/notes/animations changes omit elementId. Never replace the entire
 page or elements array. Do not modify pages outside selectedSlideId. Preserve
 existing notes/animations unless explicitly asked to alter them.""",
     "plan-repair": "Repair the supplied plan and validation errors. Return the complete plan using exactly the plan JSON contract supplied in the context. Preserve user requirements and inspected source material.",
+    "template-spec": """Write the reusable specification of a company template from its
+rendered pages and measured parameters. Return {summary, pageTypes, components,
+rules, prohibitions}. Look at the attached overview sheet and page renders together
+with the given design tokens and repeated-component statistics: the picture shows
+intent, the parameters give exact values, and both must agree.
+- pageTypes: one entry per page kind the template actually contains (cover,
+  contents, section, body variants, table/chart page, closing, ...). Each entry
+  names the template pages it comes from and describes its skeleton in one line.
+- slots: only the text slots that page really has, with the capacity the measured
+  parameters show; mark a slot repeatable when the template can host more of them
+  than it happens to show (contents entries, card columns).
+- components: only structures that repeat on three or more pages, each with the
+  pages that prove it.
+- rules/prohibitions: what this template always does and what it never does
+  (colours it does not use, decorations it does not have, densities it avoids).
+Never invent elements, colours or sizes the template does not show.""",
     "template": """Fill a company presentation template with this presentation's own content.
 The supplied template inventory lists every template page with the stable paragraph
 address (`id`) and the company's current words. Return {title, pages:[{number,

@@ -8,12 +8,16 @@ pipeline already trusts (LibreOffice/Chromium PDF, then PyMuPDF rasterisation).
 """
 from __future__ import annotations
 
+import base64
+import json
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import pymupdf
+from agentscope.message import Msg
 from PIL import Image, ImageDraw
+from pydantic import BaseModel, ConfigDict, Field
 
 from .rendering import render_pdf
 
@@ -284,3 +288,104 @@ def components(pages: list[dict], *, threshold: int = REPEAT_THRESHOLD) -> list[
         result.append({'kind': kind, 'name': name, 'size': [width, height], 'uses': len(uses),
                        'pages': sorted({item['page'] for item in uses}), 'sample': uses[0]['elementId']})
     return sorted(result, key=lambda item: item['uses'], reverse=True)
+
+
+class SlotSpec(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=40)
+    purpose: str = Field(min_length=1, max_length=200)
+    characters: int = Field(ge=0, le=4000)
+    repeatable: bool = False
+
+
+class PageTypeSpec(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: str = Field(min_length=1, max_length=40)
+    purpose: str = Field(min_length=1, max_length=300)
+    templatePages: list[int] = Field(min_length=1, max_length=20)
+    skeleton: str = Field(min_length=1, max_length=600)
+    slots: list[SlotSpec] = Field(min_length=1, max_length=12)
+
+
+class ComponentSpec(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: str = Field(min_length=1, max_length=60)
+    kind: str = Field(min_length=1, max_length=40)
+    description: str = Field(min_length=1, max_length=300)
+    evidence: list[int] = Field(min_length=1, max_length=20)
+
+
+class TemplateSpec(BaseModel):
+    """The written spec the rebuild route composes from."""
+
+    model_config = ConfigDict(extra='forbid')
+    summary: str = Field(min_length=1, max_length=600)
+    pageTypes: list[PageTypeSpec] = Field(min_length=1, max_length=20)
+    components: list[ComponentSpec] = Field(default_factory=list, max_length=40)
+    rules: list[str] = Field(default_factory=list, max_length=30)
+    prohibitions: list[str] = Field(default_factory=list, max_length=20)
+
+
+def attachments(folder: Path, *, pages: list[int] | None = None, limit: int = 6) -> list[dict]:
+    """Overview sheet plus chosen page renders, as data URLs for the model."""
+    folder = Path(folder)
+    chosen = [folder / f'page-{number:02d}.png' for number in (pages or [])]
+    chosen = [path for path in chosen if path.is_file()]
+    if not chosen:
+        chosen = [item['path'] for item in read_overview(folder, limit=limit) if item['role'] == 'template-page']
+    ordered = [folder / 'overview.png'] if (folder / 'overview.png').is_file() else []
+    encoded = []
+    for path in [*ordered, *chosen]:
+        encoded.append({'name': path.name,
+                        'imageData': 'data:image/png;base64,' + base64.b64encode(path.read_bytes()).decode()})
+    return encoded
+
+
+def spec_context(summary: dict, tokens: dict, components_found: list[dict]) -> dict:
+    return {
+        'task': ('归纳这份公司模板的版面规范：页型、槽位、组件、设计规则与禁止项。'
+                 '只依据提供的总览图与页面渲染、以及给定的参数统计；不要臆造模板没有的元素。'),
+        'rules': [
+            '每个页型必须给出 templatePages（模板里对应页码）与 skeleton（版式骨架的一句话描述）',
+            'slots 只列该页型真正存在的文字槽位，characters 用参数统计里的容量上界',
+            'repeatable=true 表示该槽位可以按内容条数复制（例如目录条目、卡片列）',
+            'components 只收录重复 ≥3 次的结构；evidence 写出现过的模板页码',
+            'prohibitions 写这份模板明确不使用的做法（例如没有的装饰、没有的配色）',
+        ],
+        'templateReference': {'pageCount': summary.get('pageCount'), 'pageTypes': summary.get('pageTypes'),
+                              'palette': summary.get('palette'), 'fonts': summary.get('fonts')},
+        'design': tokens,
+        'components': components_found,
+    }
+
+
+async def induce(model, rules, *, folder: Path, summary: dict, tokens: dict,
+                 components_found: list[dict], pages: list[int] | None = None,
+                 session_id: str | None = None, scenario: str = 'general') -> dict:
+    """One strict JSON round trip that writes the template's spec."""
+    from .agents import make_agent
+    from .pptd_generation import _await_model, _message_content, _parse_json_response
+    contract = ('\n\nJSON TRANSPORT CONTRACT\nReturn exactly one JSON object as assistant text, no tool call, '
+                'no XML, no explanation, no code fence. Schema:\n'
+                + json.dumps(TemplateSpec.model_json_schema(), ensure_ascii=False))
+    system = rules.system('template-spec', scenario, template=True) + contract
+    agent = make_agent('TemplateSpec', system, model, session_id)
+    payload = {**spec_context(summary, tokens, components_found), 'attachments': attachments(folder, pages=pages)}
+    message = Msg(name='user', content=_message_content(payload), role='user')
+    response = await _await_model(agent, message, {'phase': 'context'}, None,
+                                  timeout=min(float(getattr(model, 'pptd_request_timeout', 180)), 480))
+    parsed = _parse_json_response(response.get_text_content(),
+                                  reasoning_prefix='minimax' in str(getattr(model, 'model', '')).lower())
+    spec = TemplateSpec.model_validate(parsed, strict=True).model_dump()
+    (Path(folder) / 'spec.json').write_text(json.dumps(spec, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    return spec
+
+
+def load_spec(folder: Path) -> dict | None:
+    path = Path(folder) / 'spec.json'
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except ValueError:
+        return None

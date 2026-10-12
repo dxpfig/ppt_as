@@ -1,4 +1,5 @@
 """Template extraction step 2: the rendered overview the design is read from."""
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -101,6 +102,25 @@ class OverviewTests(unittest.TestCase):
         self.assertEqual(found[0]['uses'], 3)
         self.assertEqual(found[0]['size'], [163, 300])
         self.assertNotIn('star5', [item['name'] for item in found])
+
+    def test_spec_schema_and_persistence(self):
+        valid = {'summary': '一份企业模板', 'pageTypes': [
+            {'id': 'cover', 'purpose': '开场', 'templatePages': [1], 'skeleton': '满版背景 + 大标题',
+             'slots': [{'name': 'title', 'purpose': '标题', 'characters': 20, 'repeatable': False}]}],
+            'components': [{'id': 'logo', 'kind': 'image', 'description': '右上角标识', 'evidence': [2, 3]}],
+            'rules': ['标题 30px #E50011'], 'prohibitions': ['不使用蓝色']}
+        spec = template_spec.TemplateSpec.model_validate(valid, strict=True)
+        self.assertEqual(spec.pageTypes[0].slots[0].characters, 20)
+        with self.assertRaises(ValueError):
+            template_spec.TemplateSpec.model_validate({'summary': 'x', 'pageTypes': []}, strict=True)
+        with self.assertRaises(ValueError):
+            template_spec.TemplateSpec.model_validate(
+                {**valid, 'pageTypes': [{**valid['pageTypes'][0], 'unknown': 1}]}, strict=True)
+        folder = self.root / 'spec'
+        folder.mkdir()
+        (folder / 'spec.json').write_text(json.dumps(valid, ensure_ascii=False), encoding='utf-8')
+        self.assertEqual(template_spec.load_spec(folder)['summary'], '一份企业模板')
+        self.assertIsNone(template_spec.load_spec(self.root / 'missing'))
 
 
 if __name__ == '__main__':
