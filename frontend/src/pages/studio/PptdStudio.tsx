@@ -27,6 +27,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 
 import type { DesignMode, Scenario, Workflow } from './api';
+import { studioApi } from './api';
 import { ArtifactPreview } from './ArtifactPreview';
 import { PptdJobStatus } from './PptdJobStatus';
 import {
@@ -247,6 +248,18 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	) {
 		if (key === 'workflow') workflowSelectedByUser.current = true;
 		setPreferences((previous) => ({ ...previous, [key]: value }));
+	}
+	/** Fill the spec textarea from a shipped preset; the user can still edit it. */
+	async function loadDesignSystem(id: string) {
+		if (!id) return;
+		try {
+			const spec = await studioApi.designSystem(id);
+			update('designSystem', spec.text);
+		} catch (cause) {
+			studio.setError(
+				cause instanceof Error ? cause.message : '无法读取该预设设计规范。',
+			);
+		}
 	}
 	async function submit(event: FormEvent) {
 		event.preventDefault();
@@ -573,6 +586,24 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 											? '设计规范'
 											: '风格说明'}
 									</span>
+									{preferences.designMode === 'design-system' &&
+										studio.designSystems.length > 0 && (
+											<select
+												aria-label="预设设计规范"
+												value=""
+												disabled={busy}
+												onChange={(event) =>
+													void loadDesignSystem(event.target.value)
+												}
+											>
+												<option value="">从预设设计规范中选择…</option>
+												{studio.designSystems.map((item) => (
+													<option key={item.id} value={item.id}>
+														{item.category} · {item.name}
+													</option>
+												))}
+											</select>
+										)}
 									<textarea
 										rows={3}
 										value={preferences.designSystem}

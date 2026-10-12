@@ -25,8 +25,15 @@ export type Health = {
 	modelError?: string;
 	rendererAvailable: boolean;
 };
-export type ProjectSummary = {
+/** A preset style spec shipped with the app; the text becomes designSystem. */
+export type DesignSystemSummary = {
 	id: string;
+	name: string;
+	category: string;
+	characters: number;
+};
+export type ProjectSummary = {
+  id: string;
 	title: string;
 	slideCount: number;
 	updatedAt?: number;
@@ -224,6 +231,11 @@ export const studioApi = {
 	save: (project: Project) =>
 		request<Project>(`/projects/${encodeURIComponent(project.id)}`, json('PUT', project)),
 	templates: () => request<Template[]>('/templates'),
+	designSystems: () => request<DesignSystemSummary[]>('/design-systems'),
+	designSystem: (id: string) =>
+		request<{ id: string; name: string; category: string; text: string }>(
+			`/design-systems/${encodeURIComponent(id)}`,
+		),
 	uploadTemplate: (file: File) => {
 		const form = new FormData();
 		form.append('file', file);

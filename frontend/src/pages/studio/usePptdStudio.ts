@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { studioApi, StudioError } from './api';
-import type { Health, JobRequest, ProjectSummary, StudioJob } from './api';
+import type { DesignSystemSummary, Health, JobRequest, ProjectSummary, StudioJob } from './api';
 import { initialProject, isEmptyProject, loadProject, saveProject, uid } from './model';
 import type { PptdDocument, Project, Template } from './model';
 import { acceptServerProject, isRunningJob } from './pptdState';
@@ -36,6 +36,7 @@ export function usePptdStudio() {
 	const projectRef = useRef(project);
 	const [projects, setProjects] = useState<ProjectSummary[]>([]);
 	const [health, setHealth] = useState<Health | null>(null);
+	const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
 	const [templates, setTemplates] = useState<Template[]>([]);
 	const [document, setDocument] = useState<PptdDocument | null>(null);
 	const [job, setJob] = useState<StudioJob | null>(null);
@@ -75,8 +76,9 @@ export function usePptdStudio() {
 			studioApi.health(),
 			studioApi.projects(),
 			studioApi.templates(),
+			studioApi.designSystems(),
 		]);
-		const [healthResult, recordsResult, templatesResult] = results;
+		const [healthResult, recordsResult, templatesResult, designSystemsResult] = results;
 		if (healthResult.status === 'fulfilled') {
 			setHealth(healthResult.value);
 			setConnected(true);
@@ -87,6 +89,8 @@ export function usePptdStudio() {
 		if (recordsResult.status === 'fulfilled') setProjects(recordsResult.value);
 		else setError(errorText(recordsResult.reason));
 		if (templatesResult.status === 'fulfilled') setTemplates(templatesResult.value);
+		if (designSystemsResult.status === 'fulfilled')
+			setDesignSystems(designSystemsResult.value);
 	}, []);
 	useEffect(() => {
 		let disposed = false;
@@ -394,6 +398,7 @@ export function usePptdStudio() {
 		projects,
 		health,
 		templates,
+		designSystems,
 		document,
 		job,
 		loading,

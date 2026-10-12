@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSO
 
 import pymupdf
 
-from . import agents, images as image_service, surgical, telemetry, template_job, template_reference
+from . import agents, design_systems, images as image_service, surgical, telemetry, template_job, template_reference
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
@@ -435,6 +435,20 @@ async def artifact_file(identifier: str, filename: str):
     if not path.is_file():
         raise HTTPException(404, "未找到文件。")
     return FileResponse(path, filename=filename if not filename.endswith(".png") else None)
+
+
+@app.get(PREFIX + '/design-systems')
+async def design_system_catalog():
+    """Preset design systems the user can start from instead of pasting a spec."""
+    return await asyncio.to_thread(design_systems.catalog)
+
+
+@app.get(PREFIX + '/design-systems/{identifier}')
+async def design_system_spec(identifier: str):
+    try:
+        return await asyncio.to_thread(design_systems.load, identifier)
+    except design_systems.DesignSystemError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get(PREFIX + '/templates/{identifier}/surgical')
