@@ -1,6 +1,7 @@
 """Template extraction step 2: the rendered overview the design is read from."""
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -104,6 +105,7 @@ class OverviewTests(unittest.TestCase):
         self.assertNotIn('star5', [item['name'] for item in found])
 
     def test_spec_schema_and_persistence(self):
+        pass
         valid = {'summary': '一份企业模板', 'pageTypes': [
             {'id': 'cover', 'purpose': '开场', 'templatePages': [1], 'skeleton': '满版背景 + 大标题',
              'slots': [{'name': 'title', 'purpose': '标题', 'characters': 20, 'repeatable': False}]}],
@@ -121,6 +123,37 @@ class OverviewTests(unittest.TestCase):
         (folder / 'spec.json').write_text(json.dumps(valid, ensure_ascii=False), encoding='utf-8')
         self.assertEqual(template_spec.load_spec(folder)['summary'], '一份企业模板')
         self.assertIsNone(template_spec.load_spec(self.root / 'missing'))
+
+    def test_repeating_unit_grows_shrinks_and_renumbers(self):
+        def row(index, label):
+            top = 160 + index * 44
+            return [
+                {'elementId': f'badge{index}', 'elementType': 'shape', 'shapeName': 'roundRect',
+                 'bounds': [288, top, 62, 34], 'fill': {'type': 'solid', 'color': '#E60013'}},
+                {'elementId': f'badge{index}-text', 'elementType': 'text', 'bounds': [288, top, 62, 34],
+                 'content': {'text': f'<p><span style="font-size:26.0px">{index + 1:02d}</span></p>'}},
+                {'elementId': f'label{index}', 'elementType': 'text', 'bounds': [354, top + 2, 104, 29],
+                 'content': {'text': f'<p><span style="font-size:13.0px">条目{index + 1}</span></p>'}},
+            ]
+        page = {'elements': [item for index in range(4) for item in row(index, '')]
+                + [{'elementId': 'title', 'elementType': 'text', 'bounds': [428, 88, 123, 56],
+                    'content': {'text': '<p><span style="font-size:40.0px">目 录</span></p>'}}]}
+
+        def numbers(value):
+            return [re.sub(r'<[^>]+>', '', element['content']['text']) for element in value['elements']
+                    if element.get('elementType') == 'text' and re.fullmatch(r'\d{2}', re.sub(r'<[^>]+>', '', element['content']['text']))]
+
+        self.assertEqual(len(template_spec.repeat_units(page)['units']), 4)
+        grown = template_spec.expand_repeats(page, 6)
+        self.assertEqual(numbers(grown), ['01', '02', '03', '04', '05', '06'])
+        self.assertEqual(len(grown['elements']), len(page['elements']) + 6)
+        self.assertEqual([element for element in grown['elements'] if element['elementId'] == 'title'],
+                         [element for element in page['elements'] if element['elementId'] == 'title'])
+        shrunk = template_spec.expand_repeats(page, 2)
+        self.assertEqual(numbers(shrunk), ['01', '02'])
+        filled = template_spec.fill_slots(grown, {'repeat': ['一', '二', '三', '四', '五', '六']})
+        self.assertIn('六', ' '.join(re.sub(r'<[^>]+>', '', element['content']['text'])
+                                    for element in filled['elements'] if element.get('elementType') == 'text'))
 
 
 if __name__ == '__main__':

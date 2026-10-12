@@ -389,3 +389,113 @@ def load_spec(folder: Path) -> dict | None:
         return json.loads(path.read_text(encoding='utf-8'))
     except ValueError:
         return None
+
+
+def repeat_units(page: dict) -> dict:
+    """Rows/columns a template page repeats, with the step between them.
+
+    A template page shows a fixed number of examples (four contents entries, three
+    cards). The rebuild route needs the *unit* and its spacing so the page can host
+    as many as the outline asks for, which is the freedom in-place editing lacks.
+    """
+    elements = page.get('elements') or []
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for element in elements:
+        bounds = element.get('bounds') or []
+        if len(bounds) != 4 or bounds[2] <= 0 or bounds[3] <= 0:
+            continue
+        groups[(element.get('elementType'), element.get('shapeName'), round(bounds[2]), round(bounds[3]))].append(element)
+    if not groups:
+        return {}
+    key, anchor = max(groups.items(), key=lambda item: len(item[1]))
+    if len(anchor) < 2:
+        return {}
+    starts = sorted(round(element['bounds'][1], 2) for element in anchor)
+    step = round((starts[-1] - starts[0]) / (len(starts) - 1), 2)
+    if step <= 0:
+        return {}
+    units = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else start + step
+        units.append([element for element in elements
+                      if len(element.get('bounds') or []) == 4 and start <= element['bounds'][1] < end])
+    return {'anchor': key, 'step': step, 'starts': starts, 'units': units}
+
+
+_NUMBERING = re.compile(r'^0*(\d{1,3})$')
+
+
+def expand_repeats(page: dict, count: int) -> dict:
+    """Return the page with its repeating unit grown or trimmed to ``count``.
+
+    Copies keep the template's own geometry (shifted by the measured step), and
+    texts that are pure numbers are renumbered, so a 4-entry contents page becomes
+    a 6-entry one with 01..06 without touching anything else on the page.
+    """
+    found = repeat_units(page)
+    if not found:
+        raise ValueError('这一页没有可复制的重复单元。')
+    units = found['units']
+    if not 1 <= count <= 60:
+        raise ValueError('重复单元数量需在 1–60 之间。')
+    import copy as _copy
+    elements = list(page['elements'])
+    anchors = {id(element) for unit in units for element in unit}
+    base = units[-1]
+    step = found['step']
+    if count > len(units):
+        for extra in range(1, count - len(units) + 1):
+            for element in base:
+                clone = _copy.deepcopy(element)
+                bounds = clone['bounds']
+                bounds[1] = round(bounds[1] + step * extra, 2)
+                elements.append(clone)
+    elif count < len(units):
+        drop = {id(element) for unit in units[count:] for element in unit}
+        elements = [element for element in elements if id(element) not in drop]
+        anchors = {identifier for identifier in anchors if identifier not in drop}
+    result = {**page, 'elements': elements}
+    # Renumber the unit's own counters ("01".."0N"), in reading order, and leave
+    # every other text alone: the badge is part of the template's language.
+    laid_out = repeat_units(result)
+    for index, unit in enumerate(laid_out.get('units') or [], start=1):
+        for element in unit:
+            content = element.get('content')
+            if element.get('elementType') != 'text' or not isinstance(content, dict):
+                continue
+            plain = _plain(content.get('text')).strip()
+            if not _NUMBERING.fullmatch(plain):
+                continue
+            content['text'] = re.sub(r'(?<=>)\d+(?=<)', str(index).zfill(len(plain)), str(content['text']), count=1)
+    return result
+
+
+def fill_slots(page: dict, assignments: dict[str, list[str]]) -> dict:
+    """Write text into a page's slots; a repeatable slot takes one entry per unit."""
+    import copy as _copy
+    result = _copy.deepcopy(page)
+    found = repeat_units(result)
+    units = found.get('units') or []
+    for slot, texts in assignments.items():
+        if not isinstance(texts, list) or not texts:
+            continue
+        if slot == 'repeat' and units:
+            # Positional fill: the i-th entry goes into the i-th unit's text slot.
+            for index, text in enumerate(texts):
+                if index >= len(units):
+                    break
+                target = next((element for element in units[index]
+                               if element.get('elementType') == 'text' and len(_plain((element.get('content') or {}).get('text'))) > 0
+                               and not _NUMBERING.fullmatch(_plain(element['content']['text']).strip())), None)
+                if target is None:
+                    continue
+                content = target.setdefault('content', {})
+                content['text'] = _rewrite(content.get('text'), text)
+    return result
+
+
+def _rewrite(markup, value: str) -> str:
+    """Keep the template's own markup and swap the words inside it."""
+    from .pptd_generation import _merge_markup, _styled_text, _dominant_style
+    text = str(markup or '')
+    return _merge_markup(text, value) or _styled_text(value, _dominant_style(text))
