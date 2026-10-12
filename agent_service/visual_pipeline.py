@@ -13,7 +13,8 @@ from . import pptd_exports
 from .pptd_store import DocumentStore, RevisionConflict, _serialize, safe_path
 from .kimi_rules import SCENARIOS
 from .visual_repair import semantic_payload
-from .visual_completion import apply_completion, complete_content, needs_completion
+from .visual_completion import (apply_completion, complete_content, grounded_missing,
+                                needs_completion, ungrounded_presence_claims)
 
 
 async def review_deck(*args, **kwargs):
@@ -121,6 +122,29 @@ def _fingerprint(issues):
     values = sorted((str(i.get('pagePath') or i.get('page')), str(i.get('code')),
                      ','.join(sorted(i.get('elementIds') or [i.get('elementId', '')]))) for i in issues)
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+def house_style(store, request):
+    """The composition language of the company template this deck was built on.
+
+    A rebuilt deck keeps the template's own patterns, so the reviewer has to
+    judge it as that template rather than as a blank page following generic
+    rules about avoiding card grids.
+    """
+    template_id = getattr(request, 'templateId', None) or getattr(getattr(request, 'project', None), 'templateId', None)
+    root = getattr(store, 'root', None)
+    if not template_id or not root:
+        return None
+    from . import template_reference
+    reference = template_reference.load(root, template_id)
+    if not reference:
+        return None
+    patterns = [{'shape': item.get('name'), 'uses': item.get('uses'), 'size': item.get('size')}
+                for item in (reference['summary'].get('components') or [])[:8]]
+    return {'template': reference['summary'].get('name') or str(template_id),
+            'patterns': patterns,
+            'palette': [item.get('color') for item in (reference['summary'].get('palette') or [])[:8]],
+            'note': '这些图案、标题配色与背景都来自模板自身的页面，是这家公司的版式语言。'}
 
 
 async def export_reviewed(store, project_id, folder, request, progress=None, *,
@@ -251,7 +275,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
                  covered=0, total=len(state['pages']))
             previous_review = next((r for r in reversed(visual['reports']) if r.get('source') != 'renderer'), None)
             report = await review_deck(deepcopy(state), candidate_folder, scenario=request.scenario,
-                                       usage=request.usage, on_event=on_event, previous_review=previous_review)
+                                       usage=request.usage, on_event=on_event, previous_review=previous_review,
+                                       house_style=house_style(store, request))
             paths = state['document']['pages']
             if (report.get('status') not in ('passed', 'issues') or
                     report.get('coveredPages') != paths or not isinstance(report.get('issues'), list)):
@@ -262,6 +287,15 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             issues = report['issues']
             if report['status'] != ('issues' if issues else 'passed'):
                 raise ValueError('AI 视觉审查状态与问题列表不一致。')
+            # A reviewer cannot see the document, only the pixels: a claim that
+            # words are missing is dropped when the page's own elements carry
+            # them, and the claim is kept in the checkpoint as evidence.
+            contradicted = ungrounded_presence_claims(state, issues)
+            if contradicted:
+                issues = [issue for issue in issues if issue not in contradicted]
+                visual.setdefault('ungroundedClaims', []).extend(contradicted)
+                emit('completed', f'已核实 {len(contradicted)} 项缺字判断与页面文字不符，不作为缺陷',
+                     scope='review', attempt=attempt, issueCount=len(issues), total=len(state['pages']))
         visual['reports'].append({**report, 'attempt': attempt})
         visual['issues'] = issues
         persist()
@@ -286,7 +320,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             result = await pptd_exports.export_document(CandidateSource(private / 'source', checked), project_id, output, progress)
             verified_candidate = {'hash': _source_sha256(checked), 'folder': output, 'metadata': result}
 
-        missing = [issue for issue in issues if needs_completion(issue)]
+        missing = grounded_missing(state, completion_plan, issues,
+                                   source=(report.get('source') or 'visual'))
         if missing:
             # Complete source-bound content before style repair. The next loop
             # renders and reviews it with the same unchanged round budget.

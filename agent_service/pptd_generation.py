@@ -346,6 +346,7 @@ def _context(request):
 
 STYLE_DECLARATION = re.compile(r"(?:font-family|font-size|color)\s*:\s*[^;\"']+;?")
 PARAGRAPH = re.compile(r"(<p\b[^>]*>)(.*?)(</p>)", re.S | re.I)
+BLANK_PARAGRAPH = re.compile(r"<p\b[^>]*>\s*</p>", re.S | re.I)
 HTML_TAG = re.compile(r"<[^>]+>")
 STYLE_TOKEN = {
     "fontFamily": re.compile(r"font-family\s*:\s*([^;\"']+)"),
@@ -427,11 +428,29 @@ def _merge_markup(source, replacement):
         return None
     words = [span[2] for span in replacement_parser.spans] or [HTML_TAG.sub("", replacement)]
     if len(words) != len(spans):
-        return None
+        # The new wording rarely splits into the same number of runs as the
+        # example sentence. Keep every tag - including a trailing empty paragraph,
+        # which is what holds a centred title where the designer put it - and let
+        # the first run carry the whole text.
+        words = [" ".join(words)] + [""] * (len(spans) - 1)
     merged = source
     for (start, end, _), word in reversed(list(zip(spans, words))):
         merged = merged[:start] + word + merged[end:]
-    return merged
+    return _keep_blank_lines(merged)
+
+
+def _keep_blank_lines(markup):
+    """Give the template's empty paragraphs the line they stand for.
+
+    A PowerPoint title often trails empty paragraphs: with the shape anchored to
+    the middle they are what holds the visible line where the designer put it.
+    The renderer draws an empty paragraph as nothing, so the line is written out.
+    """
+    if not markup:
+        return markup
+    if not BLANK_PARAGRAPH.search(markup):
+        return markup
+    return BLANK_PARAGRAPH.sub(lambda match: match.group(0)[:-4] + '&#160;</p>', markup)
 
 
 def _styled_text(text, style):

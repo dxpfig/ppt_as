@@ -183,13 +183,13 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_coverage_and_unknown_element_ids_never_pass(self):
         from agent_service.visual_review import VisualReviewError
         with self.assertRaises(VisualReviewError):
-            await self.run_review([verdict(['pages/a.page']), verdict(['pages/a.page'])])
+            await self.run_review([verdict(['pages/a.page'])] * 3)
         self.assertFalse((self.folder/'visual-review.json').exists() and json.loads((self.folder/'visual-review.json').read_text())['status'] == 'passed')
         self.assertTrue(self.closed)
         self.calls.clear(); self.closed = False
         issue = {'pagePath': 'pages/a.page', 'pageIndex': 0, 'elementIds': ['invented'], 'severity': 'error', 'code': 'TextOverlap', 'message': '遮挡', 'evidence': '标题被遮挡', 'repair': '移动标题'}
         with self.assertRaises(VisualReviewError):
-            await self.run_review([verdict(['pages/a.page','pages/b.page'], [issue]), verdict(['pages/a.page','pages/b.page'], [issue])])
+            await self.run_review([verdict(['pages/a.page','pages/b.page'], [issue])] * 3)
     async def test_warnings_block_publication_and_have_precise_visual_evidence(self):
         issue = {'pagePath': 'pages/b.page', 'pageIndex': 1, 'elementIds': ['title-b'], 'severity': 'warning', 'code': 'PoorContrast', 'message': '标题对比度不足', 'evidence': '深蓝色背景上的蓝色标题难以辨识', 'repair': '提高标题与背景亮度差，保持原文'}
         result, _ = await self.run_review([verdict(['pages/a.page','pages/b.page']), verdict(['pages/a.page']), verdict(['pages/b.page'], [issue])])
@@ -197,7 +197,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_observations_and_unseen_image_fail_closed(self):
         from agent_service.visual_review import VisualReviewError
         bad = verdict(['pages/a.page', 'pages/b.page']); bad['observations'] = []
-        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad])
+        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad, bad])
         (self.folder/'slide-2.png').unlink(); self.calls.clear()
         with self.assertRaises(VisualReviewError): await self.run_review([])
         self.assertEqual(self.calls, [])
@@ -223,7 +223,8 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         from agent_service.visual_review import VisualReviewError
         issue = {'pagePath': 'pages/a.page', 'pageIndex': 0, 'elementIds': ['title-a'], 'severity': 'error', 'code': 'InvisibleTitle', 'message': '标题不可见', 'evidence': '白色背景上的白色标题不可见', 'repair': '把标题改为深色'}
         with self.assertRaises(VisualReviewError):
-            await self.run_review([verdict(['pages/a.page','pages/b.page'], [issue]), verdict(['pages/a.page']), verdict(['pages/a.page'])])
+            await self.run_review([verdict(['pages/a.page','pages/b.page'], [issue])]
+                                  + [verdict(['pages/a.page'])] * 3)
 
     async def test_previous_review_context_reaches_all_pages_without_skipping_images(self):
         old = {'issues': [{'pagePath': 'pages/a.page', 'code': 'InvisibleTitle', 'message': '标题不可见'}], 'pageReviews': []}
@@ -274,17 +275,27 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(len(self.calls[1]['system']), 1200, 'Serialization must not repeat the full Kimi review instruction set')
         self.assertEqual(len(self.calls), 4)
 
-    async def test_serialization_cannot_drop_a_finding_or_change_status(self):
+    async def test_a_report_that_cannot_be_reformatted_is_reviewed_again(self):
+        """A formatter that changes the findings is dropped, not trusted.
+
+        The first reply is broken JSON, the formatter's answer no longer carries
+        the finding, so the review has to be taken again from the images - and a
+        clean reply then publishes, instead of failing the whole export.
+        """
         from agent_service.visual_review import _strict_json, VisualReviewError
         issue = {'pagePath': 'pages/a.page', 'pageIndex': 0, 'elementIds': ['title-a'], 'severity': 'error', 'code': 'InvisibleTitle', 'message': '标题不可见', 'evidence': '白色背景上的"标题"不可见', 'repair': '把标题改为深色'}
         original = verdict(['pages/a.page','pages/b.page'], [issue])
         malformed = json.dumps(original, ensure_ascii=False, separators=(',', ':')).replace('\\"', '"')
         try: _strict_json(malformed)
         except VisualReviewError as error: syntax_error = error
-        with self.assertRaises(VisualReviewError):
-            await self.run_review([syntax_error, verdict(['pages/a.page','pages/b.page'])])
-        self.assertEqual(len(self.calls), 2, 'A failed formatter must not start more blind requests')
-        self.assertEqual(json.loads((self.folder/'visual-review.json').read_text())['status'], 'failed')
+        dropped = verdict(['pages/a.page','pages/b.page'])
+        result, _ = await self.run_review([syntax_error, dropped,
+                                           verdict(['pages/a.page','pages/b.page']),
+                                           verdict(['pages/a.page']), verdict(['pages/b.page'])])
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(self.calls), 5, 'the second look is one bounded request, not a loop')
+        self.assertTrue(self.calls[1]['system'].startswith('You are a lossless JSON serialization repairer'))
+        self.assertIn('responseCorrection', self.calls[2]['prompt'])
 
     async def test_report_drops_unexpected_private_observation_fields(self):
         responses = [verdict(['pages/a.page','pages/b.page']), verdict(['pages/a.page']), verdict(['pages/b.page'])]
@@ -338,7 +349,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_nonstring_coverage_is_a_bounded_invalid_review_not_type_error(self):
         from agent_service.visual_review import VisualReviewError
         bad = verdict(['pages/a.page','pages/b.page']); bad['coveredPages'] = [{'page': 'pages/a.page'}, 'pages/b.page']
-        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad])
+        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad, bad])
         self.assertTrue(self.closed)
 
     async def test_small_font_is_only_a_hint_until_ai_confirms_visible_harm(self):
@@ -349,6 +360,14 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(self.calls[1]['prompt']['sourceHints'][0]['elementId'], 'title-a')
         self.assertEqual(self.calls[1]['prompt']['sourceHints'][0]['kind'], 'small-font')
+
+    async def test_a_company_template_s_own_patterns_are_the_house_style(self):
+        style = {'template': '信息化项目汇报模板', 'patterns': [{'shape': 'roundRect', 'uses': 14}],
+                 'note': '这些图案在模板自身的页面上反复出现。'}
+        await self.run_review([verdict(['pages/a.page','pages/b.page']), verdict(['pages/a.page']),
+                               verdict(['pages/b.page'])], house_style=style)
+        self.assertEqual(self.calls[0]['prompt']['houseStyle'], style)
+        self.assertIn('house style', self.calls[0]['system'])
 
     async def test_provider_failure_and_cancellation_leave_recoverable_report(self):
         from agent_service.visual_review import VisualReviewError
@@ -367,7 +386,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_contradictory_pass_status_is_rejected(self):
         from agent_service.visual_review import VisualReviewError
         bad = verdict(['pages/a.page','pages/b.page']); bad['status'] = 'issues'
-        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad])
+        with self.assertRaises(VisualReviewError): await self.run_review([bad, bad, bad])
 
 
 if __name__ == '__main__': unittest.main()

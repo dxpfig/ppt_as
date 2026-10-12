@@ -50,7 +50,10 @@ class VisualRepairError(ValueError):
         self.rejections = copy.deepcopy(rejections or [])
 
 
-TEXT_STYLE = {"fontSize", "fontFamily", "color", "backgroundColor", "bold", "italic", "lineHeight", "lineHeightPx", "letterSpacing", "marginTop", "align", "wrap"}
+# ``backgroundColor`` is deliberately absent: the browser preview paints it, but
+# the native export has no mapping for a text box's own fill, so allowing it here
+# would only produce a repair the exporter then refuses.
+TEXT_STYLE = {"fontSize", "fontFamily", "color", "bold", "italic", "lineHeight", "lineHeightPx", "letterSpacing", "marginTop", "align", "wrap"}
 CHART_TEXT_STYLE = {"fontSize", "fontFamily", "color"}
 CHART_AXIS_STYLE = CHART_TEXT_STYLE | {"rotation", "interval"}
 CHART_LABEL_STYLE = CHART_TEXT_STYLE | {"position"}
@@ -236,8 +239,12 @@ def apply_visual_patches(state, operations, issues, *, layout_measurements=None,
         else:
             _pointer(target, patch.path, op="set", value=patch.value)
         if page != before: changed_pages.add(patch.pagePath)
-    if changed_pages != set(targets):
-        raise ValueError("Visual repair did not change every page with findings")
+    if not changed_pages:
+        raise ValueError("Visual repair did not change any page it was asked to repair")
+    if changed_pages - set(targets):
+        # A repair may leave a finding for the next round, but it may never touch
+        # a page nobody flagged.
+        raise ValueError("Visual repair changed pages without findings")
     # A model may rescale a line's local coordinate system alongside bounds.
     # Accept only mathematically identical paths, and retain the original bytes
     # so semantic checkpoint hashes and every curve/control point stay stable.
@@ -330,6 +337,7 @@ async def repair_deck(request, state, issues, *, on_event=None, rendered_pages=N
         "patchContract": {
             "path": "Each path MUST start with / and is relative to the single element selected by elementId. Use /content/color to change a text element's color, /bounds for all four geometry numbers, or /bounds/1 for its y coordinate. pagePath and elementId are separate fields; never insert either, elements, or an element array index into path. Dot notation and missing leading / are invalid.",
             "pagePatch": "Omit elementId only to set /background or /background/color on the page.",
+            "fieldLimits": "A text element's own backgroundColor is not supported by the native export - never set it; move or restyle the text instead. /columnWidths and /rowHeights must keep exactly as many entries as the table already has and the new numbers must still sum to 1 (they are fractions, not pixels).",
             "exampleIsSyntaxOnly": "This example demonstrates the exact wire format. Apply only the changes justified by the actual findings; use the supplied real pagePath and elementId.",
             "example": {"operations": [example_operation]},
         },

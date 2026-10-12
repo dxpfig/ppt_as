@@ -172,18 +172,33 @@ specification, and the kit the composer keeps on every page: the background, the
 top-right logo, the bottom-right company mark, the page-title treatment, and the
 type sizes / families / colours measured from the template.
 
-Two kinds of page may be planned:
+Two kinds of page may be planned, and the choice is not optional:
 
-1. Template-faithful pages - cover, contents, closing: name the `pageType` and its
-   `templatePage`, fill its slots with `fills`, and give `entries` for a
-   repeatable slot so a contents page holds exactly as many rows as this deck has
-   sections.
-2. Composed body pages - the page design is yours: choose a `layout`
+1. Template-faithful pages - only the cover, the contents page and the closing
+   page may use `pageType` plus its `templatePage`: fill every slot with `fills`
+   and give `entries` for a repeatable slot so a contents page holds exactly as
+   many rows as this deck has sections.
+2. Composed body pages - every other page must use a `layout` instead of a
+   template page type. The page design is yours: choose a `layout`
    (cards / bullets / steps / keyNumbers / table / comparison), write the `title`
-   and optional `lead`, and supply `items` or `table`. The composer applies the
-   template's chrome, background and type styles automatically, so never describe
-   colours, fonts, logos, margins or coordinates - describe content and structure.
-   Use different layouts for different pages when the content calls for it.
+   and optional `lead`, and supply `items` or `table` in exactly this shape:
+     cards / bullets / steps / comparison: items=[{label: "短标题", bullets: ["一行要点", ...]}]
+     keyNumbers: items=[{value: "92%", label: "指标说明"}]
+     table: table={columns: ["列一", "列二"], rows: [["单元", "单元"], ...]}
+   Every item must carry its own words - an item with no label, bullets or value
+   renders an empty box, so it is rejected. The composer applies the template's
+   chrome, background and type styles automatically, so never describe colours,
+   fonts, logos, margins or coordinates - describe content and structure. Pick the
+   layout that matches the content (a comparison reads as two columns, a process as
+   steps, headline figures as keyNumbers) and use different layouts across pages.
+
+`faithfulPages` names every slot the cover, contents and closing pages carry:
+give one `fills` entry per `mustFill` name (an empty string leaves the slot blank)
+and one `entries` entry per row when a page has a `mayRepeat` slot - `entries` only
+belong there, never on the cover or closing page, and `maxRows` is the most rows
+that page can hold: keep the outline's section count at or below it rather than
+growing the page past the template's own list. `bodyLayouts` gives each layout's
+item capacity; spread longer content over more pages instead of overfilling one.
 
 Return {title, pages:[{pageType, templatePage, entries, fills, layout, title, lead,
 items, table}]}. Start with the cover page (faithful) and end with the closing page

@@ -79,6 +79,19 @@ class TemplateReferenceTests(unittest.TestCase):
         self.assertIsNone(references.load(self.root, 'unknown'))
         self.assertIsNone(references.load(None, 'corp'))
 
+    def test_a_reference_from_an_older_importer_is_measured_again(self):
+        references.build(self.source, self.root, 'corp')
+        self.assertFalse(references.stale(self.root, 'corp'))
+        stamp = self.root / references.REFERENCE_DIRECTORY / 'corp' / 'reference.json'
+        entry = json.loads(stamp.read_text(encoding='utf-8'))
+        entry['format'] = 'pptd-importer-1'
+        stamp.write_text(json.dumps(entry, ensure_ascii=False), encoding='utf-8')
+        self.assertTrue(references.stale(self.root, 'corp'))
+        # Rebuilding restores the current stamp and keeps the template usable.
+        references.build(self.source, self.root, 'corp')
+        self.assertFalse(references.stale(self.root, 'corp'))
+        self.assertIsNotNone(references.load(self.root, 'corp'))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -20,9 +20,81 @@ from .visual_repair import (VisualPatch, VisualRepairError, _allowed_patch,
 MISSING_CODES = {'missing-visual-content', 'missing-content', 'missing-chart',
                  'missing-body-content', 'PlannedContentMissing'}
 
+# A missing figure or chart is about an object the page does not show, so the
+# page's text can neither confirm nor deny it. Only body-text claims are checked
+# against the words the page already carries.
+FIGURE_CODES = ('missing-visual-content', 'missing-chart')
+
 
 def needs_completion(issue):
     return issue.get('code') in MISSING_CODES
+
+
+def grounded_missing(state, plan, issues, *, source='visual'):
+    """The missing-content claims that the page's own source actually supports.
+
+    A reviewer may report that a page "lacks" text it simply could not read at
+    that resolution. Adding content for an ungrounded claim duplicates what is
+    already on the page, so a claim only counts when a planned sentence for that
+    page is genuinely absent from it. Rendered findings (from the real browser
+    check) are always grounded: they name an element the renderer could not draw.
+    """
+    if source != 'visual':
+        return [issue for issue in issues if needs_completion(issue)]
+    planned: dict[str, list[str]] = {}
+    for key, item in source_catalog(state, plan).items():
+        # Only the page's own planned wording counts here: schematic notes and
+        # labels are helpers the completion model may place, not page content.
+        if key.startswith('plan:') and 'schematic' not in key and isinstance(item.get('text'), str):
+            planned.setdefault(item['pagePath'], []).append(item['text'])
+    keep = []
+    for issue in issues:
+        if not needs_completion(issue):
+            continue
+        if any(token in str(issue.get('code') or '') for token in FIGURE_CODES):
+            keep.append(issue)
+            continue
+        page = next((page for page in state['pages'] if page['path'] == issue.get('pagePath')), None)
+        if page is None:
+            continue
+        wanted = planned.get(page['path']) or []
+        if not wanted:
+            # Nothing in this deck's source names content for this page, so there
+            # is no missing passage to restore.
+            continue
+        body = '\n'.join(str((element.get('content') or {}).get('text', ''))
+                         for element in page['data']['elements'] if element.get('elementType') == 'text')
+        if any(text.strip() and text.strip() not in body for text in wanted):
+            keep.append(issue)
+    return keep
+
+
+PRESENCE_CODES = ('missing-content', 'missing-body-content', 'placeholder', 'label-number-mismatch')
+
+
+def ungrounded_presence_claims(state, issues):
+    """Claims that a page's text is missing when the page's own text is there.
+
+    The reviewer works from pixels, so small type it cannot read on a page is
+    easy to describe as a placeholder or as missing. The document says otherwise,
+    and the renderer already proved every element drew with its own words, so a
+    presence claim is kept only when an element it names really is empty.
+    """
+    dropped = []
+    for issue in issues:
+        code = str(issue.get('code') or '').lower()
+        if not any(token in code for token in PRESENCE_CODES):
+            continue
+        page = next((page for page in state['pages'] if page['path'] == issue.get('pagePath')), None)
+        if page is None:
+            continue
+        referenced = set(issue.get('elementIds') or [])
+        texts = [element for element in page['data']['elements']
+                 if element.get('elementType') == 'text' and isinstance(element.get('content'), dict)]
+        picked = [element for element in texts if not referenced or element.get('elementId') in referenced]
+        if picked and all(str(element['content'].get('text') or '').strip() for element in picked):
+            dropped.append(issue)
+    return dropped
 
 
 class TextAppearance(BaseModel):

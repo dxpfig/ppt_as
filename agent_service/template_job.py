@@ -176,7 +176,8 @@ async def ask_deck(model, rules: KimiRules, request, pages: dict, scenario: str,
 
 
 async def ask_plan(model, rules: KimiRules, request, spec: dict, tokens: dict, scenario: str, *,
-                   issues: list[dict] | None = None, session_id=None, on_event=None):
+                   issues: list[dict] | None = None, session_id=None, on_event=None,
+                   rows: dict[str, int] | None = None):
     """One strict JSON round trip for the rebuild plan."""
     from .agents import make_agent
     contract = ('\n\nJSON TRANSPORT CONTRACT\nReturn exactly one JSON object as assistant text, no tool call, '
@@ -190,6 +191,17 @@ async def ask_plan(model, rules: KimiRules, request, spec: dict, tokens: dict, s
         'pageCount': getattr(request, 'pageCount', None),
         'templateSpec': spec,
         'design': tokens,
+        # Spelled out so the model never has to infer which pages copy the template
+        # and which slot names they carry: only these three pages take pageType.
+        'faithfulPages': [
+            {'pageType': page_type['id'], 'templatePage': (page_type.get('templatePages') or [None])[0],
+             'mustFill': [slot['name'] for slot in page_type.get('slots') or [] if not slot.get('repeatable')],
+             'mayRepeat': [slot['name'] for slot in page_type.get('slots') or [] if slot.get('repeatable')],
+             'maxRows': (rows or {}).get(page_type['id'])}
+            for page_type in spec.get('pageTypes') or []
+            if page_type['id'] in template_spec.faithful_page_types(spec)],
+        'bodyLayouts': {layout: template_spec.LAYOUT_CAPACITY[layout]
+                        for layout in template_spec.LAYOUT_CAPACITY},
     }
     if issues:
         payload['validationErrors'] = issues
@@ -214,20 +226,26 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
     scenario = getattr(request, 'scenario', 'auto')
     if scenario not in SCENARIOS:
         scenario = 'management-report'
-    reference = template_reference.load(root, template_id)
+    # A reference measured by an older importer is re-derived before it styles a
+    # new deck: what it could not read then would come back as wrong colouring now.
+    rederived = template_reference.stale(root, template_id)
+    reference = None if rederived else template_reference.load(root, template_id)
     template_pptx = Path(root) / 'templates' / str(template_id) / 'template.pptx'
     if not template_pptx.is_file():
         raise TemplateIncomplete('未找到公司模板文件，请重新上传。')
     if not reference:
         # A project may jump straight to "rebuild" without importing the template
         # first: importing is bookkeeping this route can do for itself.
-        progress(0, '正在解析公司模板（首次使用需要一次结构分析）')
+        progress(0, '正在重新解析公司模板（模板解析能力已更新）' if rederived
+                 else '正在解析公司模板（首次使用需要一次结构分析）')
         await asyncio.to_thread(template_reference.build, template_pptx, Path(root), str(template_id))
         reference = template_reference.load(root, template_id)
         if not reference:
             raise TemplateIncomplete('模板解析失败，请检查模板文件后重试。')
     folder = template_reference.reference_path(root, template_id) / 'overview'
-    spec = template_spec.load_spec(folder)
+    # The induced spec was read from the previous pages, so it is measured again
+    # together with them.
+    spec = None if rederived else template_spec.load_spec(folder)
     if not spec:
         # Induction reads the rendered overview and the measured tokens; both are
         # produced here the first time this template is rebuilt.
@@ -243,6 +261,19 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
     sources = reference['sources']
     pages = [json.loads(sources[key]) for key in sorted(sources)]
     progress(0, f"已读取模板规范（{len(spec['pageTypes'])} 个页型），正在规划本次页面与内容")
+    # The kit is what a composed body page keeps: background, top-right logo,
+    # bottom-right company mark, title treatment and the type tokens. It is built
+    # first so the plan is measured against the very boxes the composer will draw.
+    from . import template_kit
+    kit = await asyncio.to_thread(template_kit.extract, pages, reference['summary'].get('design') or {},
+                                  reference['summary'].get('components') or [])
+    # How many rows the template's own list pages hold, so the plan keeps its
+    # contents page inside the room the designer drew for it.
+    rows = {page_type['id']: template_spec.repeat_capacity(pages[(page_type.get('templatePages') or [1])[0] - 1])
+            for page_type in spec['pageTypes']
+            if page_type['id'] in template_spec.faithful_page_types(spec)
+            and (page_type.get('templatePages') or [0])[0] <= len(pages)}
+    rows = {key: value for key, value in rows.items() if value}
     issues: list[dict] = []
     plan = None
     previous: set[str] = set()
@@ -251,12 +282,12 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
             plan = await ask_plan(model, rules, request, spec, reference['summary'].get('design') or {},
                                   scenario, issues=issues or None,
                                   session_id=getattr(getattr(request, 'project', None), 'id', None),
-                                  on_event=on_event)
+                                  on_event=on_event, rows=rows)
         except Exception as error:  # provider failures must fail with a reason
             issues = [{'code': 'ModelUnavailable', 'location': 'plan',
                        'message': f'{type(error).__name__}: {error}'[:300]}]
         else:
-            issues = template_spec.validate_plan(plan, spec, reference['summary'])
+            issues = template_spec.validate_plan(plan, spec, reference['summary'], kit, pages)
             if not issues:
                 break
         fingerprint = json.dumps([issue.get('message') for issue in issues], ensure_ascii=False)
@@ -266,12 +297,7 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
         progress(1, f"第 {attempt + 1} 轮调整：{len(issues)} 项需要修正")
     if issues or plan is None:
         raise TemplateIncomplete('未能生成符合模板规范的计划。', plan, issues)
-    progress(2, f"已确定 {len(plan['pages'])} 页：正在按模板组件与槽位组装")
-    # The kit is what a composed body page keeps: background, top-right logo,
-    # bottom-right company mark, title treatment and the type tokens.
-    from . import template_kit
-    kit = await asyncio.to_thread(template_kit.extract, pages, reference['summary'].get('design') or {},
-                                  reference['summary'].get('components') or [])
+    progress(2, f"已确定 {len(plan['pages'])} 页：封面与目录沿用模板，正文按模板页眉页脚与背景自由排版")
     built = await asyncio.to_thread(template_spec.build, pages, spec, plan, kit)
     progress(3, '已按模板组装完成，准备渲染与导出验收')
     return {'plan': plan, 'document': built['document'], 'pages': built['pages'],

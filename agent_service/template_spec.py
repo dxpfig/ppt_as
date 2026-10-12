@@ -9,6 +9,7 @@ pipeline already trusts (LibreOffice/Chromium PDF, then PyMuPDF rasterisation).
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import re
 from collections import Counter, defaultdict
@@ -510,6 +511,7 @@ def fill_slots(page: dict, assignments: dict[str, list[str]]) -> dict:
             continue
         if slot == 'repeat' and units:
             # Positional fill: the i-th entry goes into the i-th unit's text slot.
+            from . import template_kit
             for index, text in enumerate(texts):
                 if index >= len(units):
                     break
@@ -520,7 +522,35 @@ def fill_slots(page: dict, assignments: dict[str, list[str]]) -> dict:
                     continue
                 content = target.setdefault('content', {})
                 content['text'] = _rewrite(content.get('text'), text)
+                # The content decides the wording, so the label grows into the row
+                # the template drew for it instead of the entry being trimmed to
+                # the example text's width.
+                room = _row_room(units[index], target)
+                if room and len(text) > 0:
+                    target['bounds'][2] = round(max(target['bounds'][2], min(room, _text_width(text, content))), 1)
+                # …and the row's own height follows the words it now carries.
+                template_kit.fit(target, widen=False)
     return result
+
+
+def _row_room(unit: list[dict], label: dict) -> float | None:
+    """Horizontal space the row offers past the label's own left edge."""
+    right = 0.0
+    for element in unit:
+        bounds = element.get('bounds') or []
+        if len(bounds) == 4:
+            right = max(right, bounds[0] + bounds[2])
+    bounds = label.get('bounds') or []
+    if len(bounds) != 4 or right <= bounds[0]:
+        return None
+    return right - bounds[0]
+
+
+def _text_width(text: str, content: dict) -> float:
+    """Rough width a label needs at its own font size (CJK counts as one em)."""
+    sizes = FONT_SIZE.findall(str(content.get('text', '')))
+    size = float(sizes[0]) if sizes else 18.0
+    return len(text) * size * 1.1
 
 
 def _rewrite(markup, value: str) -> str:
@@ -552,7 +582,52 @@ class BuildPlan(BaseModel):
     pages: list[PlanPage] = Field(min_length=1, max_length=60)
 
 
-def _validate_body(page: dict, index: int, spec: dict, summary: dict, issues: list[dict]) -> None:
+FAITHFUL_HINTS = ('cover', 'toc', 'contents', 'content-list', 'closing', 'ending', 'end')
+
+# Nothing a rebuilt page adds may run into the footer band of the template.
+ROW_FLOOR = 460.0
+
+# How many items a composed layout can hold before the page turns into a list of
+# unreadable slivers. The numbers follow the composer's own geometry: cards grid
+# up to three rows of four, steps sit in one column, key numbers in one row.
+LAYOUT_CAPACITY = {'cards': 12, 'steps': 6, 'keyNumbers': 4, 'bullets': 8,
+                   'comparison': 8, 'table': 8}
+
+
+def faithful_page_types(spec: dict) -> set[str]:
+    """The page types that may copy a template page: cover, contents, closing.
+
+    Everything else is a body page and has to be composed, which is the contract
+    the user set for rebuilt decks.
+    """
+    found = set()
+    for page_type in spec.get('pageTypes') or []:
+        identifier = str(page_type.get('id', '')).lower()
+        if any(hint in identifier for hint in FAITHFUL_HINTS):
+            found.add(page_type['id'])
+    return found
+
+
+def repeat_capacity(page: dict, floor: float = ROW_FLOOR) -> int | None:
+    """How many rows the template's own repeating list holds above the footer.
+
+    A contents page is the one faithful page whose length follows the outline, so
+    the room the template drew for its own rows is the limit: growing past it
+    would push the last rows off the slide.
+    """
+    found = repeat_units(page)
+    units = found.get('units') or []
+    step = float(found.get('step') or 0)
+    if not units:
+        return None
+    if len(units) < 2 or step <= 0:
+        return len(units)
+    first = min((element.get('bounds') or [0])[1] for unit in units for element in unit)
+    return max(len(units), int((floor - first) // step) + 1)
+
+
+def _validate_body(page: dict, index: int, spec: dict, summary: dict, issues: list[dict],
+                   kit: dict | None = None) -> None:
     """A composed body page: the layout must exist and content must fit the tokens."""
     from . import template_kit
     where = f'pages[{index}]'
@@ -560,6 +635,10 @@ def _validate_body(page: dict, index: int, spec: dict, summary: dict, issues: li
     if layout not in template_kit.LAYOUTS:
         issues.append({'code': 'UnknownLayout', 'location': f'{where}.layout',
                        'message': f'可用版式：{list(template_kit.LAYOUTS)}'})
+        return
+    if not str(page.get('title') or '').strip():
+        issues.append({'code': 'EmptyLayout', 'location': f'{where}.title',
+                       'message': '正文页要给出 title：它落在模板页眉的大标题位置。'})
         return
     capacity = 0
     for page_type in spec.get('pageTypes') or []:
@@ -581,34 +660,103 @@ def _validate_body(page: dict, index: int, spec: dict, summary: dict, issues: li
         issues.append({'code': 'EmptyLayout', 'location': f'{where}.items',
                        'message': f'{layout} 版式需要 items。'})
         return
-    if len(items) > 8:
+    room_for_items = LAYOUT_CAPACITY.get(layout, 8)
+    if len(items) > room_for_items:
         issues.append({'code': 'TooManyItems', 'location': f'{where}.items',
-                       'message': '单页最多 8 个条目（超出请分页）。'})
-    style = ((summary.get('design') or {}).get('textStyles') or {}).get('body') or {}
-    size = style.get('fontSize') or 13
-    per_line = max(12, int(900 / (float(size) * 1.15)))
-    limit = max(12, per_line // 3) if layout == 'cards' else per_line
+                       'message': f'{layout} 版式单页最多 {room_for_items} 个条目（超出请分页或改用 cards）。'})
     for position, item in enumerate(items):
         values = [item.get('label', '')] + list(item.get('bullets') or []) + [item.get('value', '')]
-        for value in values:
-            if len(str(value)) > limit:
+        # A composed element with no words of its own would ship as an empty box;
+        # the model only learns this from the issue, so name the keys it forgot.
+        if not any(str(value).strip() for value in values):
+            wanted = ('value 与 label（keyNumbers）' if layout == 'keyNumbers'
+                      else 'label 与 bullets')
+            issues.append({'code': 'EmptyItem', 'location': f'{where}.items[{position}]',
+                           'message': f'{layout} 的每个条目都要有内容：请给出 {wanted}；'
+                                      f'当前条目的键是 {sorted(item)[:6]}。'})
+    if kit:
+        # The boxes the composer will actually draw: a page is only accepted when
+        # the words fit the same geometry the renderer will measure.
+        _measure_parts(page, layout, items, kit, where, issues)
+
+
+def _measure_parts(page: dict, layout: str, items: list[dict], kit: dict, where: str,
+                   issues: list[dict]) -> None:
+    """Every composed text box has to hold the words the plan put in it."""
+    from . import template_kit
+    all_parts = template_kit.layout_parts(layout, page, kit)
+    parts = [part for part in all_parts if part['type'] == 'text']
+    slots = {part['identity']: part['bounds'] for part in all_parts if part['type'] == 'shape'}
+    area = template_kit.content_area(kit, kit.get('tokens') or {})
+    floor = area['y'] + area['height']
+    for position, item in enumerate(items):
+        # Each layout names its own boxes: cards and steps prefix them with the
+        # item number, key numbers pair a figure with its caption, and the
+        # bullet layouts use one box per item.
+        if layout == 'cards':
+            markers = (f'card{position + 1}-',)
+        elif layout == 'steps':
+            markers = (f'step{position + 1}-',)
+        elif layout == 'keyNumbers':
+            markers = (f'num{position + 1}', f'cap{position + 1}')
+        else:
+            markers = (f'item{position + 1}',)
+        # Generated pieces (the step counter) are the composer's own, not the plan's.
+        owned = [part for part in parts if part['identity'].startswith(markers) and not part.get('generated')]
+        if owned:
+            # The words also have to stay inside the card or step they belong to,
+            # or they would be drawn over the next one.
+            bottom = max(part['bounds'][1] + part['bounds'][3] for part in owned)
+            slot = next((bounds for name, bounds in slots.items()
+                         if name in (f'card{position + 1}-bg', f'step{position + 1}-bg')), None)
+            limit = round(slot[1] + slot[3], 1) if slot else floor
+            if bottom > limit + 1:
+                start = slot[1] if slot else area['y']
                 issues.append({'code': 'SlotOverflow', 'location': f'{where}.items[{position}]',
-                               'message': f'{layout} 每行约 {limit} 字，收到 {len(str(value))} 字。'})
+                               'message': (f'{layout} 在这里只放得下 {round(limit - start, 1)}px 内容，'
+                                           f'这条要 {round(bottom - start, 1)}px；'
+                                           '请精简这条或减少条目/分页。')})
+                continue
+        for part in owned:
+            if not part['text']:
+                continue
+            bounds = part['bounds']
+            size = float(part['style']['fontSize'])
+            room = template_kit.characters_that_fit(bounds[2] - 2, bounds[3], size)
+            used = len(template_kit.plain(part['text']))
+            if used <= room:
+                continue
+            issues.append({'code': 'SlotOverflow', 'location': f'{where}.items[{position}].{part["identity"]}',
+                           'message': (f'{layout} 这个位置最多 {room} 字（{size:g}px），收到 {used} 字；'
+                                       '请精简这条内容，或改用卡片/表格分页。')})
+            break
 
 
-def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
+def validate_plan(plan: dict, spec: dict, summary: dict, kit: dict | None = None,
+                  pages: list[dict] | None = None) -> list[dict]:
     """A plan may only use page types and capacity the spec actually grants."""
     issues = []
     types = {item['id']: item for item in spec.get('pageTypes') or []}
+    faithful = faithful_page_types(spec)
+    library = {index + 1: page for index, page in enumerate(pages or [])}
     for index, page in enumerate(plan.get('pages') or []):
         where = f'pages[{index}]'
         if page.get('layout'):
-            _validate_body(page, index, spec, summary, issues)
+            _validate_body(page, index, spec, summary, issues, kit)
             continue
         page_type = types.get(page.get('pageType'))
         if page_type is None:
             issues.append({'code': 'UnknownPageType', 'location': f'{where}.pageType',
                            'message': f"规范里没有 {page.get('pageType')!r} 这个页型；可选：{sorted(types)[:8]}"})
+            continue
+        if page.get('pageType') not in faithful:
+            # The user's contract: only the cover, the contents page and the
+            # closing page may reuse a template page. Body pages are composed, so
+            # they must carry a `layout` instead of borrowing a template page type.
+            issues.append({'code': 'BodyPageMustCompose', 'location': f'{where}.pageType',
+                           'message': (f"{page.get('pageType')!r} 是正文页型，正文页必须自选版式："
+                                       "改为给出 layout（cards/bullets/steps/keyNumbers/table/comparison）；"
+                                       f"只有 {sorted(faithful)} 可以用 pageType。")})
             continue
         if page.get('templatePage') not in page_type.get('templatePages', []):
             issues.append({'code': 'TemplatePageMismatch', 'location': f'{where}.templatePage',
@@ -632,7 +780,10 @@ def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
                 # The widest repeatable slot is the label column; the counter next
                 # to it is generated, not written by the plan.
                 widest = max(repeatable, key=lambda slot: slot['characters'])
-                limit = max(widest['characters'], 1)
+                # A repeated row has room past its example label (the bar behind it),
+                # and the composer widens the label to fit, so the example text's own
+                # width is not the limit for this deck's wording.
+                limit = max(widest['characters'], 20)
                 for position, value in enumerate(entries):
                     if len(value) > limit:
                         issues.append({'code': 'SlotOverflow', 'location': f'{where}.entries[{position}]',
@@ -644,6 +795,10 @@ def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
         if missing:
             issues.append({'code': 'SlotMissing', 'location': f'{where}.fills',
                            'message': f'这些槽位必须给出内容（可填空字符串表示留空）：{missing}'})
+        entries = page.get('entries') or []
+        source = library.get(page.get('templatePage'))
+        # An outline longer than the template's own list is not an error: the
+        # composer continues the contents page, with the numbering carried on.
     return issues
 
 
@@ -672,20 +827,51 @@ def build(pages: list[dict], spec: dict, plan: dict, kit: dict | None = None) ->
             raise ValueError(f"模板没有第 {page['templatePage']} 页。")
         page_type = types.get(page['pageType']) or {}
         slots = page_type.get('slots') or []
-        data = source
         entries = page.get('entries') or []
-        if entries:
-            data = fill_slots(expand_repeats(data, len(entries)), {'repeat': entries})
-        elif any(slot.get('repeatable') for slot in slots):
-            # No entries for this page: empty the unit's own text as well, so the
-            # template's example rows never ship.
-            data = blank_repeatable(data)
-        if page.get('fills') or slots:
-            data = fill_named(data, page.get('fills') or {}, slots)
-        output.append(data)
+        # A list longer than the template's own rows continues on another copy of
+        # the same page, with the counters carried on: the outline decides the
+        # number of rows, the template decides how many fit on one page.
+        room = repeat_capacity(source) or len(entries) or 1
+        chunks = [entries[index:index + room] for index in range(0, len(entries), room)] or [None]
+        for chunk_index, chunk in enumerate(chunks):
+            # The same template page may back more than one output page; without a
+            # copy the pages would share objects and the YAML writer would emit
+            # aliases, which the document store refuses to load.
+            data = copy.deepcopy(source)
+            if chunk is not None:
+                data = fill_slots(expand_repeats(data, len(chunk)), {'repeat': chunk})
+                if chunk_index:
+                    data = number_from(data, chunk_index * room + 1)
+            elif any(slot.get('repeatable') for slot in slots):
+                # No entries for this page: empty the unit's own text as well, so
+                # the template's example rows never ship.
+                data = blank_repeatable(data)
+            if page.get('fills') or slots:
+                data = fill_named(data, page.get('fills') or {}, slots)
+            output.append(data)
+    # The document store refuses a page whose YAML contains aliases, and a page
+    # copied from a parsed template can share objects with its neighbours. A JSON
+    # round trip gives every page its own plain data, which is also exactly what
+    # the web response has to carry.
+    output = [json.loads(json.dumps(page, ensure_ascii=False)) for page in output]
     return {'document': {'version': 'v2', 'title': plan['title'],
                          'size': [960, 540], 'pages': [f'pages/{index + 1:02d}.page' for index in range(len(output))]},
             'pages': [{'path': f'pages/{index + 1:02d}.page', 'data': data} for index, data in enumerate(output)]}
+
+
+def number_from(page: dict, start: int) -> dict:
+    """Carry the template's own counters on when a list spans several pages."""
+    for index, unit in enumerate(repeat_units(page).get('units') or []):
+        for element in unit:
+            content = element.get('content')
+            if element.get('elementType') != 'text' or not isinstance(content, dict):
+                continue
+            plain = _plain(content.get('text')).strip()
+            if not _NUMBERING.fullmatch(plain):
+                continue
+            value = str(start + index).zfill(len(plain))
+            content['text'] = re.sub(r'(?<=>)\d+(?=<)', value, str(content['text']), count=1)
+    return page
 
 
 def blank_repeatable(page: dict) -> dict:
@@ -740,6 +926,9 @@ def fill_named(page: dict, fills: dict[str, str], slots: list[dict]) -> dict:
         target = candidates[position]
         position += 1
         value = fills.get(slot['name'])
-        content = target.setdefault('content', {})
-        content['text'] = _rewrite(content.get('text'), value or '')
+        from . import template_kit
+        target['content'] = template_kit.rewrite(target.get('content') or {}, value or '')
+        # A slot that carries this deck's longer wording gets the room for it, so
+        # the reviewer never sees the template's example box overflowing.
+        template_kit.fit(target)
     return result

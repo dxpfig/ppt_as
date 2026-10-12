@@ -28,7 +28,7 @@ REFERENCE_DIRECTORY = 'template_references'
 SOURCE_PREFIX = 'template-page-'
 DOCUMENT_NAMES = ('doc.pptd', 'document.pptd')
 # Bump when the importer changes in a way that must be re-derived from the upload.
-REFERENCE_FORMAT = 'pptd-importer-2'
+REFERENCE_FORMAT = 'pptd-importer-3'
 
 FONT_FAMILY = re.compile(r'font-family\s*:\s*([^;"]+)')
 FONT_SIZE = re.compile(r'font-size\s*:\s*([0-9.]+)px')
@@ -74,6 +74,20 @@ def build(pptx: Path, root: Path, template_id: str) -> dict:
 
 def _report(destination: Path) -> dict:
     return _stamp(destination).get('report', {})
+
+
+def stale(root: Path | None, template_id: str | None) -> bool:
+    """Whether an existing reference was derived by an older importer.
+
+    A reference is a *measurement* of the upload: when the importer learns to
+    read something it used to drop (theme colours, for one), the old measurement
+    has to be taken again instead of quietly styling new decks with half the
+    template's own design.
+    """
+    if not root or not template_id:
+        return False
+    directory = reference_path(Path(root), str(template_id))
+    return _document_path(directory) is None or _stamp(directory).get('format') != REFERENCE_FORMAT
 
 
 def _stamp(destination: Path) -> dict:

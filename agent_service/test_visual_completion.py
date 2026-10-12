@@ -61,6 +61,41 @@ class CompletionSafety(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_completion(bundle(), plan(), answer, [issue(code='missing-content')])
 
+    def test_a_text_claim_is_only_completed_when_the_page_really_lacks_the_words(self):
+        from agent_service.visual_completion import grounded_missing
+        source = bundle()
+        claim = issue(code='missing-content')
+        # A plan sentence the page does not carry has to be restored.
+        self.assertEqual(grounded_missing(source, plan(), [claim]), [claim])
+        # The plan's own sentence is already on the page: nothing is missing.
+        already = plan()
+        already['pages'][0]['content'] = 'Hello'
+        self.assertEqual(grounded_missing(source, already, [claim]), [])
+        # A deck with no planned wording for the page has nothing to restore.
+        self.assertEqual(grounded_missing(source, {}, [claim]), [])
+        # A missing figure is never decided by the page's text.
+        figure = issue(code='missing-visual-content')
+        self.assertEqual(grounded_missing(source, plan(), [figure]), [figure])
+
+    def test_a_claim_that_contradicts_the_page_text_is_not_a_defect(self):
+        from agent_service.visual_completion import ungrounded_presence_claims
+        source = bundle()
+        text_ids = [element['elementId'] for element in source['pages'][0]['data']['elements']
+                    if element.get('elementType') == 'text']
+        claim = issue(code='missing-content')
+        claim['pagePath'] = 'pages/one.page'
+        claim['elementIds'] = text_ids
+        self.assertEqual(ungrounded_presence_claims(source, [claim]), [claim])
+        # An element the page really leaves empty keeps the claim alive.
+        blank = source['pages'][0]['data']['elements'][0]
+        blank['content']['text'] = ''
+        empty = {**claim, 'elementIds': [blank['elementId']]}
+        self.assertEqual(ungrounded_presence_claims(source, [empty]), [])
+        # A missing figure is a separate question, never settled by text.
+        figure = issue(code='missing-visual-content')
+        figure['pagePath'] = 'pages/one.page'
+        self.assertEqual(ungrounded_presence_claims(source, [figure]), [])
+
     def test_small_schematic_label_is_enlarged_without_rewriting_source_text(self):
         from agent_service.visual_completion import apply_completion
         answer = completion_answer()
