@@ -475,6 +475,9 @@ def expand_repeats(page: dict, count: int) -> dict:
                 clone = _copy.deepcopy(element)
                 bounds = clone['bounds']
                 bounds[axis] = round(bounds[axis] + step * extra, 2)
+                # A copied unit needs its own identity: element ids must stay unique
+                # inside the page or the document is rejected on save.
+                clone['elementId'] = f"{element.get('elementId')}-r{extra}"
                 elements.append(clone)
     elif count < len(units):
         drop = {id(element) for unit in units[count:] for element in unit}

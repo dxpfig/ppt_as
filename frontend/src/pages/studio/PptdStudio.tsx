@@ -82,6 +82,10 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		workflow: project.pptd ? 'edit' : 'new',
 	});
 	const [templateId, setTemplateId] = useState(project.templateId || '');
+	// "apply" keeps the template's pages and rewrites their text; "rebuild"
+	// composes new pages from the template's measured spec (contents rows and
+	// card columns follow the content's own count).
+	const [templateMode, setTemplateMode] = useState<'apply' | 'rebuild'>('apply');
 	const workflowSelectedByUser = useRef(false);
 	const hasDocument = !!project.pptd;
 	useEffect(() => {
@@ -265,7 +269,14 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		event.preventDefault();
 		if (!prompt.trim() || !canGenerate) return;
 		try {
-			const kind = project.pptd && preferences.workflow === 'edit' ? 'revise' : 'outline';
+			// A company template can be applied verbatim or rebuilt from its spec.
+			const rebuild = preferences.designMode === 'template' && templateMode === 'rebuild';
+			const kind =
+				preferences.designMode === 'template' && rebuild
+					? 'builder'
+					: project.pptd && preferences.workflow === 'edit'
+						? 'revise'
+						: 'outline';
 			const started = await studio.start(kind, {
 				...generationOptions(preferences),
 				prompt: prompt.trim(),
@@ -631,6 +642,20 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 													{item.name}
 												</option>
 											))}
+										</select>
+									</label>
+									<label className="pptd-field">
+										<span>模板用法</span>
+										<select
+											aria-label="模板用法"
+											value={templateMode}
+											disabled={busy}
+											onChange={(event) =>
+												setTemplateMode(event.target.value as 'apply' | 'rebuild')
+											}
+										>
+											<option value="apply">套用模板 · 逐字节保真，只替换文字</option>
+											<option value="rebuild">重建 · 沿用模板版式，页数与条目按内容伸缩</option>
 										</select>
 									</label>
 									<button

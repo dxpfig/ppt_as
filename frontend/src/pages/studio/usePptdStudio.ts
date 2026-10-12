@@ -278,11 +278,14 @@ export function usePptdStudio() {
 	) {
 		return runAction(async () => {
 			const current = projectRef.current;
-			// A company template is not converted into a PPTD document: the deck is
-			// produced by keeping the template's own pages and rewriting only their
-			// text, so that route runs as its own job kind and publishes a PPTX.
+			// Two company-template routes share this switch: "apply" keeps the
+			// template's own pages and rewrites only their text (its own job kind and
+			// a published PPTX), while "rebuild" composes new pages from the
+			// template's spec and commits an ordinary PPTD document. The caller
+			// chooses by passing the job kind, so only an explicit 'template' is
+			// redirected here.
 			const templateRoute =
-				kind !== 'render' && options.designMode === 'template' && !!options.templateId;
+				kind === 'template' && options.designMode === 'template' && !!options.templateId;
 			const snapshot: Project = {
 				...current,
 				workflow: 'pptd-v2',

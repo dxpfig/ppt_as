@@ -64,7 +64,7 @@ class Project(BaseModel):
 class JobRequest(BaseModel):
     # "template" is the surgical company-template route: keep the template's own
     # pages and change only their text (see agent_service/template_job.py).
-    kind: Literal["outline", "revise", "render", "template"]
+    kind: Literal["outline", "revise", "render", "template", "builder"]
     project: Project
     prompt: str = Field(default="", max_length=30000)
     pageCount: int | None = Field(default=None, ge=1, le=60)

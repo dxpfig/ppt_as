@@ -18,6 +18,7 @@ from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
 from .job_execution import initial_execution, checkpoint_execution, record_event, terminal_execution, diagnose_error
+from .kimi_rules import KimiRules
 from pptd_engine import workbench
 from .rendering import MAX_UPLOAD, create_deck, render_pdf, renderer_available, template_info, validate_package, audit_rendered_pdf
 
@@ -717,6 +718,81 @@ def clean_error(exc):
     return message[:1500]
 
 
+async def run_builder_job(identifier, request):
+    """Rebuild route: plan against the template's spec, then compose new pages.
+
+    Unlike the surgical route this one is free to grow the template's repeating
+    units (four contents rows become six, five cards become three) while keeping
+    its background, chrome, components, type styles and palette. The result is an
+    ordinary PPTD document, so preview, export and visual review reuse the
+    existing pipeline.
+    """
+    project_id = request.project.id
+    template_id = request.templateId or request.project.templateId
+    try:
+        return await _run_builder_job(identifier, request, project_id, template_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        message, diagnostic, context = diagnose_error(exc, 'template')
+        if isinstance(exc, template_job.TemplateIncomplete) and exc.issues:
+            diagnostic['issues'] = exc.issues[:20]
+        message = message.removesuffix('。已保留检查点，可继续恢复；无需重新生成已完成页面。')
+        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic,
+                   recoverable=False,
+                   execution=terminal_execution(read(job_path(identifier)).get('execution'), 'failed', message, context))
+        project = read(project_path(project_id))
+        project.update(phase='outline', activeJobId=None)
+        save(project_path(project_id), project)
+        return identifier
+
+
+async def _run_builder_job(identifier, request, project_id, template_id):
+    if not template_id:
+        raise ValueError('重建路线需要选择一个公司模板。')
+    source = ROOT / 'templates' / key(str(template_id)) / 'template.pptx'
+    if not source.is_file():
+        raise ValueError('未找到公司模板文件，请重新上传。')
+    store = document_store()
+    revision = store.read(project_id)['revision'] if store.exists(project_id) else 0
+
+    def progress(stage, message):
+        assert_current_job(identifier, project_id)
+        update_job(identifier, status='running', stage=min(90, 20 + stage * 15), message=message)
+
+    def event(payload):
+        payload = dict(payload or {})
+        update_job(identifier, execution=record_event(
+            read(job_path(identifier)).get('execution'),
+            {'phase': payload.get('phase') or 'plan',
+             'status': payload.get('status', 'started'),
+             'message': str(payload.get('message', ''))[:200]}))
+
+    model = agents.make_model()
+    try:
+        result = await asyncio.wait_for(
+            template_job.build_deck(request, progress, root=ROOT, template_id=str(template_id),
+                                    model=model, rules=KimiRules(), on_event=event),
+            timeout=agents.timeout_setting('PPT_TEMPLATE_TIMEOUT_SECONDS', 2400))
+    finally:
+        await model.client.close()
+    assert_current_job(identifier, project_id)
+    update_job(identifier, stage=95, message='正在保存按模板组装的新文档。')
+    assets = {item['path']: Path(item['sourcePath']) for item in result.get('assets', [])}
+    state = store.commit(project_id, result['document'], result['pages'], 'AI 重建（模板规范）', revision,
+                         assets=assets)
+    project = read(project_path(project_id))
+    project.update(workflow='pptd-v2', artifact=None, phase='outline', activeJobId=None,
+                   title=state['document'].get('title', project['title']),
+                   templateRebuild={'pageTypes': [page['pageType'] for page in result['plan']['pages']],
+                                    'pages': result['plan']['pages']})
+    save(project_path(project_id), project)
+    update_job(identifier, status='succeeded', stage=100,
+               message=f"已按模板规范重建 {len(result['pages'])} 页，可在预览中查看并导出。",
+               result={'revision': state['revision'], 'pageCount': len(result['pages'])})
+    return identifier
+
+
 async def run_template_job(identifier, request):
     """Company-template route: keep the deck, change only its words.
 
@@ -827,6 +903,8 @@ async def _run_template_job(identifier, request, project_id, template_id):
 
 
 async def run_job(identifier, request):
+    if request.kind == 'builder':
+        return await run_builder_job(identifier, request)
     if request.kind == 'template':
         return await run_template_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
