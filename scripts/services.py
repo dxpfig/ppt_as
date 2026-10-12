@@ -16,6 +16,8 @@ import sys
 import time
 import urllib.request
 
+import monitor
+
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / 'runtime' / 'services'
 STATE = RUN / 'processes.json'
@@ -144,6 +146,16 @@ def start_services() -> None:
             return
         raise RuntimeError('已有部分服务在运行：' + ', '.join(running) + '。请使用 ./start.sh --restart。')
     node = preflight()
+    # Trace export targets AgentScope Studio. Bring it up before the agent so the
+    # very first spans have somewhere to go instead of failing into agent.log.
+    try:
+        monitored = monitor.start()
+    except Exception as error:  # noqa: BLE001 - monitoring must never block startup
+        print(f'监控：检查失败（{error}）')
+    else:
+        print(monitor.summary(monitored))
+        if monitored['configured'] and not monitored['running']:
+            print('提示：监控后台未运行，追踪会上报失败；手动启动：npx -y @agentscope/studio')
     environment = dict(os.environ)
     # Never implicitly inherit credentials/settings from Codex, Claude or other tools.
     for name in list(environment):
@@ -211,6 +223,7 @@ def main() -> int:
         if args.action in ('stop', 'restart'):
             data = records()
             stop_services(data)
+            monitor.stop()  # only the Studio this script started
             if not data:
                 print('没有由脚本管理的运行进程。')
         if args.action in ('start', 'restart'):
@@ -224,6 +237,7 @@ def main() -> int:
             state = health('http://127.0.0.1:5174/api/studio/health')
             if state:
                 print('模型配置：' + str(state.get('model', '未配置')))
+            print(monitor.summary(monitor.status()))
             return 0 if all(name in data and alive(data[name]) for name in PORTS) else 1
     return 0
 
