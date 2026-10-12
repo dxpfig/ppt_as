@@ -34,7 +34,7 @@ export type ProjectSummary = {
 };
 export type StudioJob = {
 	id: string;
-	kind?: 'outline' | 'revise' | 'render';
+	kind?: 'outline' | 'revise' | 'render' | 'template';
 	status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 	stage: number;
 	message: string;
@@ -143,7 +143,7 @@ export type Scenario =
 	| 'education-training'
 	| 'brand-creative';
 export type JobRequest = {
-	kind: 'outline' | 'revise' | 'render';
+	kind: 'outline' | 'revise' | 'render' | 'template';
 	project: Project;
 	prompt?: string;
 	pageCount?: number | null;

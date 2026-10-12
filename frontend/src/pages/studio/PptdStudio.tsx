@@ -27,6 +27,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 
 import type { DesignMode, Scenario, Workflow } from './api';
+import { ArtifactPreview } from './ArtifactPreview';
 import { PptdJobStatus } from './PptdJobStatus';
 import {
 	defaultPreferences,
@@ -1090,6 +1091,8 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 								</div>
 							</footer>
 						</>
+					) : project.artifact?.previewUrls?.length ? (
+						<ArtifactPreview artifact={project.artifact} title={project.title} />
 					) : legacy ? (
 						<div className="pptd-legacy">
 							<span className="pptd-eyebrow">旧版工作记录</span>

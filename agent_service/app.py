@@ -714,6 +714,23 @@ async def run_template_job(identifier, request):
     """
     project_id = request.project.id
     template_id = request.templateId or request.project.templateId
+    try:
+        return await _run_template_job(identifier, request, project_id, template_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # Never leave a template job 'running' forever: report the real reason.
+        message, diagnostic, context = diagnose_error(exc, 'template')
+        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic,
+                   recoverable=False,
+                   execution=terminal_execution(read(job_path(identifier)).get('execution'), 'failed', message, context))
+        project = read(project_path(project_id))
+        project.update(phase='outline', activeJobId=None)
+        save(project_path(project_id), project)
+        return identifier
+
+
+async def _run_template_job(identifier, request, project_id, template_id):
 
     def progress(stage, message):
         assert_current_job(identifier, project_id)
@@ -731,12 +748,20 @@ async def run_template_job(identifier, request):
     staging.mkdir(parents=True, exist_ok=True)
     update_job(identifier, status='running', stage=10, message='正在读取模板页面与段落地址。')
     model = agents.make_model()
+
+    def event(payload):
+        """Stream generator events into the durable execution record."""
+        payload = dict(payload or {})
+        update_job(identifier, execution=record_event(
+            read(job_path(identifier)).get('execution'),
+            {'phase': payload.get('phase') or 'pages',
+             'status': payload.get('status', 'started'),
+             'message': str(payload.get('message', ''))[:200]}))
+
     try:
         result = await asyncio.wait_for(
             template_job.generate(request, progress, template_path=source, model=model, folder=staging,
-                                  on_event=lambda event: update_job(identifier, execution=checkpoint_execution(
-                                      read(job_path(identifier)).get('execution'), event.get('status', 'started'),
-                                      str(event.get('message', ''))[:200]))),
+                                  on_event=event),
             timeout=agents.timeout_setting('PPT_TEMPLATE_TIMEOUT_SECONDS', 2400))
     finally:
         await model.client.close()
@@ -745,7 +770,7 @@ async def run_template_job(identifier, request):
     deck = staging / 'presentation.pptx'
     if not deck.is_file():
         raise ValueError('模板套用没有产出 PPTX。')
-    await rendering.render_pdf(deck)
+    await render_pdf(deck)
     if not (staging / 'presentation.pdf').is_file():
         raise ValueError('渲染器没有生成 PDF，无法发布。')
     previews = []

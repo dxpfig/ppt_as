@@ -505,6 +505,19 @@
 	height: 100%;
 	min-height: 0;
 }
+/* Company-template route: the artifact is a rendered page, not an editable iframe. */
+.pptd-frame-wrap .pptd-artifact-page {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+.pptd-artifact-note {
+	display: block;
+	margin-top: 2px;
+	font-size: 12px;
+	color: var(--ui-muted, #6b7280);
+}
 .pptd-frame-busy {
 	position: absolute;
 	inset: 0;

@@ -175,6 +175,9 @@ title, paragraphs:[{id, text}]}]}.
   first, the closing page last. The deck's page count comes from that choice.
 - Address paragraphs by the supplied ids only. Never invent an id, never address
   one paragraph twice, and never name a page the inventory does not contain.
+- `number` is the TEMPLATE page number from the inventory, not the new deck's
+  position, and every id in that page's `paragraphs` must start with `s<number>#`.
+  Mixing pages (`s14#p0` inside `number: 5`) is rejected as an addressing error.
 - Company chrome - footer company name, copyright line, logo text, page numbers -
   is fixed furniture: leave it out of `paragraphs`.
 - Replace the template's content words with this presentation's content, each

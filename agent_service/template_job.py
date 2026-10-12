@@ -64,7 +64,8 @@ def inventory(pptx: Path) -> dict:
         paragraphs = [{"id": item["id"], "shape": item["shape"], "text": item["text"], "lines": item["lines"]}
                       for item in page["paragraphs"] if item["text"].strip()]
         if paragraphs:
-            pages.append({"number": page["number"], "paragraphs": paragraphs[:MAX_PARAGRAPHS_PER_PAGE]})
+            pages.append({"number": page["number"], "idPrefix": f"s{page['number']}#",
+                          "paragraphs": paragraphs[:MAX_PARAGRAPHS_PER_PAGE]})
     return {"census": info["census"], "addins": info["addins"], "pageCount": len(info["slides"]), "pages": pages}
 
 
@@ -92,6 +93,11 @@ def validate_deck(deck: Any, pages: dict) -> list[dict]:
                  f"模板没有第 {number} 页；可选：{sorted(known)[:8]}…")
             continue
         identities = [item.get("id") for item in page.get("paragraphs") or [] if isinstance(item, dict)]
+        wrong_page = [identity for identity in identities
+                      if isinstance(identity, str) and not identity.startswith(f"s{number}#")]
+        if wrong_page:
+            fail("AddressPageMismatch", f"pages[{index}].paragraphs",
+                 f"id 必须属于第 {number} 页（前缀 s{number}#），这些是别的页：{wrong_page[:5]}")
         unknown = [identity for identity in identities if identity not in known[number]]
         if unknown:
             fail("UnknownParagraph", f"pages[{index}].paragraphs", f"这些地址不属于模板第 {number} 页：{unknown[:5]}")
@@ -135,6 +141,8 @@ def prompt_context(request, pages: dict, scenario: str, issues: list[dict] | Non
         "references": request.references or "",
         "template": pages,
         "instructions": {
+            "address": ("number 是**模板页号**（清单里的 number），不是新 deck 的页序；"
+                        "该页 paragraphs 的每个 id 必须以 s<number># 开头，跨页复用会直接判错。"),
             "cover": "第一页使用模板封面（第 1 页），只改标题、副标题、日期、汇报人。",
             "closing": "最后一页使用模板结束页，只改它的文字。",
             "chrome": "页脚公司名、版权行、Logo 文字、页码属于公司固定元素，原样保留，不要列进 paragraphs。",
@@ -175,7 +183,7 @@ class TemplateIncomplete(ValueError):
 
 
 async def generate(request, progress, *, template_path: Path, model, rules: KimiRules | None = None,
-                   folder: Path, on_event=None, attempts: int = 2):
+                   folder: Path, on_event=None, attempts: int = 3):
     """Inventory -> model deck -> surgical apply -> verify. No PPTD in the middle."""
     from .kimi_rules import SCENARIOS
     rules = rules or KimiRules()
@@ -196,10 +204,15 @@ async def generate(request, progress, *, template_path: Path, model, rules: Kimi
                                   session_id=getattr(getattr(request, "project", None), "id", None), on_event=on_event)
         except asyncio.CancelledError:
             raise
-        except (ValueError, TimeoutError, OSError) as error:
+        except Exception as error:
             # A slow or unavailable provider must fail this job with a readable
-            # reason instead of retrying silently for tens of minutes.
-            issues = [{"code": "InvalidResponse", "location": "deck", "message": str(error)}]
+            # reason instead of retrying silently for tens of minutes. Provider
+            # SDK errors (APITimeoutError, APIConnectionError, ...) are not
+            # OSError subclasses, so this deliberately catches broadly and the
+            # caller still reports the failure rather than hanging.
+            detail = str(error) or type(error).__name__
+            issues = [{"code": "ModelUnavailable", "location": "deck",
+                       "message": f"{type(error).__name__}: {detail}"[:300]}]
         else:
             issues = validate_deck(deck, pages)
             if not issues:

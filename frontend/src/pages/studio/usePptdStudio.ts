@@ -273,34 +273,26 @@ export function usePptdStudio() {
 		options: Omit<JobRequest, 'kind' | 'project'> = {},
 	) {
 		return runAction(async () => {
-			let current = projectRef.current;
-			const importTemplate =
-				kind !== 'render' &&
-				options.designMode === 'template' &&
-				options.templateId &&
-				(!current.pptd || current.templateId !== options.templateId);
-			if (importTemplate && options.templateId) {
-				await studioApi.save({ ...current, workflow: 'pptd-v2' });
-				await studioApi.importTemplate(
-					current.id,
-					options.templateId,
-					current.pptd?.revision,
-				);
-				current = adopt(await studioApi.project(current.id));
-			}
+			const current = projectRef.current;
+			// A company template is not converted into a PPTD document: the deck is
+			// produced by keeping the template's own pages and rewriting only their
+			// text, so that route runs as its own job kind and publishes a PPTX.
+			const templateRoute =
+				kind !== 'render' && options.designMode === 'template' && !!options.templateId;
 			const snapshot: Project = {
 				...current,
 				workflow: 'pptd-v2',
+				...(templateRoute ? { templateId: options.templateId } : {}),
 				messages: options.prompt
 					? [...current.messages, { id: uid(), role: 'user', text: options.prompt }]
 					: current.messages,
 			};
 			const nextJob = await studioApi.start({
-				kind: importTemplate ? 'outline' : kind,
+				kind: templateRoute ? 'template' : kind,
 				project: snapshot,
 				expectedRevision: snapshot.pptd?.revision,
 				...options,
-				selectedSlideId: importTemplate ? undefined : options.selectedSlideId,
+				selectedSlideId: templateRoute ? undefined : options.selectedSlideId,
 			});
 			const active = adopt({ ...snapshot, activeJobId: nextJob.id, phase: 'generating' });
 			cacheJob(nextJob, active);
