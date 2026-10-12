@@ -209,20 +209,39 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
     repeating units). The model only chooses pages and writes text inside those
     limits, and the composer grows repeating slots to the content's own count.
     """
+    from .kimi_rules import SCENARIOS
+    rules = rules or KimiRules()
+    scenario = getattr(request, 'scenario', 'auto')
+    if scenario not in SCENARIOS:
+        scenario = 'management-report'
     reference = template_reference.load(root, template_id)
+    template_pptx = Path(root) / 'templates' / str(template_id) / 'template.pptx'
+    if not template_pptx.is_file():
+        raise TemplateIncomplete('未找到公司模板文件，请重新上传。')
     if not reference:
-        raise TemplateIncomplete('模板参考不存在，请先导入模板。')
+        # A project may jump straight to "rebuild" without importing the template
+        # first: importing is bookkeeping this route can do for itself.
+        progress(0, '正在解析公司模板（首次使用需要一次结构分析）')
+        await asyncio.to_thread(template_reference.build, template_pptx, Path(root), str(template_id))
+        reference = template_reference.load(root, template_id)
+        if not reference:
+            raise TemplateIncomplete('模板解析失败，请检查模板文件后重试。')
     folder = template_reference.reference_path(root, template_id) / 'overview'
     spec = template_spec.load_spec(folder)
     if not spec:
-        raise TemplateIncomplete('这份模板还没有归纳出规范（spec.json），请先完成模板分析。')
+        # Induction reads the rendered overview and the measured tokens; both are
+        # produced here the first time this template is rebuilt.
+        progress(0, '首次重建：正在渲染模板总览并归纳版面规范')
+        await template_spec.ensure(folder, template_pptx)
+        spec = await template_spec.induce(model, rules, folder=folder, summary=reference['summary'],
+                                          tokens=reference['summary'].get('design') or {},
+                                          components_found=reference['summary'].get('components') or [],
+                                          session_id=getattr(getattr(request, 'project', None), 'id', None),
+                                          scenario=scenario)
+        if not spec:
+            raise TemplateIncomplete('未能归纳模板规范，请重试。')
     sources = reference['sources']
     pages = [json.loads(sources[key]) for key in sorted(sources)]
-    rules = rules or KimiRules()
-    scenario = getattr(request, 'scenario', 'auto')
-    from .kimi_rules import SCENARIOS
-    if scenario not in SCENARIOS:
-        scenario = 'management-report'
     progress(0, f"已读取模板规范（{len(spec['pageTypes'])} 个页型），正在规划本次页面与内容")
     issues: list[dict] = []
     plan = None

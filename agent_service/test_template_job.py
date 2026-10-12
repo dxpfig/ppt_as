@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -10,6 +11,7 @@ from pptx import Presentation
 from pptx.util import Pt
 
 from agent_service import template_job as jobs
+from agent_service.kimi_rules import KimiRules
 
 
 def sample(path: Path) -> Path:
@@ -106,6 +108,43 @@ class TemplateJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_failure_is_reported_not_faked(self):
         with self.assertRaises(jobs.TemplateIncomplete):
             await self.run_generate(ValueError('模型返回内容未通过 JSON 检查'))
+
+    async def test_rebuild_prepares_the_template_reference_itself(self):
+        """A fresh project may jump straight to rebuild: no prior import needed."""
+        from agent_service import template_reference, template_spec
+        root = self.root / 'root'
+        (root / 'templates' / 'corp').mkdir(parents=True)
+        (root / 'templates' / 'corp' / 'template.pptx').write_bytes(
+            (self.root / 'template.pptx').read_bytes())
+        spec = {'summary': 'x', 'pageTypes': [
+            {'id': 'cover', 'purpose': '开场', 'templatePages': [1], 'skeleton': '标题',
+             'slots': [{'name': 'title', 'purpose': '标题', 'characters': 40, 'repeatable': False}]}],
+            'components': [], 'rules': [], 'prohibitions': []}
+        plan = {'title': '重建的演示', 'pages': [
+            {'pageType': 'cover', 'templatePage': 1, 'entries': [], 'fills': {'title': '全新标题'}}]}
+
+        async def fake_plan(*args, **kwargs):
+            return plan
+
+        async def fake_induce(*args, **kwargs):
+            template_spec.load_spec  # keep the import used
+            (template_reference.reference_path(root, 'corp') / 'overview').mkdir(parents=True, exist_ok=True)
+            (template_reference.reference_path(root, 'corp') / 'overview' / 'spec.json').write_text(
+                json.dumps(spec, ensure_ascii=False), encoding='utf-8')
+            return spec
+
+        with patch.object(jobs, 'ask_plan', side_effect=fake_plan), \
+             patch.object(template_spec, 'induce', side_effect=fake_induce), \
+             patch.object(template_spec, 'ensure', return_value=None):
+            result = await jobs.build_deck(request(), lambda *a: None, root=root, template_id='corp',
+                                           model=object(), rules=KimiRules())
+        self.assertEqual(result['document']['title'], '重建的演示')
+        self.assertEqual(len(result['pages']), 1)
+        texts = [element['content']['text'] for element in result['pages'][0]['data']['elements']
+                 if element.get('elementType') == 'text']
+        self.assertTrue(any('全新标题' in text for text in texts))
+        # The reference the route prepared is now reusable by later runs.
+        self.assertIsNotNone(template_reference.load(root, 'corp'))
 
 
 if __name__ == '__main__':

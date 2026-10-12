@@ -270,10 +270,14 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		if (!prompt.trim() || !canGenerate) return;
 		try {
 			// A company template can be applied verbatim or rebuilt from its spec.
-			const rebuild = preferences.designMode === 'template' && templateMode === 'rebuild';
+			// Template mode never falls through to the PPTD routes: those expect an
+			// imported template reference and would refuse the request, so a company
+			// template always means either "apply" or "rebuild".
 			const kind =
-				preferences.designMode === 'template' && rebuild
-					? 'builder'
+				preferences.designMode === 'template'
+					? templateMode === 'rebuild'
+						? 'builder'
+						: 'template'
 					: project.pptd && preferences.workflow === 'edit'
 						? 'revise'
 						: 'outline';

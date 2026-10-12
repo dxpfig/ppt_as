@@ -813,7 +813,10 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         return finish(copy.deepcopy(existing),"PPTD 文档已就绪，正在执行渲染与导出校验。")
     if request.kind=="revise" and not existing: raise ValueError("Editing requires an existing authoritative PPTD document")
     if context["designMode"]=="design-system" and not context["designSystem"]: raise ValueError("选择设计系统后，需要提供完整设计规范")
-    if context["designMode"]=="template" and not reference: raise ValueError("模板模式需要先导入并检查真实模板文档")
+    # Only a new deck needs the template reference. Editing an existing document is
+    # about that document's own content, so template bookkeeping must not block it.
+    if context["designMode"]=="template" and request.kind=="outline" and not reference:
+        raise ValueError("模板模式需要先导入并检查真实模板文档")
     if context["workflow"]=="recreate" or context["designMode"]=="style-reference":
         attachments=context["attachments"]
         if not existing and not any(isinstance(a,dict) and (a.get("visualAnalysis") or a.get("imageData")) for a in attachments):
