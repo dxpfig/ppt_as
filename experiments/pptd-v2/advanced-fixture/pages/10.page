@@ -1,0 +1,53 @@
+pageType: content
+background:
+  type: solid
+  color: '#F6F5EF'
+notes: Native chart when equivalent; otherwise editable vector with retained original
+  tabular data.
+elements:
+- elementId: title
+  elementType: text
+  bounds:
+  - 44
+  - 24
+  - 860
+  - 50
+  content:
+    text: waterfall · 数据与对象可编辑
+    fontFamily: Noto Sans CJK SC
+    fontSize: 30
+    color: '#19382E'
+- elementId: chart-waterfall
+  elementType: chart
+  bounds:
+  - 44
+  - 94
+  - 860
+  - 400
+  fontFamily: Noto Sans CJK SC
+  data:
+    cols:
+    - x
+    - a
+    - total
+    rows:
+    - - Start
+      - 10
+      - true
+    - - Gain
+      - 6
+      - false
+    - - Loss
+      - -3
+      - false
+    - - End
+      - 13
+      - true
+  series:
+  - type: waterfall
+    encode:
+      x: x
+      y: a
+      isTotal: total
+  legend:
+    position: bottom

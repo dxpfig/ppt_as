@@ -1,0 +1,45 @@
+version: v2
+title: PPTD v2 联合选型验证
+size: [960, 540]
+customFonts:
+  - family: JetBrains Mono
+    src: https://fonts.googleapis.com/css2?family=JetBrains+Mono
+theme:
+  colors:
+    primary: '#166854'
+    accent: '#D79032'
+    ink: '#17342D'
+    muted: '#61716B'
+    paper: '#F6F5EF'
+  textStyles:
+    title:
+      fontFamily: 思源黑体
+      fontSize: 32
+      color: $ink
+      bold: true
+    body:
+      fontFamily: 思源黑体
+      fontSize: 20
+      color: $ink
+      lineHeight: 1.35
+    caption:
+      fontFamily: 思源黑体
+      fontSize: 16
+      color: $muted
+  tableStyles:
+    probe:
+      cellStyle:
+        fontFamily: 思源黑体
+        fontSize: 18
+        color: $ink
+        border: {style: solid, width: 1, color: '#D8DFD9'}
+        align: [left, middle]
+      firstRowStyle:
+        fill: {type: solid, color: $primary}
+        color: '#FFFFFF'
+        bold: true
+      bodyStyles:
+        - fill: {type: solid, color: '#E9EEE7'}
+pages:
+  - pages/01-edit.page
+  - pages/02-data.page

@@ -1,0 +1,130 @@
+pageType: content
+background:
+  type: solid
+  color: '#F6F5EF'
+notes: Editable OMML, FA7 geometry and actual EOT embedded font resources.
+elements:
+- elementId: title
+  elementType: text
+  bounds:
+  - 44
+  - 24
+  - 860
+  - 54
+  content:
+    text: 公式 · 图标 · 字体嵌入
+    fontFamily: Noto Sans CJK SC
+    fontSize: 32
+    color: '#19382E'
+- elementId: formula-0
+  elementType: text
+  bounds:
+  - 44
+  - 92
+  - 710
+  - 60
+  content:
+    text: 分式 \(\frac{a+b}{c}\) 与根式 \(\sqrt{x^2+y^2}\)
+    fontFamily: Noto Sans CJK SC
+    fontSize: 24
+    color: '#19382E'
+- elementId: formula-1
+  elementType: text
+  bounds:
+  - 44
+  - 160
+  - 710
+  - 60
+  content:
+    text: 积分 \(\int_0^1 x^2\,dx=\frac{1}{3}\)
+    fontFamily: Noto Sans CJK SC
+    fontSize: 24
+    color: '#19382E'
+- elementId: formula-2
+  elementType: text
+  bounds:
+  - 44
+  - 228
+  - 710
+  - 60
+  content:
+    text: 矩阵 \(\begin{pmatrix}1&2\\3&4\end{pmatrix}\)
+    fontFamily: Noto Sans CJK SC
+    fontSize: 24
+    color: '#19382E'
+- elementId: formula-3
+  elementType: text
+  bounds:
+  - 44
+  - 296
+  - 710
+  - 60
+  content:
+    text: 求和 \(\sum_{k=1}^{n}k=\frac{n(n+1)}{2}\)
+    fontFamily: Noto Sans CJK SC
+    fontSize: 24
+    color: '#19382E'
+- elementId: icon-0
+  elementType: icon
+  iconName: fas:lightbulb
+  bounds:
+  - 820
+  - 95
+  - 62
+  - 62
+  fill:
+    type: solid
+    color: $primary
+- elementId: icon-1
+  elementType: icon
+  iconName: far:heart
+  bounds:
+  - 820
+  - 189
+  - 62
+  - 62
+  fill:
+    type: solid
+    color: $primary
+- elementId: icon-2
+  elementType: icon
+  iconName: fab:github
+  bounds:
+  - 820
+  - 283
+  - 62
+  - 62
+  fill:
+    type: solid
+    color: $primary
+- elementId: embedded-font
+  elementType: text
+  bounds:
+  - 44
+  - 390
+  - 720
+  - 45
+  content:
+    text: JetBrains Mono 0123456789
+    fontFamily: JetBrains Mono
+    fontSize: 24
+    color: '#19382E'
+- elementId: math-table
+  elementType: table
+  bounds:
+  - 44
+  - 452
+  - 860
+  - 60
+  columnWidths:
+  - 0.3
+  - 0.7
+  rowHeights:
+  - 1
+  style:
+    cellStyle:
+      fontFamily: Noto Sans CJK SC
+      fontSize: 20
+  rows:
+  - - text: 单元格公式
+    - text: \(E=mc^2\)

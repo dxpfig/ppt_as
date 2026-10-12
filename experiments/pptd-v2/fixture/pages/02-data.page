@@ -1,0 +1,53 @@
+pageType: capability_probe
+background: {type: solid, color: $paper}
+elements:
+  - elementId: title
+    elementType: text
+    bounds: [64, 44, 740, 54]
+    content:
+      style: $title
+      text: 数据、公式与动画的能力边界
+  - elementId: caption
+    elementType: text
+    bounds: [64, 112, 830, 32]
+    content:
+      style: $caption
+      text: 图表数据为合成测试数据。未支持的元素须明确报告。
+  - elementId: chart-revenue
+    elementType: chart
+    bounds: [64, 180, 510, 286]
+    fontFamily: 思源黑体
+    data:
+      cols: [quarter, revenue]
+      rows: [[Q1, 12], [Q2, 18], [Q3, 15]]
+    series:
+      - type: bar
+        name: 示例数值
+        encode: {x: quarter, y: revenue}
+        fill: $primary
+    legend: false
+  - elementId: sample-icon
+    elementType: icon
+    bounds: [638, 184, 54, 54]
+    iconName: fas:lightbulb
+    fill: {type: solid, color: $accent}
+  - elementId: formula
+    elementType: text
+    bounds: [638, 270, 280, 74]
+    content:
+      style: $body
+      text: |-
+        <p>公式：\(a^2+b^2=c^2\)</p>
+  - elementId: animation-caption
+    elementType: text
+    bounds: [638, 382, 270, 72]
+    content:
+      style: $caption
+      text: |-
+        本页标题声明 fade-in。
+        保存字段与播放效果分别验证。
+animations:
+  - elementId: title
+    effect: fade-in
+    trigger: onClick
+    durationMs: 500

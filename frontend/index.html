@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="UTF-8" />
+		<link rel="icon" type="image/svg+xml" href="/studio.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>叙页 Studio · AI 演示创作</title>
+		<script>
+			// Applied before the first paint, so the theme never flashes.
+			(() => {
+				let preference = 'system';
+				try {
+					preference = localStorage.getItem('ppt-as-ui-theme') || 'system';
+				} catch {
+					/* Storage may be blocked. */
+				}
+				const dark =
+					preference === 'dark' ||
+					(preference !== 'light' &&
+						window.matchMedia('(prefers-color-scheme: dark)').matches);
+				document.documentElement.classList.toggle('dark', dark);
+				document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+			})();
+		</script>
+		<script>
+			// crypto.randomUUID only exists in a Secure Context (HTTPS or
+			// localhost). The web_ui is also served on a plain-HTTP LAN
+			// address for team use, where browsers gate the API as
+			// undefined. Polyfill before main.tsx loads so every call site
+			// (TextInput, ChatContent, useMessages, ChatViewport, ...) sees
+			// the same function instead of `crypto.randomUUID is not a
+			// function` at click time.
+			(function () {
+				if (typeof crypto === 'undefined') return;
+				if (typeof crypto.randomUUID === 'function') return;
+				crypto.randomUUID = function randomUUID() {
+					// RFC 4122 v4 — sufficient for client-side message ids.
+					if (typeof crypto.getRandomValues === 'function') {
+						const b = new Uint8Array(16);
+						crypto.getRandomValues(b);
+						b[6] = (b[6] & 0x0f) | 0x40;
+						b[8] = (b[8] & 0x3f) | 0x80;
+						const h = Array.from(b, (x) => x.toString(16).padStart(2, '0'));
+						return (
+							h.slice(0, 4).join('') +
+							'-' +
+							h.slice(4, 6).join('') +
+							'-' +
+							h.slice(6, 8).join('') +
+							'-' +
+							h.slice(8, 10).join('') +
+							'-' +
+							h.slice(10, 16).join('')
+						);
+					}
+					// Last-resort fallback (Math.random is fine for non-crypto ids).
+					return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+						const r = (Math.random() * 16) | 0;
+						const v = c === 'x' ? r : (r & 0x3) | 0x8;
+						return v.toString(16);
+					});
+				};
+			})();
+		</script>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/src/main.tsx"></script>
+	</body>
+</html>

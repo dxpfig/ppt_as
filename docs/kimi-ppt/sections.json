@@ -1,0 +1,1122 @@
+[
+  {
+    "file": "SKILL.md",
+    "line": 6,
+    "heading": "# Definition"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 9,
+    "heading": "## The pptd format"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 12,
+    "heading": "## Companion CLI"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 16,
+    "heading": "## PPT production workflow"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 18,
+    "heading": "### step1. Read the context thoroughly"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 21,
+    "heading": "### step2. Understand the user's requirements"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 45,
+    "heading": "### step3. Generate the presentation based on the user's requirements"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 49,
+    "heading": "#### Replicating a PPT"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 54,
+    "heading": "#### Editing a PPT"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 60,
+    "heading": "#### Generating a PPT"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 63,
+    "heading": "##### Self-directed design"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 67,
+    "heading": "##### Design system"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 72,
+    "heading": "##### Using a template"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 78,
+    "heading": "##### Style transfer"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 83,
+    "heading": "##### Images and Visual Materials"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 92,
+    "heading": "##### Content Guidelines"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 98,
+    "heading": "### step4. PPT validation"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 106,
+    "heading": "### step5. PPT delivery"
+  },
+  {
+    "file": "SKILL.md",
+    "line": 114,
+    "heading": "## Important notes"
+  },
+  {
+    "file": "reference/cli.md",
+    "line": 1,
+    "heading": "# kimi-slides cli"
+  },
+  {
+    "file": "reference/cli.md",
+    "line": 3,
+    "heading": "## convert"
+  },
+  {
+    "file": "reference/cli.md",
+    "line": 33,
+    "heading": "## check"
+  },
+  {
+    "file": "reference/cli.md",
+    "line": 83,
+    "heading": "## screenshot"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 1,
+    "heading": "# Font system"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 3,
+    "heading": "## Selection principles"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 10,
+    "heading": "## Supported font types"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 14,
+    "heading": "### 1. System fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 39,
+    "heading": "### 2. Preset CDN fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 45,
+    "heading": "### 3. Google Fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 51,
+    "heading": "## CDN fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 55,
+    "heading": "### English fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 69,
+    "heading": "### Chinese fonts"
+  },
+  {
+    "file": "reference/fonts.md",
+    "line": 80,
+    "heading": "### Mixed CJK–Latin fonts"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1,
+    "heading": "# PPTD Format Specification"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 7,
+    "heading": "## 1. Global Conventions"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 9,
+    "heading": "### Syntax"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 14,
+    "heading": "### Coordinate System and Units"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 18,
+    "heading": "### Style Priority and Default Values"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 22,
+    "heading": "#### 1. Text Styles Inside a Text Box"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 44,
+    "heading": "#### 2. Table Cell Styles"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 75,
+    "heading": "#### 3. Chart Styles"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 127,
+    "heading": "### Multi-File Structure"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 152,
+    "heading": "## 2. Shared Types"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 155,
+    "heading": "### Color"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 161,
+    "heading": "### FontFamily"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 172,
+    "heading": "### Alignment"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 185,
+    "heading": "### LineStyle"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 190,
+    "heading": "### Border"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 199,
+    "heading": "#### BorderSpec"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 218,
+    "heading": "### Shadow"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 228,
+    "heading": "### ColorStop"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 237,
+    "heading": "### ImageFit / ImageCrop"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 260,
+    "heading": "### Fill"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 317,
+    "heading": "## 3. Main Entry File (.pptd)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 319,
+    "heading": "### Presentation"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 370,
+    "heading": "### Theme"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 388,
+    "heading": "#### TextStyleConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 407,
+    "heading": "#### CellStyle"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 423,
+    "heading": "#### TableStyleConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 452,
+    "heading": "### CustomFont"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 463,
+    "heading": "## 4. Page Files (.page)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 465,
+    "heading": "### Page"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 497,
+    "heading": "## 5. Elements"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 499,
+    "heading": "### ElementBase"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 515,
+    "heading": "### Text (text box)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 526,
+    "heading": "#### TextContent"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 573,
+    "heading": "#### Rich Text Rules"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 674,
+    "heading": "### Shape (shape)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 747,
+    "heading": "### Line (line)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 784,
+    "heading": "### Image (image)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 845,
+    "heading": "### Icon (icon)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 882,
+    "heading": "### Table (table)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 900,
+    "heading": "#### Cell"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 956,
+    "heading": "### Chart (charts)"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 964,
+    "heading": "#### Chart"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1006,
+    "heading": "#### ChartData"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1025,
+    "heading": "#### General Rules"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1039,
+    "heading": "#### TextStyle"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1051,
+    "heading": "#### LineStyleConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1063,
+    "heading": "#### TitleConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1072,
+    "heading": "#### LegendConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1092,
+    "heading": "#### DataLabelConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1106,
+    "heading": "#### MarkerConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1119,
+    "heading": "#### AxisConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1139,
+    "heading": "#### SeriesDefaults"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1155,
+    "heading": "#### SpokeAxisConfig"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1172,
+    "heading": "#### LinearSeriesBase"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1191,
+    "heading": "#### bar"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1210,
+    "heading": "#### line"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1227,
+    "heading": "#### area"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1248,
+    "heading": "#### scatter"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1267,
+    "heading": "#### bubble"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1288,
+    "heading": "#### candlestick"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1311,
+    "heading": "#### pie"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1329,
+    "heading": "#### radar"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1347,
+    "heading": "#### waterfall"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1370,
+    "heading": "#### heatmap"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1396,
+    "heading": "#### treemap"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1422,
+    "heading": "#### sunburst"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1437,
+    "heading": "#### sankey"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1464,
+    "heading": "#### Cross-Type Quick Reference"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1466,
+    "heading": "##### Applicability of Chart Top-Level Fields"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1482,
+    "heading": "##### Type-Mixing Compatibility Quick Reference"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1491,
+    "heading": "#### Example"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1521,
+    "heading": "## 6. Animations"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1576,
+    "heading": "### Effects"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1592,
+    "heading": "### Parameterized Emphasis Effects"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1627,
+    "heading": "### Triggers and Groups"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1636,
+    "heading": "### direction"
+  },
+  {
+    "file": "reference/pptd.md",
+    "line": 1640,
+    "heading": "### motion-path"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 1,
+    "heading": "## Parameter Value Conventions"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 11,
+    "heading": "## Basic Shapes"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 63,
+    "heading": "## Rectangle Variants"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 75,
+    "heading": "## Stars and Bursts"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 92,
+    "heading": "## Arrow Shapes"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 119,
+    "heading": "## Arrow Callouts"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 131,
+    "heading": "## Callouts"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 154,
+    "heading": "## Brackets and Braces"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 165,
+    "heading": "## Ribbons"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 175,
+    "heading": "## Scrolls"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 182,
+    "heading": "## Math Symbols"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 193,
+    "heading": "## Chart Shapes"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 201,
+    "heading": "## Tab Shapes"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 209,
+    "heading": "## Action Buttons"
+  },
+  {
+    "file": "reference/shapes.md",
+    "line": 226,
+    "heading": "## Flowchart Shapes"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 1,
+    "heading": "# Academic Research"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 5,
+    "heading": "## Goals"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 7,
+    "heading": "### Narrative: capture the value in the first minute; keep progress visible at all times"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 12,
+    "heading": "### Visuals: simple but not cheap"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 26,
+    "heading": "### Start from the research field; consider the visual focus"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 36,
+    "heading": "## Prohibitions"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 44,
+    "heading": "## Visual References"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 46,
+    "heading": "### ETH Swiss Lab Posters"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 72,
+    "heading": "### Tsinghua / MIT-Style Elite-University Defense"
+  },
+  {
+    "file": "reference/slides_categories/academic-research.md",
+    "line": 102,
+    "heading": "### Humanities & Social Sciences Archival Special Issue"
+  },
+  {
+    "file": "reference/slides_categories/analysis-decision.md",
+    "line": 1,
+    "heading": "# Analysis & Decision"
+  },
+  {
+    "file": "reference/slides_categories/analysis-decision.md",
+    "line": 3,
+    "heading": "## Solid, compact content with extremely high-density layout"
+  },
+  {
+    "file": "reference/slides_categories/analysis-decision.md",
+    "line": 11,
+    "heading": "## Make data and structured information the body of the argument"
+  },
+  {
+    "file": "reference/slides_categories/analysis-decision.md",
+    "line": 19,
+    "heading": "## Key Requirements"
+  },
+  {
+    "file": "reference/slides_categories/analysis-decision.md",
+    "line": 25,
+    "heading": "## Visual References"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 1,
+    "heading": "# Brand / Creative Showcase"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 5,
+    "heading": "## Goals"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 7,
+    "heading": "### Identify the subject; build a deck whose subject is recognizable at a glance"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 13,
+    "heading": "### Take the essence, discard the dross"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 16,
+    "heading": "### Build a top-tier visual experience"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 23,
+    "heading": "## Prohibitions"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 29,
+    "heading": "## Visual References"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 33,
+    "heading": "### Klein Blue Swiss Posters"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 74,
+    "heading": "### Stencil-Printed Indie Magazine"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 117,
+    "heading": "### Brutalist Newspaper"
+  },
+  {
+    "file": "reference/slides_categories/brand-creative.md",
+    "line": 160,
+    "heading": "### Memphis Pop Posters"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 1,
+    "heading": "# Business Proposal"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 3,
+    "heading": "## A clear storyline with strong persuasion"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 11,
+    "heading": "## Tell a more complete story through SmartArt structural diagrams"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 17,
+    "heading": "## Page turns have breathing room"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 22,
+    "heading": "## Key Requirements"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 27,
+    "heading": "## Visual References"
+  },
+  {
+    "file": "reference/slides_categories/business-plan.md",
+    "line": 38,
+    "heading": "### Color Palette Reference"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 1,
+    "heading": "# Education & Training"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 7,
+    "heading": "## 1. Define the Learning Task First; Do Not Pick a Style First"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 20,
+    "heading": "## 2. General Prohibitions"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 29,
+    "heading": "## 3. The Teaching Loop: Every Chapter and Every Page Needs a Take-Away Action"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 52,
+    "heading": "## 4. Default Density for Courseware: Full Content; Whitespace Has a Job"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 74,
+    "heading": "## 5. Division of Labor: Text, Graphics, Examples, and Exercises Do Not Impersonate Each Other"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 87,
+    "heading": "## 6. Order of Visual Decisions: Samples Are a Reference Library, Not an Answer Key"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 97,
+    "heading": "### The Correct Way to Use Reference Samples"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 109,
+    "heading": "## 7. Reference Directions (Inspiration Only; New Directions May Be Generated)"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 113,
+    "heading": "### Direction A: Editorial Study Handbook (May Reference Sample 1)"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 120,
+    "heading": "### Direction B: Role / System Infographics"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 127,
+    "heading": "### Direction C: Steps / Work Records"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 134,
+    "heading": "### Direction D: Evidence / Data Editorial (Build Your Own as Needed)"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 143,
+    "heading": "## 8. Page Skeletons: Choose the Learning Action First, Then the Layout"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 159,
+    "heading": "## 9. Minimum Constraints for the Visual System"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 161,
+    "heading": "### Grid and Hierarchy"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 169,
+    "heading": "### Color"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 178,
+    "heading": "### Cards, Components, and Graphics"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 185,
+    "heading": "### Images and Charts"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 192,
+    "heading": "## 10. Model Execution Protocol"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 194,
+    "heading": "### 1. Content First"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 202,
+    "heading": "### 2. Reference-Sample Extraction"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 206,
+    "heading": "### 3. Visual Brief"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 220,
+    "heading": "### 4. Page-by-Page Generation"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 229,
+    "heading": "### 5. Pre-Delivery Validation"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 233,
+    "heading": "## 11. Delivery Acceptance and Reverse Checks"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 235,
+    "heading": "### Content and Teaching"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 244,
+    "heading": "### Density and Visuals"
+  },
+  {
+    "file": "reference/slides_categories/education-training.md",
+    "line": 254,
+    "heading": "### The Final Cut"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 1,
+    "heading": "# Management Reporting"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 3,
+    "heading": "## Clear and direct content; no empty talk"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 11,
+    "heading": "## Visualize information with structural diagrams"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 15,
+    "heading": "## Key Requirements"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 20,
+    "heading": "## Visual References"
+  },
+  {
+    "file": "reference/slides_categories/management-report.md",
+    "line": 30,
+    "heading": "### Color Palette Reference"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 1,
+    "heading": "# Tech & Engineering"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 7,
+    "heading": "## 1. Core Character"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 17,
+    "heading": "## 2. General Prohibitions"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 26,
+    "heading": "## 3. How to Present Technical Content"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 28,
+    "heading": "### 3.1 Explain how the system works first"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 38,
+    "heading": "### 3.2 Put design rationale and costs side by side"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 46,
+    "heading": "### 3.3 Evidence must be verifiable"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 54,
+    "heading": "## 4. Narrative Skeletons by Engineering Task"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 70,
+    "heading": "## 5. Page Rhythm and Information Density"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 81,
+    "heading": "### Common page types"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 91,
+    "heading": "## 6. Architecture Diagrams and Flowcharts"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 93,
+    "heading": "### 6.1 The relationship determines the graphic"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 106,
+    "heading": "### 6.2 Diagramming discipline"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 116,
+    "heading": "## 7. Data Charts, Tables, Code, and Screenshots"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 118,
+    "heading": "### Data charts"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 126,
+    "heading": "### Tables"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 133,
+    "heading": "### Code, configuration, and screenshots"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 141,
+    "heading": "## 8. Visual System"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 143,
+    "heading": "### 8.1 Layout"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 152,
+    "heading": "### 8.2 Colors and fonts"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 161,
+    "heading": "### 8.3 Lines, icons, and effects"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 170,
+    "heading": "## 9. Sample References"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 174,
+    "heading": "### Sample A: Warm Orange & Cool Blue — White-Base Engineering Document Style"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 181,
+    "heading": "### Sample B: Four-Color Flat — Engineering Walkthrough Style"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 188,
+    "heading": "### Sample C: White Base & Deep Ink Blue — Two-Color Short-Line Engineering Walkthrough"
+  },
+  {
+    "file": "reference/slides_categories/tech-engineering.md",
+    "line": 197,
+    "heading": "## 10. Pre-Delivery Checklist"
+  },
+  {
+    "file": "reference/slides_categories.md",
+    "line": 1,
+    "heading": "# PPT category guide"
+  },
+  {
+    "file": "reference/slides_categories.md",
+    "line": 7,
+    "heading": "## step1. General rules"
+  },
+  {
+    "file": "reference/slides_categories.md",
+    "line": 9,
+    "heading": "### Requirements"
+  },
+  {
+    "file": "reference/slides_categories.md",
+    "line": 18,
+    "heading": "### Strictly forbidden"
+  },
+  {
+    "file": "reference/slides_categories.md",
+    "line": 22,
+    "heading": "## step2. Scenario determination"
+  }
+]

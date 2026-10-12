@@ -1,0 +1,35 @@
+version: v2
+title: PPTD 高级能力验收
+size:
+- 960
+- 540
+customFonts:
+- family: JetBrains Mono
+  src: https://fonts.googleapis.com/css2?family=JetBrains+Mono
+theme:
+  colors:
+    primary: '#166854'
+    accent: '#D79032'
+  textStyles:
+    body:
+      fontFamily: Noto Sans CJK SC
+      fontSize: 24
+pages:
+- pages/01.page
+- pages/02.page
+- pages/03.page
+- pages/04.page
+- pages/05.page
+- pages/06.page
+- pages/07.page
+- pages/08.page
+- pages/09.page
+- pages/10.page
+- pages/11.page
+- pages/12.page
+- pages/13.page
+- pages/14.page
+- pages/15.page
+- pages/16.page
+- pages/17.page
+- pages/18.page

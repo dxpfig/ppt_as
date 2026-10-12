@@ -1,0 +1,108 @@
+/* UI tokens are scoped to the workbench, never to authored slide content.
+   Existing declarations retain their exact light palette as fallbacks. */
+.dark .pptd-app {
+	--ui-bg: #151b1d;
+	--ui-surface: #1e2629;
+	--ui-elevated: #273135;
+	--ui-input: #171f22;
+	--ui-canvas: #101719;
+	--ui-hover: #2c3839;
+	--ui-tint: #263b32;
+	--ui-text: #e7ece8;
+	--ui-secondary: #c1cbc5;
+	--ui-muted: #a2b0a8;
+	--ui-accent: #b9d79f;
+	--ui-primary: #b9d79f;
+	--ui-primary-hover: #cbe8b2;
+	--ui-on-primary: #19271b;
+	--ui-border: #384640;
+	--ui-focus: #91ba79;
+	--ui-focus-ring: #91ba7926;
+	--ui-scrollbar: #4d6055;
+	--ui-warning-bg: #3a3023;
+	--ui-warning-text: #e5c28c;
+	--ui-error-bg: #3b2927;
+	--ui-error-text: #f0b5a3;
+	--ui-shadow: #00000040;
+	--ui-backdrop: #060c10b3;
+	--ui-veil: #17221ddd;
+	--studio-green: var(--ui-accent);
+	--studio-muted: var(--ui-muted);
+	--studio-border: var(--ui-border);
+	--studio-lime: var(--ui-tint);
+	color-scheme: dark;
+}
+
+.studio-theme-switcher {
+	display: inline-flex;
+	align-items: center;
+	position: relative;
+	flex-shrink: 0;
+	height: 32px;
+	border: 1px solid var(--ui-border, #dde4d4);
+	border-radius: 7px;
+	background: var(--ui-surface, #fff);
+	color: var(--ui-secondary, #68775d);
+}
+.studio-theme-switcher > svg {
+	position: absolute;
+	pointer-events: none;
+	left: 9px;
+}
+.studio-theme-switcher > svg:last-child {
+	left: auto;
+	right: 8px;
+}
+.studio-theme-switcher select {
+	appearance: none;
+	cursor: pointer;
+	background: transparent;
+	color: inherit;
+	border: 0;
+	border-radius: inherit;
+	padding: 6px 25px 6px 31px;
+	height: 100%;
+	font-size: 11px;
+}
+.studio-theme-switcher option {
+	color: var(--ui-text, #303b33);
+	background: var(--ui-surface, #fff);
+}
+.pptd-app :where(.pptd-brief-scroll, .history-list, .pptd-page-list, .pptd-versions) {
+	scrollbar-color: var(--ui-scrollbar, #dbe0d4) transparent;
+}
+.pptd-app .pptd-page-list img,
+.pptd-app .pptd-legacy-preview {
+	color-scheme: light;
+}
+.dark .pptd-app .history-delete:hover {
+	color: var(--ui-error-text);
+	background: var(--ui-error-bg);
+}
+.dark .pptd-app .pptd-primary {
+	border-color: var(--ui-primary);
+}
+.dark .pptd-app .pptd-execution-node.is-completed .pptd-execution-node-icon {
+	background: var(--ui-primary);
+	color: var(--ui-on-primary);
+	border-color: var(--ui-primary);
+}
+.dark .pptd-app .pptd-execution-node.is-current .pptd-execution-node-icon {
+	background: var(--ui-tint);
+	color: var(--ui-accent);
+	border-color: var(--ui-focus);
+	box-shadow: 0 0 0 2px var(--ui-focus-ring);
+}
+@media (max-width: 760px) {
+	.pptd-app .header-actions {
+		gap: 8px;
+	}
+	.pptd-app .studio-header {
+		gap: 10px;
+	}
+}
+@media (max-width: 480px) {
+	.pptd-app .studio-brand strong {
+		display: none;
+	}
+}

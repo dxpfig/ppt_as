@@ -1,0 +1,45 @@
+pageType: content
+background:
+  type: solid
+  color: '#F6F5EF'
+notes: Native chart when equivalent; otherwise editable vector with retained original
+  tabular data.
+elements:
+- elementId: title
+  elementType: text
+  bounds:
+  - 44
+  - 24
+  - 860
+  - 50
+  content:
+    text: scatter · 数据与对象可编辑
+    fontFamily: Noto Sans CJK SC
+    fontSize: 30
+    color: '#19382E'
+- elementId: chart-scatter
+  elementType: chart
+  bounds:
+  - 44
+  - 94
+  - 860
+  - 400
+  fontFamily: Noto Sans CJK SC
+  data:
+    cols:
+    - x
+    - a
+    rows:
+    - - 1
+      - 2
+    - - 2
+      - 4
+    - - 3
+      - 3
+  series:
+  - type: scatter
+    encode:
+      x: x
+      y: a
+  legend:
+    position: bottom

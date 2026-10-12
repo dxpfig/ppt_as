@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PPTD v2 · 浏览器技术验证</title>
+  <link rel="stylesheet" href="/runtime/katex.min.css">
+  <style>
+    * { box-sizing: border-box; }
+    :root { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; color: #17342d; background: #eef1ed; font-size: 14px; }
+    body { margin: 0; }
+    header { background: #17342d; color: #fff; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    h1 { font-size: 20px; margin: 0 0 5px; }
+    header p { margin: 0; color: #bcd1c6; font-size: 12px; }
+    .badge { background: #f3d494; color: #4c350b; border-radius: 5px; padding: 8px 12px; font-weight: 700; white-space: nowrap; }
+    button, select, input, textarea { font: inherit; }
+    button { cursor: pointer; border: 1px solid #c4cfc7; border-radius: 5px; padding: 8px 13px; color: #17342d; background: #fff; }
+    button:hover { border-color: #166854; }
+    button:disabled { cursor: default; opacity: .45; }
+    button.primary { background: #166854; border-color: #166854; color: white; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 24px; background: #fff; border-bottom: 1px solid #d7dfd9; }
+    select, input, textarea { border: 1px solid #bdcac0; border-radius: 4px; padding: 8px; background: #fff; color: #17342d; }
+    #page-select { min-width: 240px; }
+    #status { color: #53685d; flex: 1; font-size: 12px; }
+    main { display: flex; align-items: flex-start; gap: 22px; padding: 22px 24px; }
+    .stage-column { flex: 1; min-width: 0; overflow-x: auto; }
+    #slide { position: relative; width: 960px; height: 540px; flex: none; overflow: hidden; background: white; box-shadow: 0 5px 25px #203d2420; isolation: isolate; }
+    .element { position: absolute; cursor: pointer; transform-origin: center; }
+    .element.selected { outline: 2px solid #416de8; outline-offset: 3px; }
+    #slide.capture .element.selected { outline: none; }
+    .text-box { display: flex; flex-direction: column; }
+    .rich-text { width: 100%; }
+    .rich-text p { margin: 0; }
+    .rich-text ul, .rich-text ol { margin: 0; padding-left: 1.4em; }
+    .rich-text a { color: #2563eb; text-decoration: underline; }
+    .unsupported { background: #fff2f2; border: 2px dashed #b93838; color: #ae2424; display: flex; align-items: center; justify-content: center; font: 11px/1.25 sans-serif; padding: 4px; overflow: hidden; text-align: center; }
+    aside { width: 280px; flex: none; background: white; padding: 18px; border: 1px solid #d7dfd9; border-radius: 8px; }
+    aside h2 { font-size: 16px; margin: 0 0 16px; }
+    label { display: block; font-size: 12px; font-weight: 600; margin: 12px 0 5px; }
+    #element-select, textarea { width: 100%; }
+    textarea { height: 144px; font: 12px/1.6 monospace; resize: vertical; }
+    .bounds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .bounds input { width: 100%; }
+    .actions { display: flex; gap: 8px; margin-top: 16px; }
+    .hint { font-size: 12px; color: #63736b; line-height: 1.7; }
+    .canvas-meta { margin: 12px 0; font-size: 12px; color: #63736b; }
+    #warnings { background: #fff8e7; color: #705417; padding: 12px 16px; margin-top: 16px; border-left: 3px solid #d79032; width: 960px; font-size: 12px; line-height: 1.7; }
+    #warnings ul { margin: 4px 0 0; padding-left: 20px; }
+    details { margin: 0 24px 24px; background: #fff; padding: 16px; border: 1px solid #d7dfd9; border-radius: 6px; }
+    summary { cursor: pointer; font-weight: 600; }
+    #capabilities { white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
+    #font-status { font-size: 12px; color: #53685d; margin-top: 8px; }
+    .table-cell { position: absolute; display: flex; flex-direction: column; padding: 6px 10px; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>PPTD v2 · 浏览器呈现与编辑</h1><p>唯一文档源：.pptd + .page + media · 工作副本保存 · 公式 · 矢量图标 · 图表 · 动画预览</p></div>
+    <div class="badge">PPTD 高级能力验证</div>
+  </header>
+  <div class="toolbar">
+    <label for="page-select" style="margin:0">页面</label><select id="page-select" aria-label="切换页面"></select>
+    <button id="reload" type="button">重新加载</button>
+    <button id="clear-selection" type="button">取消选择</button>
+    <button id="animation-play" type="button" disabled>播放动画</button>
+    <button id="animation-next" type="button" disabled>下一步</button>
+    <button id="animation-reset" type="button" disabled>重置动画</button>
+    <span id="animation-status" aria-live="polite"></span>
+    <button id="export-pptx" type="button">导出 PPTX</button>
+    <button id="export-pdf" type="button">导出 PDF</button>
+    <label style="margin:0;font-weight:400"><input id="allow-vector-charts" type="checkbox" checked>复杂图表按可编辑矢量导出</label>
+    <span id="export-links"></span>
+    <span id="status" role="status" aria-live="polite">正在读取 PPTD…</span>
+  </div>
+  <main>
+    <section class="stage-column" aria-label="幻灯片预览">
+      <div id="slide" data-page-index="0" data-ready="false" aria-label="PPTD 幻灯片画布"></div>
+      <p class="canvas-meta" id="canvas-meta"></p>
+      <div id="warnings" role="note"><strong>能力与呈现提示</strong><ul id="warning-list"></ul></div>
+    </section>
+    <aside>
+      <h2>元素编辑</h2>
+      <label for="element-select">选择元素</label><select id="element-select" aria-label="选择元素"></select>
+      <label for="text-content">文本内容（富文本源）</label><textarea id="text-content" aria-label="文本内容" spellcheck="false" disabled></textarea>
+      <div class="bounds">
+        <div><label for="bound-x">X / px</label><input id="bound-x" aria-label="X 坐标" type="number" step="any" disabled></div>
+        <div><label for="bound-y">Y / px</label><input id="bound-y" aria-label="Y 坐标" type="number" step="any" disabled></div>
+        <div><label for="bound-w">宽 / px</label><input id="bound-w" aria-label="宽度" type="number" min="0" step="any" disabled></div>
+        <div><label for="bound-h">高 / px</label><input id="bound-h" aria-label="高度" type="number" min="0" step="any" disabled></div>
+      </div>
+      <div class="actions"><button id="preview" type="button" disabled>预览修改</button><button id="save" class="primary" type="button" disabled>保存到 PPTD</button></div>
+      <p class="hint">保存只更新所选元素的文字或 bounds；动画、字体声明与未编辑字段保留。JSON 仅作内存派生。编辑页的 YAML 注释与排版会被规范化。</p>
+      <p class="hint">点击“取消选择”可获得不含选框的画布截图。导出读取已保存的 PPTD；预览修改后请先保存。</p>
+    </aside>
+  </main>
+  <details><summary>完整能力报告（含未支持项）</summary><div id="font-status"></div><pre id="capabilities"></pre></details>
+  <script src="/runtime/pptd-runtime.js"></script>
+  <script>
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const state = { document: null, pages: [], pageIndex: 0, selected: null, warnings: new Set(), fontWarnings: [], fonts: [], capabilities: null };
+    const palette = ['#1783FE', '#67B8A6', '#C9A869', '#8A84C7', '#8C98A8', '#5E9CF4', '#7AB5D7', '#B08A9C', '#333333', '#DCDCDC'];
+    let imagePromises = [];
+    let renderRevision = 0;
+    let animationPlayer = null;
+    const chartViews = new Map();
+    const loadedFontFaces = new Map();
+
+    function warn(message) { state.warnings.add(message); }
+    function status(message) { $('status').textContent = message; }
+    function color(value, seen = new Set()) {
+      if (typeof value !== 'string') return '#000000';
+      if (value.startsWith('$')) {
+        const key = value.slice(1);
+        if (seen.has(key) || !state.document.theme?.colors?.[key]) { warn('无法解析主题色 ' + value + '；显示黑色。'); return '#000000'; }
+        seen.add(key);
+        return color(state.document.theme.colors[key], seen);
+      }
+      return /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : (warn('非规范颜色 ' + value + '；显示黑色。'), '#000000');
+    }
+    function themeStyle(reference, kind = 'textStyles') {
+      if (!reference) return {};
+      if (typeof reference === 'object') return reference;
+      if (typeof reference !== 'string' || !reference.startsWith('$')) { warn('未解析样式引用：' + reference); return {}; }
+      const style = state.document.theme?.[kind]?.[reference.slice(1)];
+      if (!style) warn('不存在的主题样式：' + reference);
+      return style || {};
+    }
+    function fontFamily(value) {
+      if (typeof value === 'object' && value) value = [value.latin, value.ea].filter(Boolean).join(',');
+      const source = value || 'MiSans';
+      const names = String(source).split(',').map((name) => name.trim().replace(/^['"]|['"]$/g, ''));
+      const mapped = names.flatMap((name) => name === '思源黑体' ? ['思源黑体', 'Noto Sans CJK SC'] : [name]);
+      return [...mapped.map((name) => '"' + name.replace(/["\\]/g, '') + '"'), '"Noto Sans CJK SC"', 'sans-serif'].join(', ');
+    }
+    function textStyle(node, style) {
+      const s = node.style;
+      s.color = color(style.color ?? '#000000');
+      s.fontSize = (style.fontSize ?? 18) + 'px';
+      s.fontFamily = fontFamily(style.fontFamily);
+      if (style.fontFamily && typeof style.fontFamily === 'object') node.dataset.fontRouting = JSON.stringify(style.fontFamily);
+      s.fontWeight = style.bold ? '700' : '400';
+      s.fontStyle = style.italic ? 'italic' : 'normal';
+      s.lineHeight = style.lineHeightPx != null ? style.lineHeightPx + 'px' : String(style.lineHeight ?? 1);
+      s.letterSpacing = (style.letterSpacing ?? 0) + 'px';
+      if (style.backgroundColor) s.backgroundColor = color(style.backgroundColor);
+      if (style.marginTop) node.style.setProperty('--paragraph-margin', style.marginTop + 'px');
+    }
+    function richText(text, inherited = {}) {
+      const destination = document.createElement('div');
+      destination.className = 'rich-text';
+      const value = String(text ?? '');
+      const allowed = new Set(['P', 'SPAN', 'STRONG', 'EM', 'U', 'S', 'SUP', 'SUB', 'A', 'UL', 'OL', 'LI']);
+      const dangerous = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'IMG', 'SVG', 'MATH']);
+      const styleAllowlist = {
+        P: ['text-align', 'line-height', 'margin-top', 'margin-left', 'margin-right'],
+        LI: ['text-align', 'line-height', 'letter-spacing', 'margin-top', 'margin-left', 'list-style-type', 'list-style-position'],
+        SPAN: ['color', 'font-size', 'font-family', 'background-color'],
+      };
+      function cloneSafe(source) {
+        if (source.nodeType === Node.TEXT_NODE) return document.createTextNode(source.textContent);
+        if (source.nodeType !== Node.ELEMENT_NODE) return document.createDocumentFragment();
+        if (dangerous.has(source.tagName)) { warn('已隔离未支持/不安全富文本标签：' + source.tagName.toLowerCase()); return document.createDocumentFragment(); }
+        const node = allowed.has(source.tagName) ? document.createElement(source.tagName.toLowerCase()) : document.createDocumentFragment();
+        if (!allowed.has(source.tagName)) warn('未支持富文本标签 ' + source.tagName.toLowerCase() + '；仅显示子文本。');
+        if (source.tagName === 'P' && inherited.marginTop) node.style.marginTop = inherited.marginTop + 'px';
+        if (node instanceof HTMLElement && styleAllowlist[source.tagName]) {
+          for (const declaration of (source.getAttribute('style') || '').split(';')) {
+            const split = declaration.indexOf(':');
+            if (split < 0) continue;
+            const property = declaration.slice(0, split).trim().toLowerCase();
+            let val = declaration.slice(split + 1).trim();
+            if (!styleAllowlist[source.tagName].includes(property) || /url\s*\(|expression\s*\(|@import|[{}]/i.test(val)) { warn('富文本样式未支持或已隔离：' + property); continue; }
+            if (property === 'color' || property === 'background-color') val = color(val);
+            if (property === 'font-family') val = fontFamily(val);
+            if (property === 'text-align' && val === 'distributed') { node.style.textAlignLast = 'justify'; val = 'justify'; }
+            node.style.setProperty(property, val);
+          }
+        }
+        if (source.tagName === 'A') {
+          const href = source.getAttribute('href') || '';
+          if (/^(https?:\/\/|mailto:)/i.test(href)) { node.href = href; node.rel = 'noopener noreferrer'; node.target = '_blank'; }
+          else warn('已移除非 HTTP(S)/mailto 的富文本链接。');
+        }
+        for (const child of source.childNodes) node.append(cloneSafe(child));
+        return node;
+      }
+      if (!/<\/?[a-z][^>]*>/i.test(value)) {
+        for (const line of value.split(/\r?\n/)) { const p = document.createElement('p'); p.textContent = line || '\u00a0'; if (inherited.marginTop) p.style.marginTop = inherited.marginTop + 'px'; destination.append(p); }
+      } else {
+        const parsed = new DOMParser().parseFromString(value, 'text/html');
+        for (const child of parsed.body.childNodes) destination.append(cloneSafe(child));
+      }
+      return destination;
+    }
+    function align(node, alignment = ['left', 'top']) {
+      node.style.textAlign = alignment[0] === 'distributed' ? 'justify' : alignment[0];
+      if (alignment[0] === 'distributed') node.style.textAlignLast = 'justify';
+      node.style.justifyContent = { top: 'flex-start', middle: 'center', bottom: 'flex-end' }[alignment[1]] || 'flex-start';
+    }
+    function svgElement(name, attrs = {}, content) {
+      const node = document.createElementNS(SVG_NS, name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+      if (content != null) node.textContent = content;
+      return node;
+    }
+    function makeSvg(width, height) { return svgElement('svg', { width: '100%', height: '100%', viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: 'none', style: 'display:block;overflow:visible' }); }
+    function fill(node, config) {
+      if (!config) return;
+      if (config.type === 'solid') node.style.backgroundColor = color(config.color);
+      else if (config.type === 'gradient') {
+        const stops = (config.stops || []).map((stop) => `${color(stop.color)} ${stop.position * 100}%`).join(', ');
+        node.style.backgroundImage = config.gradientType === 'radial' ? `radial-gradient(${stops})` : `linear-gradient(${(config.angle ?? 0) + 90}deg, ${stops})`;
+        warn('渐变由浏览器近似呈现；未验证与 Kimi 的色彩插值一致。');
+      } else { warn('图像填充未实现；保留原始字段。'); }
+    }
+    function borderCss(border) { return !border ? 'none' : `${border.width ?? 1}px ${ {solid: 'solid', dash: 'dashed', dot: 'dotted'}[border.style || 'solid']} ${color(border.color || '#000000')}`; }
+    function borders(node, value) {
+      if (value === undefined) return;
+      if (!Array.isArray(value)) { node.style.border = borderCss(value); return; }
+      const sides = value.length === 2 ? [value[0], value[1], value[0], value[1]] : value;
+      ['Top', 'Right', 'Bottom', 'Left'].forEach((name, i) => { node.style['border' + name] = borderCss(sides[i]); });
+    }
+    function shadow(node, config, text = false) {
+      if (!config) return;
+      node.style[text ? 'textShadow' : 'boxShadow'] = `${config.offset?.[0] || 0}px ${config.offset?.[1] || 0}px ${config.blur}px ${color(config.color)}`;
+      warn('阴影采用浏览器 CSS；模糊半径与参考引擎未做视觉等价验证。');
+    }
+    function placeholder(node, message) { node.classList.add('unsupported'); node.textContent = message; node.dataset.unsupported = 'true'; warn(message); }
+    function renderText(node, element) {
+      const content = element.content || {};
+      const style = { ...themeStyle(content.style), ...content };
+      node.classList.add('text-box');
+      textStyle(node, style); align(node, content.align);
+      node.style.whiteSpace = content.wrap === false ? 'nowrap' : 'normal';
+      if (content.textDirection === 'vertical') warn('竖排文字未实现；显示为水平文字并保留字段。');
+      if (content.gradient) warn('文字渐变未实现；使用已解析文字颜色。');
+      shadow(node, content.shadow, true);
+      node.append(richText(content.text, style));
+    }
+    function renderShape(node, element) {
+      if (!['rect', 'roundRect', 'ellipse'].includes(element.shapeName)) return placeholder(node, '未支持形状：' + element.shapeName);
+      fill(node, element.fill); borders(node, element.border); shadow(node, element.shadow);
+      if (element.shapeName === 'ellipse') node.style.borderRadius = '50%';
+      if (element.shapeName === 'roundRect') node.style.borderRadius = Math.min(element.bounds[2], element.bounds[3]) * ((element.adjustments?.[0] ?? 16667) / 100000) + 'px';
+      else if (element.adjustments?.length) warn('形状 adjustments 未实现，字段保留。');
+    }
+    function renderLine(node, element) {
+      const [vw, vh] = element.viewBox || [element.bounds[2], element.bounds[3]];
+      const svg = makeSvg(Math.max(vw, 0.001), Math.max(vh, 0.001));
+      const points = String(element.points || '').trim().split(/\s+/).map((value) => value.split(',').map(Number));
+      if (points.length < 2 || points.some((point) => point.length !== 2 || point.some((value) => !Number.isFinite(value)))) return placeholder(node, '无效线条点集');
+      let path = 'M ' + points[0].join(' ');
+      if (element.curve === 'smooth' && points.length === 3) path += ' Q ' + points.slice(1).flat().join(' ');
+      else if (element.curve === 'smooth' && points.length === 4) path += ' C ' + points.slice(1).flat().join(' ');
+      else { path += ' L ' + points.slice(1).map((point) => point.join(' ')).join(' L '); if (element.curve === 'smooth' && points.length > 4) warn('超过 4 控制点的平滑线未实现；呈现为折线。'); }
+      const stroke = element.border || {};
+      svg.append(svgElement('path', { d: path, fill: 'none', stroke: element.border ? color(stroke.color || '#000000') : 'none', 'stroke-width': stroke.width ?? 1, 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': element.curve === 'sharp' ? 'miter' : 'round', 'stroke-dasharray': stroke.style === 'dash' ? '6 4' : stroke.style === 'dot' ? '1 3' : 'none' }));
+      node.append(svg);
+      if (element.arrow?.some(Boolean)) warn('线条箭头未实现；保留 arrow 字段。');
+      if (element.shadow) warn('线条阴影未实现；保留 shadow 字段。');
+    }
+    function mediaUrl(source) {
+      if (/^https?:\/\//i.test(source)) return source;
+      if (source && !/^[\/\\]|[?#]/.test(source) && !source.split('/').includes('..')) return '/resources/' + source.split('/').map(encodeURIComponent).join('/');
+      warn('图片必须使用项目内相对资源路径或公开 HTTP(S) URL。');
+      return '';
+    }
+    function renderImage(node, element) {
+      const crop = { left: 0, top: 0, right: 0, bottom: 0, ...element.crop };
+      if (Object.values(crop).some((value) => value < 0) || crop.left + crop.right >= 1 || crop.top + crop.bottom >= 1) return placeholder(node, '未支持或无效的图片裁剪');
+      if (element.cropShape && element.cropShape.shapeName !== 'rect') warn('图片形状裁剪未实现；仅显示矩形裁剪。');
+      const source = mediaUrl(element.src || '');
+      const image = new Image();
+      const ready = new Promise((resolve) => {
+        image.onload = () => {
+          const width = image.naturalWidth * (1 - crop.left - crop.right);
+          const height = image.naturalHeight * (1 - crop.top - crop.bottom);
+          const mode = element.fit?.mode || 'cover';
+          const outer = makeSvg(width, height);
+          outer.style.overflow = 'hidden';
+          outer.setAttribute('preserveAspectRatio', mode === 'fill' ? 'none' : mode === 'contain' ? 'xMidYMid meet' : 'xMidYMid slice');
+          const inner = svgElement('svg', { x: 0, y: 0, width, height, viewBox: `${image.naturalWidth * crop.left} ${image.naturalHeight * crop.top} ${width} ${height}`, overflow: 'hidden' });
+          inner.append(svgElement('image', { href: source, width: image.naturalWidth, height: image.naturalHeight }));
+          outer.append(inner); node.append(outer); node.dataset.imageLoaded = 'true'; resolve();
+        };
+        image.onerror = () => { placeholder(node, '图片加载失败：' + element.src); node.dataset.imageLoaded = 'false'; resolve(); };
+        image.src = source;
+      });
+      imagePromises.push(ready);
+      borders(node, element.border); shadow(node, element.shadow); node.style.overflow = 'hidden';
+    }
+    function renderTable(node, element) {
+      const config = themeStyle(element.style, 'tableStyles');
+      const cols = element.columnWidths || [], rows = element.rowHeights || [];
+      if (!cols.length || !rows.length) return placeholder(node, '表格缺少行列比例');
+      fill(node, element.fill); shadow(node, element.shadow);
+      const occupied = rows.map(() => cols.map(() => false));
+      (element.rows || []).forEach((cells, row) => {
+        let column = 0;
+        cells.forEach((cell) => {
+          while (occupied[row]?.[column]) column += 1;
+          const rs = cell.rowSpan || 1, cs = cell.colSpan || 1;
+          if (row + rs > rows.length || column + cs > cols.length) { warn('表格合并区域超出边界。'); return; }
+          for (let r = row; r < row + rs; r++) for (let c = column; c < column + cs; c++) occupied[r][c] = true;
+          const body = row > 0 && row < rows.length - 1 && config.bodyStyles?.length ? config.bodyStyles[(row - 1) % config.bodyStyles.length] : {};
+          const rowStyle = { ...(row === 0 ? config.firstRowStyle : {}), ...(row === rows.length - 1 ? config.lastRowStyle : {}) };
+          const colStyle = { ...(column === 0 ? config.firstColumnStyle : {}), ...(column === cols.length - 1 ? config.lastColumnStyle : {}) };
+          const category = config.rowOverColumn === false ? { ...rowStyle, ...colStyle } : { ...colStyle, ...rowStyle };
+          const style = { fontSize: Math.min(18, rows[row] * element.bounds[3] / 2), border: { style: 'solid', width: 1, color: '#000000' }, align: ['center', 'middle'], ...config.cellStyle, ...body, ...category, ...themeStyle(cell.textStyle), ...cell };
+          const box = document.createElement('div'); box.className = 'table-cell'; box.dataset.row = String(row); box.dataset.column = String(column);
+          Object.assign(box.style, { left: cols.slice(0, column).reduce((a, b) => a + b, 0) * 100 + '%', top: rows.slice(0, row).reduce((a, b) => a + b, 0) * 100 + '%', width: cols.slice(column, column + cs).reduce((a, b) => a + b, 0) * 100 + '%', height: rows.slice(row, row + rs).reduce((a, b) => a + b, 0) * 100 + '%' });
+          fill(box, style.fill); borders(box, style.border); textStyle(box, style); align(box, style.align); box.append(richText(cell.text, style)); node.append(box);
+          column += cs;
+        });
+      });
+    }
+    function renderChart(node, element) {
+      const view = PPTDRuntime.renderChart(node, element, state.document.theme || {}, { resolveAsset: mediaUrl });
+      chartViews.set(node, view);
+      imagePromises.push(view.ready);
+    }
+    function renderIcon(node, element) {
+      const source = structuredClone(element);
+      if (source.fill?.type === 'image') {
+        source.fill.src = mediaUrl(source.fill.src);
+        imagePromises.push(new Promise((resolve) => {
+          const image = new Image();
+          image.onload = () => {
+            try { node.innerHTML = PPTDRuntime.renderIcon(source, state.document.theme || {}, { imageSize: [image.naturalWidth, image.naturalHeight] }); }
+            catch (error) { placeholder(node, `${element.elementId} · ${error.message}`); }
+            resolve();
+          };
+          image.onerror = () => { placeholder(node, `${element.elementId} · 图标图像填充加载失败`); resolve(); };
+          image.src = source.fill.src;
+        }));
+      } else node.innerHTML = PPTDRuntime.renderIcon(source, state.document.theme || {});
+      if (element.shadow) node.style.filter = `drop-shadow(${element.shadow.offset?.[0] || 0}px ${element.shadow.offset?.[1] || 0}px ${element.shadow.blur}px ${color(element.shadow.color)})`;
+    }
+    function renderMath(node, elementId) {
+      try { PPTDRuntime.renderMathInElement(node); PPTDRuntime.routeFontScripts(node); }
+      catch (error) { node.dataset.mathError = error.message; warn(`${elementId} · 公式错误：${error.message}`); }
+    }
+    function resetAnimation() {
+      animationPlayer?.destroy(); animationPlayer = null;
+      $('animation-status').textContent = '';
+    }
+    function animationControl(action) {
+      try {
+        if (action === 'reset') { resetAnimation(); return; }
+        if (!animationPlayer) animationPlayer = PPTDRuntime.createAnimationPlayer($('slide'), state.pages[state.pageIndex].data.animations || [], {
+          pageSize: state.document.size, autoPlay: false,
+          onStatusChange(value) { $('animation-status').textContent = value.completed ? '播放完毕' : value.groupIndex < 0 ? '' : `动画 ${value.groupIndex + 1} / ${value.groupCount}`; },
+        });
+        selectElement(null);
+        animationPlayer[action]();
+      } catch (error) { status('动画错误：' + error.message); }
+    }
+    function renderElement(element) {
+      const node = document.createElement('div');
+      node.className = 'element'; node.dataset.elementId = element.elementId; node.dataset.elementType = element.elementType; node.dataset.pageIndex = String(state.pageIndex);
+      node.setAttribute('aria-label', element.elementId + ' · ' + element.elementType);
+      const [x, y, width, height] = element.bounds;
+      Object.assign(node.style, { left: x + 'px', top: y + 'px', width: width + 'px', height: height + 'px' });
+      if (!['table', 'chart'].includes(element.elementType)) {
+        node.style.opacity = element.opacity ?? 1;
+        node.style.transform = `rotate(${element.rotation || 0}deg) scale(${element.flip?.[0] ? -1 : 1},${element.flip?.[1] ? -1 : 1})`;
+      }
+      const renderers = { text: renderText, shape: renderShape, line: renderLine, image: renderImage, table: renderTable, chart: renderChart, icon: renderIcon };
+      try {
+        if (renderers[element.elementType]) renderers[element.elementType](node, element);
+        else placeholder(node, '未支持元素：' + element.elementType);
+      } catch (error) { placeholder(node, `${element.elementId} · ${error.message}`); }
+      if (state.selected === element.elementId) node.classList.add('selected');
+      node.addEventListener('click', (event) => { if (event.target.closest('a')) event.preventDefault(); event.stopPropagation(); selectElement(element.elementId); });
+      return node;
+    }
+    function showWarnings() {
+      const list = $('warning-list'); list.replaceChildren();
+      for (const message of [...state.fontWarnings, ...state.warnings]) { const li = document.createElement('li'); li.textContent = message; list.append(li); }
+    }
+    async function renderPage() {
+      const revision = ++renderRevision;
+      resetAnimation();
+      for (const view of chartViews.values()) view.dispose(); chartViews.clear();
+      state.warnings = new Set(); imagePromises = [];
+      const current = state.pages[state.pageIndex];
+      const slide = $('slide'); slide.replaceChildren(); slide.dataset.ready = 'false'; slide.dataset.pageIndex = String(state.pageIndex);
+      const [width, height] = state.document.size;
+      Object.assign(slide.style, { width: width + 'px', height: height + 'px', background: '#ffffff' });
+      $('warnings').style.width = width + 'px';
+      fill(slide, current.data.background);
+      for (const element of current.data.elements) {
+        const node = renderElement(element); slide.append(node); renderMath(node, element.elementId);
+      }
+      const hasAnimations = Boolean(current.data.animations?.length);
+      for (const id of ['animation-play', 'animation-next', 'animation-reset']) $(id).disabled = !hasAnimations;
+      warn('字体别名：思源黑体 → 本机 Noto Sans CJK SC，仅运行时解析，不改变源文档。');
+      $('canvas-meta').textContent = `${width} × ${height} px · ${current.path} · pageType: ${current.data.pageType || '未指定'} · ${current.data.elements.length} 个元素`;
+      $('page-select').value = String(state.pageIndex);
+      showWarnings();
+      await Promise.all(imagePromises);
+      if (revision === renderRevision) { showWarnings(); slide.dataset.ready = 'true'; }
+    }
+    function selectedElement() { return state.pages[state.pageIndex]?.data.elements.find((element) => element.elementId === state.selected); }
+    function selectElement(id) {
+      state.selected = id || null;
+      const element = selectedElement();
+      for (const node of $('slide').querySelectorAll('[data-element-id]')) node.classList.toggle('selected', node.dataset.elementId === state.selected);
+      $('element-select').value = id || '';
+      $('text-content').disabled = !element || element.elementType !== 'text';
+      $('text-content').value = element?.content?.text || '';
+      ['x', 'y', 'w', 'h'].forEach((field, index) => { $('bound-' + field).disabled = !element; $('bound-' + field).value = element ? element.bounds[index] : ''; });
+      $('preview').disabled = !element; $('save').disabled = !element;
+    }
+    function elementOptions() {
+      const select = $('element-select'); select.replaceChildren(new Option('请选择一个元素', ''));
+      for (const element of state.pages[state.pageIndex].data.elements) select.add(new Option(element.elementId + ' · ' + element.elementType, element.elementId));
+      selectElement(null);
+    }
+    function readEdit() {
+      const element = selectedElement();
+      if (!element) throw new Error('请先选择元素');
+      const bounds = ['x', 'y', 'w', 'h'].map((field) => Number($('bound-' + field).value));
+      if (bounds.some((value) => !Number.isFinite(value)) || bounds[2] < 0 || bounds[3] < 0) throw new Error('请输入有效坐标和非负宽高');
+      const patch = { page: state.pages[state.pageIndex].path, elementId: element.elementId };
+      if (bounds.some((value, index) => value !== element.bounds[index])) patch.bounds = bounds;
+      if (element.elementType === 'text' && $('text-content').value !== element.content.text) patch.text = $('text-content').value;
+      return patch;
+    }
+    async function previewEdit() {
+      try {
+        const patch = readEdit(), original = selectedElement(), preview = structuredClone(original);
+        if (patch.bounds) preview.bounds = patch.bounds;
+        if (patch.text != null) preview.content.text = patch.text;
+        imagePromises = [];
+        const old = Array.from($('slide').children).find((node) => node.dataset.elementId === state.selected);
+        resetAnimation();
+        chartViews.get(old)?.dispose(); chartViews.delete(old);
+        const fresh = renderElement(preview); old.replaceWith(fresh); renderMath(fresh, preview.elementId);
+        await Promise.all(imagePromises); showWarnings(); status('预览已更新；尚未写入 PPTD。');
+      } catch (error) { status('预览失败：' + error.message); }
+    }
+    async function saveEdit() {
+      try {
+        const patch = readEdit();
+        if (!('text' in patch) && !('bounds' in patch)) { status('没有需要保存的变更。'); return; }
+        $('save').disabled = true;
+        const response = await fetch('/api/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+        const id = state.selected;
+        await loadDocument(false); selectElement(id);
+        status('已保存并重新读取验证：' + result.changedFields.join('、') + '；其余 YAML 字段保留。');
+        document.body.dataset.lastSaveVerified = String(result.verified);
+      } catch (error) { status('保存失败：' + error.message); }
+      finally { $('save').disabled = !selectedElement(); }
+    }
+    async function exportDocument(format) {
+      const button = $('export-' + format); button.disabled = true;
+      status(`正在生成 ${format.toUpperCase()}…`);
+      try {
+        const response = await fetch(format === 'pdf' ? '/api/export-pdf' : '/api/export', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(format === 'pdf' ? {} : { allowVectorCharts: $('allow-vector-charts').checked }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '导出失败');
+        const links = $('export-links'); links.replaceChildren();
+        for (const [href, label] of [[result.url, `下载 ${format.toUpperCase()}`], [result.reportUrl, '导出报告']]) {
+          if (!/^\/(?!\/)/.test(href)) throw new Error('无效下载地址');
+          const link = document.createElement('a'); link.href = href; link.textContent = label; link.download = ''; link.style.marginRight = '12px'; links.append(link);
+        }
+        status(`${format.toUpperCase()} 已生成，可下载文件和报告。`);
+      } catch (error) { status('导出失败：' + error.message); }
+      finally { button.disabled = false; }
+    }
+    async function loadFonts() {
+      state.fontWarnings = []; state.fonts = []; document.body.dataset.fontsReady = 'false';
+      try {
+        const response = await fetch('/api/fonts');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '字体资源接口不可用');
+        for (const issue of result.errors || []) state.fontWarnings.push(typeof issue === 'string' ? issue : `${issue.family || '字体'}：${issue.message || issue.error || JSON.stringify(issue)}`);
+        await Promise.all((result.fonts || []).map(async (font) => {
+          const key = [font.family, font.url, font.weight, font.style].join('|');
+          try {
+            if (!/^\/(?!\/)/.test(font.url)) throw new Error('字体必须使用服务端解析后的本地缓存 URL');
+            if (!loadedFontFaces.has(key)) {
+              const face = new FontFace(font.family, `url(${JSON.stringify(font.url)})`, { weight: String(font.weight || '400'), style: font.style || 'normal' });
+              const ready = await face.load(); document.fonts.add(ready); loadedFontFaces.set(key, ready);
+            }
+            state.fonts.push({ family: font.family, status: 'loaded', source: font.url, weight: font.weight, style: font.style, synthesis: font.synthesis || null });
+          } catch (error) {
+            state.fonts.push({ family: font.family, status: 'fallback', reason: error.message });
+            state.fontWarnings.push(`自定义字体 ${font.family} 加载失败：${error.message}`);
+          }
+        }));
+        await document.fonts.ready;
+      } catch (error) { state.fontWarnings.push('字体加载失败：' + error.message); }
+      $('font-status').textContent = state.fonts.map((font) => `${font.family}: ${font.status === 'loaded' ? '已加载' : '回退（' + font.reason + '）'}`).join('；') || '无自定义字体缓存';
+      document.body.dataset.fontsReady = 'true';
+      $('capabilities').textContent = JSON.stringify({ ...state.capabilities, browserFontResults: state.fonts, runtimeFontAliases: { 思源黑体: 'Noto Sans CJK SC' } }, null, 2);
+      showWarnings();
+    }
+    async function loadDocument(withFonts = true) {
+      status('正在读取工作副本…');
+      const response = await fetch('/api/document');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      state.document = result.document; state.pages = result.pages; state.pageIndex = Math.min(state.pageIndex, state.pages.length - 1);
+      state.capabilities = await (await fetch('/api/capabilities')).json();
+      $('capabilities').textContent = JSON.stringify(state.capabilities, null, 2);
+      const select = $('page-select'); select.replaceChildren();
+      state.pages.forEach((page, index) => select.add(new Option(`第 ${index + 1} 页 · ${page.data.pageType || page.path}`, String(index))));
+      if (withFonts) await loadFonts();
+      elementOptions(); await renderPage();
+      status(`已读取 ${state.pages.length} 页 · ${state.document.title || '未命名文档'} · YAML 为唯一文档源`);
+      document.body.dataset.loaded = 'true';
+    }
+    $('page-select').addEventListener('change', async (event) => { state.pageIndex = Number(event.target.value); elementOptions(); await renderPage(); status('已切换到第 ' + (state.pageIndex + 1) + ' 页'); });
+    $('export-pptx').addEventListener('click', () => exportDocument('pptx'));
+    $('export-pdf').addEventListener('click', () => exportDocument('pdf'));
+    $('animation-play').addEventListener('click', () => animationControl('play'));
+    $('animation-next').addEventListener('click', () => animationControl('next'));
+    $('animation-reset').addEventListener('click', () => animationControl('reset'));
+    $('element-select').addEventListener('change', (event) => selectElement(event.target.value));
+    $('clear-selection').addEventListener('click', () => selectElement(null));
+    $('slide').addEventListener('click', () => selectElement(null));
+    $('reload').addEventListener('click', () => loadDocument(false).catch((error) => status('读取失败：' + error.message)));
+    $('preview').addEventListener('click', previewEdit);
+    $('save').addEventListener('click', saveEdit);
+    window.pptdProbe = { state, reload: loadDocument, select: selectElement, render: renderPage, animation: animationControl, get animationPlayer() { return animationPlayer; } };
+    window.probeReady = loadDocument().catch((error) => { status('读取失败：' + error.message); document.body.dataset.error = error.message; throw error; });
+  </script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+pageType: content
+background: {type: solid, color: $paper}
+elements:
+  - elementId: accent
+    elementType: shape
+    bounds: [40, 48, 8, 45]
+    shapeName: rect
+    fill: {type: solid, color: $primary}
+  - elementId: title
+    elementType: text
+    bounds: [64, 44, 840, 54]
+    content:
+      style: $title
+      text: PPTD v2：编辑与导出共用文档
+  - elementId: text-body
+    elementType: text
+    bounds: [64, 116, 828, 68]
+    content:
+      style: $body
+      text: |-
+        <p><strong>中文富文本</strong>保留语义；<span style="color:$primary;">主题色</span>由源文档解析。</p>
+        <p>选中元素修改文字和位置，再保存回 <em>.page</em> 文件。</p>
+  - elementId: divider
+    elementType: line
+    bounds: [64, 202, 828, 1]
+    viewBox: [828, 1]
+    points: 0,0 828,0
+    curve: sharp
+    border: {style: solid, width: 1, color: '#C4CEC5'}
+  - elementId: crop-image
+    elementType: image
+    bounds: [64, 228, 360, 200]
+    src: media/fixture.png
+    fit: {mode: fill}
+    crop: {left: 0.125, top: 0, right: 0.125, bottom: 0}
+  - elementId: sample-table
+    elementType: table
+    bounds: [460, 228, 432, 200]
+    columnWidths: [0.48, 0.52]
+    rowHeights: [0.34, 0.33, 0.33]
+    style: $probe
+    rows:
+      - [{text: 项目}, {text: 验证值}]
+      - [{text: 文档格式}, {text: PPTD v2}]
+      - [{text: 自由坐标}, {text: 960 × 540}]
+  - elementId: crop-caption
+    elementType: text
+    bounds: [64, 440, 830, 25]
+    content:
+      style: $caption
+      text: 裁剪样例：左右各去除 12.5%，随后按 fill 模式适配。
+  - elementId: footer-font
+    elementType: text
+    bounds: [64, 490, 830, 25]
+    content:
+      fontFamily: JetBrains Mono
+      fontSize: 16
+      color: $muted
+      text: PPTD -> EDIT -> SAVE -> PPTX

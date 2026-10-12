@@ -1,0 +1,87 @@
+{
+  "captured_on": "2026-10-09",
+  "source_directory": "/home/figodxp/workspace/skill_research/ppt/skills/kimi-slides",
+  "purpose": "Exact documentation baseline; not an installed skill or active runtime prompt",
+  "file_count": 13,
+  "total_lines": 3177,
+  "files": [
+    {
+      "path": "SKILL.md",
+      "bytes": 13212,
+      "lines": 120,
+      "sha256": "7b024c02b2e38a961c562da11a0536a0758314a45fe3f9d519e0e1fba2237e2d"
+    },
+    {
+      "path": "reference/cli.md",
+      "bytes": 4384,
+      "lines": 111,
+      "sha256": "faf733e99562a175cfafe9fea3e293ed8e0d313ff8f5ad2c030ec646c658a179"
+    },
+    {
+      "path": "reference/fonts.md",
+      "bytes": 6816,
+      "lines": 86,
+      "sha256": "e719c0108211e49508ceec18aaacf53ee6920fb12c8117d5a94e5c25066f17a7"
+    },
+    {
+      "path": "reference/pptd.md",
+      "bytes": 79198,
+      "lines": 1644,
+      "sha256": "bd85df252cda25e3735567c795f96d03b663754402ecdd8051ae9f0adee4899d"
+    },
+    {
+      "path": "reference/shapes.md",
+      "bytes": 15657,
+      "lines": 258,
+      "sha256": "502c194e470713fc3e3ba7d7f3603e4f31c6f99d9f4df3f6eb60e61fc6cd864d"
+    },
+    {
+      "path": "reference/slides_categories/academic-research.md",
+      "bytes": 15659,
+      "lines": 136,
+      "sha256": "90c696f14f011a6e967092629164f8b598a9be1a6d2840a1d394a142fbeccc06"
+    },
+    {
+      "path": "reference/slides_categories/analysis-decision.md",
+      "bytes": 6122,
+      "lines": 36,
+      "sha256": "fce397bffac541e530acf1e7cce52a9cdd9b7c8a2a270d5a38b53e101c577ac7"
+    },
+    {
+      "path": "reference/slides_categories/brand-creative.md",
+      "bytes": 15240,
+      "lines": 203,
+      "sha256": "2fdbc3daa70844a318d932b029009dbe4f8cdd4ebb7ab934624dd4af1308e6b4"
+    },
+    {
+      "path": "reference/slides_categories/business-plan.md",
+      "bytes": 6585,
+      "lines": 50,
+      "sha256": "52a792b923a033561e47e62c37d7097aa377622f91118daa322d2c4206f99f45"
+    },
+    {
+      "path": "reference/slides_categories/education-training.md",
+      "bytes": 25068,
+      "lines": 256,
+      "sha256": "7c36e6bd01e68e53351e740a9630f118b54b772f020cf9d3bb8a1790342d072e"
+    },
+    {
+      "path": "reference/slides_categories/management-report.md",
+      "bytes": 5801,
+      "lines": 38,
+      "sha256": "6610b058c6c6198322f893daa7957cbdcb5488a32ca5525cc54dfc4105ae857f"
+    },
+    {
+      "path": "reference/slides_categories/tech-engineering.md",
+      "bytes": 19145,
+      "lines": 205,
+      "sha256": "b833561d27e2ad618fadff4667b1bb7f55ede1cd391f63190abacb0cab0a3f11"
+    },
+    {
+      "path": "reference/slides_categories.md",
+      "bytes": 4832,
+      "lines": 34,
+      "sha256": "467f0e7ea080cb7a6c291eb3bf5009ba08ee0562c2a407c1f452b31ac256b6ad"
+    }
+  ]
+}

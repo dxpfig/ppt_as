@@ -1,0 +1,334 @@
+pageType: content
+background:
+  type: solid
+  color: '#F6F5EF'
+notes: Click Next for each effect. Reset restores authored state.
+elements:
+- elementId: title
+  elementType: text
+  bounds:
+  - 44
+  - 24
+  - 860
+  - 54
+  content:
+    text: 动画 12–22
+    fontFamily: Noto Sans CJK SC
+    fontSize: 30
+    color: '#19382E'
+- elementId: effect-teeter
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-teeter
+  elementType: text
+  bounds:
+  - 44
+  - 168
+  - 208
+  - 30
+  content:
+    text: teeter
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-fill-color
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-fill-color
+  elementType: text
+  bounds:
+  - 268
+  - 168
+  - 208
+  - 30
+  content:
+    text: fill-color
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-transparency
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-transparency
+  elementType: text
+  bounds:
+  - 492
+  - 168
+  - 208
+  - 30
+  content:
+    text: transparency
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-color-pulse
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 716
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-color-pulse
+  elementType: text
+  bounds:
+  - 716
+  - 168
+  - 208
+  - 30
+  content:
+    text: color-pulse
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-disappear
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-disappear
+  elementType: text
+  bounds:
+  - 44
+  - 296
+  - 208
+  - 30
+  content:
+    text: disappear
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-fade-out
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-fade-out
+  elementType: text
+  bounds:
+  - 268
+  - 296
+  - 208
+  - 30
+  content:
+    text: fade-out
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-fly-out
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-fly-out
+  elementType: text
+  bounds:
+  - 492
+  - 296
+  - 208
+  - 30
+  content:
+    text: fly-out
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-zoom-out
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 716
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-zoom-out
+  elementType: text
+  bounds:
+  - 716
+  - 296
+  - 208
+  - 30
+  content:
+    text: zoom-out
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-wipe-out
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-wipe-out
+  elementType: text
+  bounds:
+  - 44
+  - 424
+  - 208
+  - 30
+  content:
+    text: wipe-out
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-float-out
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-float-out
+  elementType: text
+  bounds:
+  - 268
+  - 424
+  - 208
+  - 30
+  content:
+    text: float-out
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-motion-path
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-motion-path
+  elementType: text
+  bounds:
+  - 492
+  - 424
+  - 208
+  - 30
+  content:
+    text: motion-path
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+animations:
+- elementId: effect-teeter
+  effect: teeter
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-fill-color
+  effect: fill-color
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  color: '#D79032'
+- elementId: effect-transparency
+  effect: transparency
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  amount: 0.35
+- elementId: effect-color-pulse
+  effect: color-pulse
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  color: '#D79032'
+- elementId: effect-disappear
+  effect: disappear
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-fade-out
+  effect: fade-out
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-fly-out
+  effect: fly-out
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-zoom-out
+  effect: zoom-out
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-wipe-out
+  effect: wipe-out
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-float-out
+  effect: float-out
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-motion-path
+  effect: motion-path
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  path: M 0 0 Q 40 -40 80 0

@@ -1,0 +1,331 @@
+pageType: content
+background:
+  type: solid
+  color: '#F6F5EF'
+notes: Click Next for each effect. Reset restores authored state.
+elements:
+- elementId: title
+  elementType: text
+  bounds:
+  - 44
+  - 24
+  - 860
+  - 54
+  content:
+    text: 动画 1–11
+    fontFamily: Noto Sans CJK SC
+    fontSize: 30
+    color: '#19382E'
+- elementId: effect-appear
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-appear
+  elementType: text
+  bounds:
+  - 44
+  - 168
+  - 208
+  - 30
+  content:
+    text: appear
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-fade-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-fade-in
+  elementType: text
+  bounds:
+  - 268
+  - 168
+  - 208
+  - 30
+  content:
+    text: fade-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-fly-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-fly-in
+  elementType: text
+  bounds:
+  - 492
+  - 168
+  - 208
+  - 30
+  content:
+    text: fly-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-zoom-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 716
+  - 104
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-zoom-in
+  elementType: text
+  bounds:
+  - 716
+  - 168
+  - 208
+  - 30
+  content:
+    text: zoom-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-wipe-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-wipe-in
+  elementType: text
+  bounds:
+  - 44
+  - 296
+  - 208
+  - 30
+  content:
+    text: wipe-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-float-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-float-in
+  elementType: text
+  bounds:
+  - 268
+  - 296
+  - 208
+  - 30
+  content:
+    text: float-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-peek-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-peek-in
+  elementType: text
+  bounds:
+  - 492
+  - 296
+  - 208
+  - 30
+  content:
+    text: peek-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-rise-in
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 716
+  - 232
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-rise-in
+  elementType: text
+  bounds:
+  - 716
+  - 296
+  - 208
+  - 30
+  content:
+    text: rise-in
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-pulse
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 44
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-pulse
+  elementType: text
+  bounds:
+  - 44
+  - 424
+  - 208
+  - 30
+  content:
+    text: pulse
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-grow-shrink
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 268
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-grow-shrink
+  elementType: text
+  bounds:
+  - 268
+  - 424
+  - 208
+  - 30
+  content:
+    text: grow-shrink
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+- elementId: effect-spin
+  elementType: shape
+  shapeName: roundRect
+  bounds:
+  - 492
+  - 360
+  - 170
+  - 58
+  fill:
+    type: solid
+    color: '#166854'
+- elementId: label-effect-spin
+  elementType: text
+  bounds:
+  - 492
+  - 424
+  - 208
+  - 30
+  content:
+    text: spin
+    fontFamily: Noto Sans CJK SC
+    fontSize: 18
+    color: '#19382E'
+animations:
+- elementId: effect-appear
+  effect: appear
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-fade-in
+  effect: fade-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-fly-in
+  effect: fly-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-zoom-in
+  effect: zoom-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-wipe-in
+  effect: wipe-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-float-in
+  effect: float-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-peek-in
+  effect: peek-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+  direction: up
+- elementId: effect-rise-in
+  effect: rise-in
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-pulse
+  effect: pulse
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-grow-shrink
+  effect: grow-shrink
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
+- elementId: effect-spin
+  effect: spin
+  trigger: onClick
+  durationMs: 500
+  easing: ease-in-out
