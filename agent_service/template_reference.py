@@ -22,6 +22,8 @@ from pathlib import Path
 from pptd_engine.document import load_yaml
 from pptd_engine.pptx import Importer
 
+from . import template_spec
+
 REFERENCE_DIRECTORY = 'template_references'
 SOURCE_PREFIX = 'template-page-'
 DOCUMENT_NAMES = ('doc.pptd', 'document.pptd')
@@ -93,7 +95,14 @@ def load(root: Path | None, template_id: str | None) -> dict | None:
     pages = [{'path': path, 'data': load_yaml(directory / path)} for path in document['pages']]
     media = [{'path': path.relative_to(directory).as_posix(), 'sourcePath': str(path), 'template': True}
              for path in sorted((directory / 'media').rglob('*')) if path.is_file()]
-    return {'summary': summarize(document, pages), 'sources': sources(pages), 'media': media}
+    summary = summarize(document, pages)
+    # Step 1 + 3 of the extraction flow: the design the pages actually paint (size
+    # ladder, per-role typography, palette, margins) and the parts that repeat
+    # often enough to count as the template's language.
+    data = [page['data'] for page in pages]
+    summary['design'] = template_spec.tokens(data)
+    summary['components'] = template_spec.components(data)
+    return {'summary': summary, 'sources': sources(pages), 'media': media}
 
 
 def sources(pages: list[dict]) -> dict[str, str]:

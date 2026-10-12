@@ -64,6 +64,44 @@ class OverviewTests(unittest.TestCase):
         self.assertEqual(attachments[0]['role'], 'template-overview')
         self.assertEqual(len(attachments), 7)  # sheet + six key pages
 
+    def test_tokens_read_the_design_the_pages_paint(self):
+        def text(identity, value, size, color, y, x=40):
+            return {'elementId': identity, 'elementType': 'text', 'bounds': [x, y, 600, 30],
+                    'content': {'text': f'<p><span style="font-family:微软雅黑;font-size:{size}px;color:{color}">{value}</span></p>'}}
+
+        pages = [
+            {'elements': [text('cover', '申购汇报', 66, '#FFFFFF', 200)]},
+            {'elements': [text('t2', '一、必要性', 30, '#E50011', 20),
+                          text('b2', '正文内容', 13, '#000000', 120),
+                          text('f2', '公司名', 12, '#333333', 500)]},
+            {'elements': [text('t3', '二、技术路线', 30, '#E50011', 20),
+                          text('b3', '正文内容', 13, '#000000', 120),
+                          text('f3', '公司名', 12, '#333333', 500)]},
+            {'elements': [text('t4', '三、预算', 30, '#E50011', 20),
+                          text('b4', '正文内容', 13, '#000000', 120),
+                          text('f4', '公司名', 12, '#333333', 500)]},
+            {'elements': [text('closing', '请领导讲话', 100, '#FFFFFF', 200)]},
+        ]
+        result = template_spec.tokens(pages)
+        self.assertEqual(result['textStyles']['page-title']['fontSize'], 30.0)
+        self.assertEqual(result['textStyles']['page-title']['color'], '#E50011')
+        self.assertEqual(result['textStyles']['body']['fontSize'], 13.0)
+        self.assertEqual(result['textStyles']['footer']['fontSize'], 12.0)
+        self.assertEqual(result['colors']['primary'], '#E50011')
+        self.assertEqual(result['metrics']['leftMargin'], 40.0)
+
+    def test_components_keep_only_repeated_parts(self):
+        def shape(identity, name, width, height):
+            return {'elementId': identity, 'elementType': 'shape', 'shapeName': name,
+                    'bounds': [10, 10, width, height]}
+        pages = [{'elements': [shape(f'c{index}', 'roundRect', 163, 300)]} for index in range(3)]
+        pages.append({'elements': [shape('once', 'star5', 80, 80)]})
+        found = template_spec.components(pages)
+        self.assertEqual([item['name'] for item in found], ['roundRect'])
+        self.assertEqual(found[0]['uses'], 3)
+        self.assertEqual(found[0]['size'], [163, 300])
+        self.assertNotIn('star5', [item['name'] for item in found])
+
 
 if __name__ == '__main__':
     unittest.main()

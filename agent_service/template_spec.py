@@ -8,6 +8,8 @@ pipeline already trusts (LibreOffice/Chromium PDF, then PyMuPDF rasterisation).
 """
 from __future__ import annotations
 
+import re
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pymupdf
@@ -18,6 +20,11 @@ from .rendering import render_pdf
 THUMB_WIDTH = 480
 MARGIN = 14
 CAPTION = 22
+HTML_TAG = re.compile(r'<[^>]+>')
+FONT_FAMILY = re.compile(r'font-family\s*:\s*([^;"\']+)')
+FONT_SIZE = re.compile(r'font-size\s*:\s*([0-9.]+)px')
+TEXT_COLOR = re.compile(r'(?<![-\w])color\s*:\s*(#[0-9a-fA-F]{6,8})')
+REPEAT_THRESHOLD = 3
 
 
 class OverviewUnavailable(ValueError):
@@ -107,3 +114,173 @@ async def ensure(folder: Path, pptx: Path, *, columns: int = 4) -> dict | None:
         return await overview(pptx, folder, columns=columns)
     except (OverviewUnavailable, OSError, RuntimeError):
         return None
+
+
+def _plain(text) -> str:
+    return ' '.join(HTML_TAG.sub('', str(text or '')).split())
+
+
+def _dominant(text) -> dict:
+    """Font size, family, colour and weight of the largest run in one text field."""
+    value = str(text or '')
+    sizes = [float(item) for item in FONT_SIZE.findall(value)]
+    families = [item.strip().strip('"\'') for item in FONT_FAMILY.findall(value)]
+    colors = [item.upper() for item in TEXT_COLOR.findall(value)]
+    return {
+        'fontSize': max(sizes) if sizes else None,
+        'fontFamily': families[0] if families else None,
+        'color': colors[0] if colors else None,
+        'bold': '<strong>' in value,
+    }
+
+
+def tokens(pages: list[dict]) -> dict:
+    """The design system the pages actually paint, not the package's stock theme.
+
+    A hand-designed deck keeps Office's theme in place and puts the real design in
+    direct formatting, so the usable token table has to be derived from the text
+    and shapes themselves: size ladder, per-role typography, palette and metrics.
+    """
+    texts = []
+    for index, page in enumerate(pages):
+        for element in page.get('elements') or []:
+            if element.get('elementType') != 'text':
+                continue
+            content = element.get('content') or {}
+            words = _plain(content.get('text'))
+            if not words:
+                continue
+            style = _dominant(content.get('text'))
+            style.update({'page': index + 1, 'elementId': element.get('elementId'),
+                          'bounds': element.get('bounds') or [], 'characters': len(words), 'text': words[:40]})
+            texts.append(style)
+    if not texts:
+        return {'textStyles': {}, 'colors': {}, 'metrics': {}, 'sizeLadder': []}
+    sizes = Counter(item['fontSize'] for item in texts if item['fontSize'])
+    ladder = [size for size, _ in sizes.most_common()]
+    roles: dict[str, dict] = {}
+
+    def adopt(role: str, items: list[dict]) -> None:
+        """One role = the most common look among its candidates."""
+        items = [item for item in items if item]
+        if not items:
+            return
+        signature = Counter((item['fontSize'], item['fontFamily'], item['color'], item['bold']) for item in items)
+        (size, family, color, bold), count = signature.most_common(1)[0]
+        style: dict = {'bold': bold}
+        if size:
+            style['fontSize'] = size
+        if family:
+            style['fontFamily'] = family
+        if color:
+            style['color'] = color
+        left = [item['bounds'][0] for item in items if len(item['bounds']) == 4]
+        top = [item['bounds'][1] for item in items if len(item['bounds']) == 4]
+        if left:
+            style['x'] = round(min(left), 1)
+        if top:
+            style['y'] = round(min(top), 1)
+        roles[role] = {**style, 'samples': count}
+
+    by_page: dict[int, list[dict]] = defaultdict(list)
+    for item in texts:
+        by_page[item['page']].append(item)
+    for items in by_page.values():
+        items.sort(key=lambda item: item['fontSize'] or 0, reverse=True)
+    # Footer/header chrome is real, but it is not the body copy: keep it in its own
+    # roles so "the most common small size" means the card text, not the page number.
+    height = 540.0
+    def band(item: dict) -> str | None:
+        bounds = item['bounds']
+        if len(bounds) != 4:
+            return None
+        if bounds[1] >= height * 0.9:
+            return 'footer'
+        # Only small running heads count as header chrome; the 30px page title also
+        # sits near the top and must stay content.
+        if bounds[1] + bounds[3] <= height * 0.12 and (item['fontSize'] or 0) <= 14:
+            return 'header'
+        return None
+
+    for role in ('footer', 'header'):
+        adopt(role, [item for item in texts if band(item) == role])
+    content_texts = [item for item in texts if band(item) is None]
+    last = max(by_page)
+    adopt('cover-title', by_page.get(1, [])[:1])
+    adopt('closing-title', by_page.get(last, [])[:1])
+    content_pages = [page for page in sorted(by_page)
+                     if page not in (1, last) and any(band(item) is None for item in by_page[page])]
+    adopt('page-title', [next(item for item in by_page[page] if band(item) is None) for page in content_pages])
+    adopt('lead', [item for page in content_pages
+                   for item in [next((candidate for candidate in by_page[page][1:] if band(candidate) is None), None)][:1]
+                   if item])
+    content_sizes = Counter(item['fontSize'] for item in content_texts if item['fontSize'])
+    title_size = (roles.get('page-title') or {}).get('fontSize')
+    # Body copy is the most common size *below* the page title; on a tie the title
+    # would otherwise win simply because it appears first on the page.
+    candidates = Counter({size: count for size, count in content_sizes.items() if size != title_size}) or content_sizes
+    body_size = candidates.most_common(1)[0][0] if candidates else None
+    adopt('body', [item for item in content_texts if item['fontSize'] == body_size])
+    small = [size for size, count in sorted(content_sizes.items()) if count >= REPEAT_THRESHOLD]
+    adopt('caption', [item for item in content_texts if item['fontSize'] == (small[0] if small else None)])
+
+    palette = Counter()
+    for page in pages:
+        for element in page.get('elements') or []:
+            fill = element.get('fill') if isinstance(element.get('fill'), dict) else None
+            if fill and fill.get('color'):
+                palette[fill['color'].upper()] += 1
+            border = element.get('border') if isinstance(element.get('border'), dict) else None
+            if border and border.get('color'):
+                palette[border['color'].upper()] += 1
+    text_colors = Counter(item['color'] for item in texts if item['color'])
+    # Page margins come from the column the content pages use, not from a cover
+    # title that deliberately spans the full width.
+    placed = [item['bounds'] for item in content_texts
+              if len(item['bounds']) == 4 and item['page'] not in (1, max(by_page))]
+    return {
+        'textStyles': roles,
+        'colors': {
+            'textColors': [{'color': color, 'uses': count} for color, count in text_colors.most_common(6)],
+            'fills': [{'color': color, 'uses': count} for color, count in palette.most_common(8)],
+            'primary': (roles.get('page-title') or {}).get('color') or (text_colors.most_common(1)[0][0] if text_colors else None),
+        },
+        'metrics': {
+            'leftMargin': round(min(bounds[0] for bounds in placed), 1) if placed else None,
+            'titleTop': (roles.get('page-title') or {}).get('y'),
+            'sizeLadder': [size for size, _ in content_sizes.most_common()],
+            'averageCharacters': round(sum(item['characters'] for item in texts) / len(texts)),
+        },
+        'sizeLadder': [size for size, _ in content_sizes.most_common()],
+    }
+
+
+def components(pages: list[dict], *, threshold: int = REPEAT_THRESHOLD) -> list[dict]:
+    """Parts that repeat often enough to count as the template's language.
+
+    The reference workflow keeps only patterns seen three times or more: one-offs
+    are page-specific decisions rather than the template's reusable components.
+    """
+    found: dict[tuple, list[dict]] = defaultdict(list)
+    for index, page in enumerate(pages):
+        for element in page.get('elements') or []:
+            kind = element.get('elementType')
+            bounds = element.get('bounds') or [0, 0, 0, 0]
+            if kind == 'shape':
+                key = ('shape', element.get('shapeName'), round(bounds[2]), round(bounds[3]))
+            elif kind == 'image':
+                key = ('image', '', round(bounds[2]), round(bounds[3]))
+            elif kind == 'table':
+                key = ('table', f"{len(element.get('columnWidths') or [])}x{len(element.get('rows') or [])}", 0, 0)
+            elif kind == 'chart':
+                key = ('chart', str(len(element.get('series') or [])), 0, 0)
+            else:
+                continue
+            found[key].append({'page': index + 1, 'elementId': element.get('elementId')})
+    result = []
+    for (kind, name, width, height), uses in found.items():
+        if len(uses) < threshold:
+            continue
+        result.append({'kind': kind, 'name': name, 'size': [width, height], 'uses': len(uses),
+                       'pages': sorted({item['page'] for item in uses}), 'sample': uses[0]['elementId']})
+    return sorted(result, key=lambda item: item['uses'], reverse=True)
