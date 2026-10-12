@@ -167,6 +167,21 @@ background/notes/animations changes omit elementId. Never replace the entire
 page or elements array. Do not modify pages outside selectedSlideId. Preserve
 existing notes/animations unless explicitly asked to alter them.""",
     "plan-repair": "Repair the supplied plan and validation errors. Return the complete plan using exactly the plan JSON contract supplied in the context. Preserve user requirements and inspected source material.",
+    "template": """Fill a company presentation template with this presentation's own content.
+The supplied template inventory lists every template page with the stable paragraph
+address (`id`) and the company's current words. Return {title, pages:[{number,
+title, paragraphs:[{id, text}]}]}.
+- Choose which template pages this deck keeps and in what order: the cover (page 1)
+  first, the closing page last. The deck's page count comes from that choice.
+- Address paragraphs by the supplied ids only. Never invent an id, never address
+  one paragraph twice, and never name a page the inventory does not contain.
+- Company chrome - footer company name, copyright line, logo text, page numbers -
+  is fixed furniture: leave it out of `paragraphs`.
+- Replace the template's content words with this presentation's content, each
+  replacement close in length to the original so it still fits the box the company
+  designed. A small label stays a small label.
+- This route changes text only. Never claim to add, remove or restyle images,
+  shapes, charts, animation or layout.""",
 }
 
 
