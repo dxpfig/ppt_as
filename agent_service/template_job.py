@@ -156,7 +156,11 @@ async def ask_deck(model, rules: KimiRules, request, pages: dict, scenario: str,
     system = rules.system("template", scenario, template=True) + contract
     agent = make_agent("TemplateDeck", system, model, session_id)
     message = Msg(name="user", content=_message_content(prompt_context(request, pages, scenario, issues)), role="user")
-    response = await _await_model(agent, message, {"phase": "pages"}, on_event, timeout=getattr(model, "pptd_request_timeout", 180))
+    # The inventory is large, so allow a longer single request than the PPTD
+    # stages - but never the provider's full timeout, which can leave a job
+    # hanging for half an hour before anyone sees a reason.
+    timeout = min(float(getattr(model, "pptd_request_timeout", 180)), 480)
+    response = await _await_model(agent, message, {"phase": "pages"}, on_event, timeout=timeout)
     parsed = _parse_json_response(response.get_text_content(), reasoning_prefix="minimax" in str(getattr(model, "model", "")).lower())
     return TemplateDeck.model_validate(parsed, strict=True).model_dump()
 
@@ -171,7 +175,7 @@ class TemplateIncomplete(ValueError):
 
 
 async def generate(request, progress, *, template_path: Path, model, rules: KimiRules | None = None,
-                   folder: Path, on_event=None, attempts: int = 3):
+                   folder: Path, on_event=None, attempts: int = 2):
     """Inventory -> model deck -> surgical apply -> verify. No PPTD in the middle."""
     from .kimi_rules import SCENARIOS
     rules = rules or KimiRules()
@@ -190,7 +194,11 @@ async def generate(request, progress, *, template_path: Path, model, rules: Kimi
         try:
             deck = await ask_deck(model, rules, request, pages, scenario, issues=issues or None,
                                   session_id=getattr(getattr(request, "project", None), "id", None), on_event=on_event)
-        except ValueError as error:
+        except asyncio.CancelledError:
+            raise
+        except (ValueError, TimeoutError, OSError) as error:
+            # A slow or unavailable provider must fail this job with a readable
+            # reason instead of retrying silently for tens of minutes.
             issues = [{"code": "InvalidResponse", "location": "deck", "message": str(error)}]
         else:
             issues = validate_deck(deck, pages)

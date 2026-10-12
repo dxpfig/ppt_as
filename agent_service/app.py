@@ -11,7 +11,9 @@ import logging
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, surgical, telemetry, template_reference
+import pymupdf
+
+from . import agents, images as image_service, surgical, telemetry, template_job, template_reference
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
@@ -701,7 +703,89 @@ def clean_error(exc):
     return message[:1500]
 
 
+async def run_template_job(identifier, request):
+    """Company-template route: keep the deck, change only its words.
+
+    The template is never converted: ``template_job`` picks the pages this deck
+    keeps, rewrites the paragraphs it names and prunes the rest, so background,
+    logo, footer, fonts and add-in data stay byte-identical. The result is the
+    company's own file with new content, which is why it does not go through the
+    PPTD pipeline at all.
+    """
+    project_id = request.project.id
+    template_id = request.templateId or request.project.templateId
+
+    def progress(stage, message):
+        assert_current_job(identifier, project_id)
+        update_job(identifier, status='running', stage=min(95, 20 + stage * 15), message=message)
+
+    if not template_id:
+        raise ValueError('模板路线需要选择一个公司模板。')
+    source = ROOT / 'templates' / key(str(template_id)) / 'template.pptx'
+    if not source.is_file():
+        raise ValueError('未找到公司模板文件，请重新上传。')
+    staging = ROOT / 'artifacts' / ('.staging-' + identifier)
+    if staging.exists():
+        import shutil
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    update_job(identifier, status='running', stage=10, message='正在读取模板页面与段落地址。')
+    model = agents.make_model()
+    try:
+        result = await asyncio.wait_for(
+            template_job.generate(request, progress, template_path=source, model=model, folder=staging,
+                                  on_event=lambda event: update_job(identifier, execution=checkpoint_execution(
+                                      read(job_path(identifier)).get('execution'), event.get('status', 'started'),
+                                      str(event.get('message', ''))[:200]))),
+            timeout=agents.timeout_setting('PPT_TEMPLATE_TIMEOUT_SECONDS', 2400))
+    finally:
+        await model.client.close()
+    assert_current_job(identifier, project_id)
+    update_job(identifier, stage=80, message='正在渲染 PDF 与逐页预览。')
+    deck = staging / 'presentation.pptx'
+    if not deck.is_file():
+        raise ValueError('模板套用没有产出 PPTX。')
+    await rendering.render_pdf(deck)
+    if not (staging / 'presentation.pdf').is_file():
+        raise ValueError('渲染器没有生成 PDF，无法发布。')
+    previews = []
+    document = pymupdf.open(staging / 'presentation.pdf')
+    for index in range(document.page_count):
+        name = f'slide-{index + 1}.png'
+        document[index].get_pixmap(matrix=pymupdf.Matrix(1.2, 1.2), alpha=False).save(staging / name)
+        previews.append(name)
+    document.close()
+    (staging / 'export-report.json').write_text(json.dumps(
+        {'status': 'template-surgical', 'templateId': template_id, 'title': result['deck']['title'],
+         'pages': result['report']['pages'], 'operations': result['report']['operations'],
+         'verification': result['report']['verification'], 'previews': previews},
+        ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    save(staging / 'metadata.json', {'id': identifier, 'route': 'template', 'templateId': template_id,
+                                     'pptx': 'presentation.pptx', 'pdf': 'presentation.pdf', 'previews': previews})
+    folder = ROOT / 'artifacts' / identifier
+    if folder.exists():
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+    os.replace(staging, folder)
+    base = f'{PREFIX}/artifacts/{identifier}'
+    project = read(project_path(project_id))
+    warnings = [f"模板路线：保留模板页 {result['report']['pages']}，其余页面已移除；未点名的部件逐字节保留。"]
+    project.update(phase='ready', activeJobId=None,
+                   artifact={'id': identifier, 'pptxUrl': base + '/presentation.pptx',
+                             'pdfUrl': base + '/presentation.pdf',
+                             'previewUrls': [base + '/' + name for name in previews],
+                             'reportUrl': base + '/export-report.json',
+                             'warnings': warnings},
+                   title=result['deck']['title'])
+    save(project_path(project_id), project)
+    update_job(identifier, status='succeeded', stage=100, message='模板套用完成，已发布 PPTX 与预览。',
+               result={'artifactId': identifier, 'pageCount': len(previews), 'url': base + '/presentation.pptx'})
+    return identifier
+
+
 async def run_job(identifier, request):
+    if request.kind == 'template':
+        return await run_template_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
         return await run_legacy_job(identifier, request)
     store = document_store()
