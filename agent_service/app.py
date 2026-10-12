@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSO
 
 import pymupdf
 
-from . import agents, design_systems, images as image_service, surgical, telemetry, template_job, template_reference
+from . import agents, design_systems, images as image_service, surgical, telemetry, template_job, template_reference, template_spec
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
@@ -1018,6 +1018,10 @@ async def pptd_import_template(identifier: str, body: dict = Body(...)):
         raise HTTPException(422, str(exc)) from exc
     if not reference:
         raise HTTPException(422, '模板参考分析未生成，请重试。')
+    # Step 2 of the extraction flow: a rendered overview so the design can be read
+    # as a picture, not only as parameters. Non-fatal: the reference itself is
+    # already usable without it.
+    overview = await template_spec.ensure(template_reference.reference_path(ROOT, template_id) / 'overview', source)
     # No other request may have started while Office conversion ran.
     project = read(project_path(identifier))
     ensure_not_deleted(identifier)
@@ -1027,4 +1031,5 @@ async def pptd_import_template(identifier: str, body: dict = Body(...)):
     project.update(templateId=template_id, workflow='pptd-v2', phase='outline', updatedAt=time.time(),
                    importWarnings=warnings, importReport=report, templateReference=reference['summary'])
     save(project_path(identifier), project)
-    return {'project': hydrate_project(project), 'warnings': warnings, 'reference': reference['summary']}
+    return {'project': hydrate_project(project), 'warnings': warnings, 'reference': reference['summary'],
+            'overview': overview}

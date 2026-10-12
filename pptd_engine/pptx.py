@@ -20,11 +20,12 @@ import math
 from pathlib import Path
 import re
 from typing import Any
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from .math import append_math, split_math
 from .icons import add_icon
 from .fonts import FontResolver, ALIASES, embed_fonts, is_east_asian
+from . import theme as theme_module
 
 from lxml import etree
 from PIL import Image
@@ -1115,6 +1116,14 @@ class Importer:
     def __init__(self, source: Path, output: Path):
         self.source, self.output = source.resolve(), output.resolve()
         self.prs = Presentation(self.source)
+        # The package's own theme: used both to resolve scheme colours that would
+        # otherwise be dropped, and to publish PPTD theme defaults.
+        try:
+            with ZipFile(self.source) as package:
+                self.theme_data = theme_module.extract(package)
+        except (OSError, BadZipFile):
+            self.theme_data = {}
+        self.scheme = self.theme_data.get('scheme', {})
         self.report = Report("PPTX-to-PPTD-v2", source)
         self.report.note("The caller supplies the --import-pptx source; its path and SHA-256 are recorded. The experiment uses the project's independently existing design-layouts/presentation.pptx.")
         self.report.data["sourceIsExportOutput"] = self.source == (self.output.parent / "export.pptx").resolve()
@@ -1125,6 +1134,11 @@ class Importer:
     def color(self, color: Any, loc: str) -> str | None:
         if color.type == MSO_COLOR_TYPE.RGB:
             return "#" + str(color.rgb)
+        if color.type is not None:
+            resolved = theme_module.resolve(self.scheme, getattr(color, 'theme_color', None))
+            if resolved:
+                # A scheme reference is exact once the package's own theme is read.
+                return resolved
         if color.type is not None:
             self.report.issue(loc, "theme-color", "Color is not an explicit sRGB color; inherited/theme color omitted.")
         return None
@@ -1498,6 +1512,16 @@ class Importer:
         (self.output / "media").mkdir(parents=True, exist_ok=True)
         doc = {"version": "v2", "title": self.prs.core_properties.title or self.source.stem,
                "size": [self.prs.slide_width.pt, self.prs.slide_height.pt], "pages": []}
+        if self.theme_data.get('theme'):
+            # Only the colour scheme travels with the document. Master text styles
+            # are Office's stock defaults in most hand-designed decks (Calibri,
+            # 44pt titles), so publishing them as the deck's design would mislead
+            # every consumer that falls back to them - charts included. They are
+            # kept in the report instead, and the real text styles are derived from
+            # what the pages actually paint.
+            colors = self.theme_data['theme'].get('colors')
+            if colors:
+                doc["theme"] = {"colors": colors}
         source_count = Counter()
         output_count = Counter()
         for si, slide in enumerate(self.prs.slides):
@@ -1527,6 +1551,10 @@ class Importer:
             doc["pages"].append(filename)
         (self.output / "doc.pptd").write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False))
         self.report.data.update({"output": str(self.output / "doc.pptd"), "sourceShapeCounts": dict(source_count), "importedElementCounts": dict(output_count), "pageCount": len(doc["pages"]), "sourceOOXMLEvidence": inspect_pptx(self.source)})
+        if self.theme_data:
+            # Reference material only: the package's own theme colours, colour map
+            # and master text styles, kept verbatim for auditing and extraction.
+            self.report.data["officeTheme"] = self.theme_data
         dump_json(self.output / "import-report.json", self.report.data)
         return self.report.data
 
