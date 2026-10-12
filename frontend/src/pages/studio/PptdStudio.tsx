@@ -82,10 +82,10 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		workflow: project.pptd ? 'edit' : 'new',
 	});
 	const [templateId, setTemplateId] = useState(project.templateId || '');
-	// "apply" keeps the template's pages and rewrites their text; "rebuild"
-	// composes new pages from the template's measured spec (contents rows and
-	// card columns follow the content's own count).
-	const [templateMode, setTemplateMode] = useState<'apply' | 'rebuild'>('apply');
+	// Rebuild is the default: it keeps the template's design while composing the
+	// deck from the content (page count, contents rows and card columns follow the
+	// content). "apply" stays available when byte-for-byte fidelity matters more.
+	const [templateMode, setTemplateMode] = useState<'apply' | 'rebuild'>('rebuild');
 	const workflowSelectedByUser = useRef(false);
 	const hasDocument = !!project.pptd;
 	useEffect(() => {
@@ -658,8 +658,12 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 												setTemplateMode(event.target.value as 'apply' | 'rebuild')
 											}
 										>
-											<option value="apply">套用模板 · 逐字节保真，只替换文字</option>
-											<option value="rebuild">重建 · 沿用模板版式，页数与条目按内容伸缩</option>
+											<option value="rebuild">
+												重建（推荐）· 沿用模板版式与组件，页数、目录条目、卡片列数由内容决定
+											</option>
+											<option value="apply">
+												套用 · 模板页原样保留，只替换文字（逐字节保真，版面不变）
+											</option>
 										</select>
 									</label>
 									<button

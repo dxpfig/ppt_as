@@ -168,19 +168,28 @@ page or elements array. Do not modify pages outside selectedSlideId. Preserve
 existing notes/animations unless explicitly asked to alter them.""",
     "plan-repair": "Repair the supplied plan and validation errors. Return the complete plan using exactly the plan JSON contract supplied in the context. Preserve user requirements and inspected source material.",
     "template-build": """Plan a new presentation on top of a company template's written
-specification. The spec lists the template's page types, each with the template
-pages it comes from, its skeleton, and its slots with a character capacity and a
-repeatable flag. Return {title, pages:[{pageType, templatePage, entries, fills}]}.
-- Choose the page types this deck needs, in order: start with the cover type and
-  end with the closing type. Honour the user's page count when one is given.
-- `fills` must cover every non-repeatable slot of that page type, keyed by slot
-  name, within its capacity. A slot you deliberately leave empty gets "".
-- `entries` fills a page type's repeatable slot, one string per copy: four
-  contents entries for four sections, five cards for five items. Use it whenever
-  the content has a different count than the template happens to show.
-- Never invent a page type or slot name, never exceed a capacity, and never write
-  the template's own example words: everything on the page must be this deck's
-  content.""",
+specification, and the kit the composer keeps on every page: the background, the
+top-right logo, the bottom-right company mark, the page-title treatment, and the
+type sizes / families / colours measured from the template.
+
+Two kinds of page may be planned:
+
+1. Template-faithful pages - cover, contents, closing: name the `pageType` and its
+   `templatePage`, fill its slots with `fills`, and give `entries` for a
+   repeatable slot so a contents page holds exactly as many rows as this deck has
+   sections.
+2. Composed body pages - the page design is yours: choose a `layout`
+   (cards / bullets / steps / keyNumbers / table / comparison), write the `title`
+   and optional `lead`, and supply `items` or `table`. The composer applies the
+   template's chrome, background and type styles automatically, so never describe
+   colours, fonts, logos, margins or coordinates - describe content and structure.
+   Use different layouts for different pages when the content calls for it.
+
+Return {title, pages:[{pageType, templatePage, entries, fills, layout, title, lead,
+items, table}]}. Start with the cover page (faithful) and end with the closing page
+(faithful), honour the requested page count, respect the capacities the spec
+reports for titles and per-line text, and never write the template's own example
+words: everything on the page must be this deck's content.""",
     "template-spec": """Write the reusable specification of a company template from its
 rendered pages and measured parameters. Return {summary, pageTypes, components,
 rules, prohibitions}. Look at the attached overview sheet and page renders together

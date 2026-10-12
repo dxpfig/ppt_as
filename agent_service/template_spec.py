@@ -532,8 +532,15 @@ def _rewrite(markup, value: str) -> str:
 
 class PlanPage(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    pageType: str = Field(min_length=1, max_length=40)
-    templatePage: int = Field(ge=1, le=400)
+    # Either a template page type (cover / contents / closing: template-faithful)
+    # or a free body layout composed from the template's kit.
+    pageType: str = Field(default='', max_length=40)
+    templatePage: int = Field(default=0, ge=0, le=400)
+    layout: str = Field(default='', max_length=24)
+    title: str = Field(default='', max_length=200)
+    lead: str = Field(default='', max_length=400)
+    items: list[dict] = Field(default_factory=list, max_length=12)
+    table: dict = Field(default_factory=dict)
     # One entry per copy of the page type's repeatable slot (contents rows, cards).
     entries: list[str] = Field(default_factory=list, max_length=40)
     fills: dict[str, str] = Field(default_factory=dict, max_length=12)
@@ -545,12 +552,59 @@ class BuildPlan(BaseModel):
     pages: list[PlanPage] = Field(min_length=1, max_length=60)
 
 
+def _validate_body(page: dict, index: int, spec: dict, summary: dict, issues: list[dict]) -> None:
+    """A composed body page: the layout must exist and content must fit the tokens."""
+    from . import template_kit
+    where = f'pages[{index}]'
+    layout = page.get('layout')
+    if layout not in template_kit.LAYOUTS:
+        issues.append({'code': 'UnknownLayout', 'location': f'{where}.layout',
+                       'message': f'可用版式：{list(template_kit.LAYOUTS)}'})
+        return
+    capacity = 0
+    for page_type in spec.get('pageTypes') or []:
+        for slot in page_type.get('slots') or []:
+            if slot['name'] in ('page-title', 'title'):
+                capacity = max(capacity, slot['characters'])
+    title = str(page.get('title') or '')
+    if capacity and len(title) > capacity:
+        issues.append({'code': 'SlotOverflow', 'location': f'{where}.title',
+                       'message': f'页标题容量 {capacity} 字，收到 {len(title)} 字。'})
+    items = page.get('items') or []
+    if layout == 'table':
+        table = page.get('table') or {}
+        if not table.get('columns') or not table.get('rows'):
+            issues.append({'code': 'EmptyLayout', 'location': f'{where}.table',
+                           'message': '表格版式需要 table.columns 与 table.rows。'})
+        return
+    if not items:
+        issues.append({'code': 'EmptyLayout', 'location': f'{where}.items',
+                       'message': f'{layout} 版式需要 items。'})
+        return
+    if len(items) > 8:
+        issues.append({'code': 'TooManyItems', 'location': f'{where}.items',
+                       'message': '单页最多 8 个条目（超出请分页）。'})
+    style = ((summary.get('design') or {}).get('textStyles') or {}).get('body') or {}
+    size = style.get('fontSize') or 13
+    per_line = max(12, int(900 / (float(size) * 1.15)))
+    limit = max(12, per_line // 3) if layout == 'cards' else per_line
+    for position, item in enumerate(items):
+        values = [item.get('label', '')] + list(item.get('bullets') or []) + [item.get('value', '')]
+        for value in values:
+            if len(str(value)) > limit:
+                issues.append({'code': 'SlotOverflow', 'location': f'{where}.items[{position}]',
+                               'message': f'{layout} 每行约 {limit} 字，收到 {len(str(value))} 字。'})
+
+
 def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
     """A plan may only use page types and capacity the spec actually grants."""
     issues = []
     types = {item['id']: item for item in spec.get('pageTypes') or []}
     for index, page in enumerate(plan.get('pages') or []):
         where = f'pages[{index}]'
+        if page.get('layout'):
+            _validate_body(page, index, spec, summary, issues)
+            continue
         page_type = types.get(page.get('pageType'))
         if page_type is None:
             issues.append({'code': 'UnknownPageType', 'location': f'{where}.pageType',
@@ -593,7 +647,7 @@ def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
     return issues
 
 
-def build(pages: list[dict], spec: dict, plan: dict) -> dict:
+def build(pages: list[dict], spec: dict, plan: dict, kit: dict | None = None) -> dict:
     """Assemble a new PPTD document from the template's own pages.
 
     Each planned page starts from the template page its page type came from, grows
@@ -604,7 +658,15 @@ def build(pages: list[dict], spec: dict, plan: dict) -> dict:
     library = {index + 1: page for index, page in enumerate(pages)}
     types = {item['id']: item for item in spec.get('pageTypes') or []}
     output = []
-    for page in plan['pages']:
+    for position, page in enumerate(plan['pages'], start=1):
+        if page.get('layout'):
+            # Free body page: the template supplies chrome, background and tokens;
+            # the layout and every content element are composed from the plan.
+            from . import template_kit
+            if not kit:
+                raise ValueError('自由排版需要先提取模板套件。')
+            output.append(template_kit.compose_body(kit, page, page_id=f'p{position:02d}'))
+            continue
         source = library.get(page['templatePage'])
         if source is None:
             raise ValueError(f"模板没有第 {page['templatePage']} 页。")

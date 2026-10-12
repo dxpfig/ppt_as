@@ -267,7 +267,12 @@ async def build_deck(request, progress, *, root: Path, template_id: str, model,
     if issues or plan is None:
         raise TemplateIncomplete('未能生成符合模板规范的计划。', plan, issues)
     progress(2, f"已确定 {len(plan['pages'])} 页：正在按模板组件与槽位组装")
-    built = await asyncio.to_thread(template_spec.build, pages, spec, plan)
+    # The kit is what a composed body page keeps: background, top-right logo,
+    # bottom-right company mark, title treatment and the type tokens.
+    from . import template_kit
+    kit = await asyncio.to_thread(template_kit.extract, pages, reference['summary'].get('design') or {},
+                                  reference['summary'].get('components') or [])
+    built = await asyncio.to_thread(template_spec.build, pages, spec, plan, kit)
     progress(3, '已按模板组装完成，准备渲染与导出验收')
     return {'plan': plan, 'document': built['document'], 'pages': built['pages'],
             'assets': reference['media']}

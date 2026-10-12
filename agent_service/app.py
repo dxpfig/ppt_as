@@ -828,7 +828,10 @@ async def _run_template_job(identifier, request, project_id, template_id):
 
     def progress(stage, message):
         assert_current_job(identifier, project_id)
-        update_job(identifier, status='running', stage=min(95, 20 + stage * 15), message=message)
+        # Name the route in every message: the task record must make it obvious
+        # whether the deck was rebuilt or the template's own pages were reused.
+        update_job(identifier, status='running', stage=min(95, 20 + stage * 15),
+                   message=f'套用模板（原页保真）：{message}')
 
     if not template_id:
         raise ValueError('模板路线需要选择一个公司模板。')
