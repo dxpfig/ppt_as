@@ -499,3 +499,111 @@ def _rewrite(markup, value: str) -> str:
     from .pptd_generation import _merge_markup, _styled_text, _dominant_style
     text = str(markup or '')
     return _merge_markup(text, value) or _styled_text(value, _dominant_style(text))
+
+
+class PlanPage(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    pageType: str = Field(min_length=1, max_length=40)
+    templatePage: int = Field(ge=1, le=400)
+    repeat: int = Field(default=0, ge=0, le=40)
+    fills: dict[str, str] = Field(default_factory=dict, max_length=12)
+
+
+class BuildPlan(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: str = Field(min_length=1, max_length=200)
+    pages: list[PlanPage] = Field(min_length=1, max_length=60)
+
+
+def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
+    """A plan may only use page types and capacity the spec actually grants."""
+    issues = []
+    types = {item['id']: item for item in spec.get('pageTypes') or []}
+    limits = {page['path']: {slot['name']: slot for slot in []} for page in []}
+    del limits
+    for index, page in enumerate(plan.get('pages') or []):
+        where = f'pages[{index}]'
+        page_type = types.get(page.get('pageType'))
+        if page_type is None:
+            issues.append({'code': 'UnknownPageType', 'location': f'{where}.pageType',
+                           'message': f"规范里没有 {page.get('pageType')!r} 这个页型；可选：{sorted(types)[:8]}"})
+            continue
+        if page.get('templatePage') not in page_type.get('templatePages', []):
+            issues.append({'code': 'TemplatePageMismatch', 'location': f'{where}.templatePage',
+                           'message': f"该页型来自模板第 {page_type.get('templatePages')} 页。"})
+        slots = {slot['name']: slot for slot in page_type.get('slots') or []}
+        for name, value in (page.get('fills') or {}).items():
+            slot = slots.get(name)
+            if slot is None:
+                issues.append({'code': 'UnknownSlot', 'location': f'{where}.fills.{name}',
+                               'message': f"该页型没有 {name!r} 槽位；可选：{sorted(slots)[:8]}"})
+            elif len(value) > max(slot['characters'], 1):
+                issues.append({'code': 'SlotOverflow', 'location': f'{where}.fills.{name}',
+                               'message': f"槽位 {name} 容量 {slot['characters']} 字，收到 {len(value)} 字。"})
+        if page.get('repeat'):
+            repeatable = [slot for slot in slots.values() if slot.get('repeatable')]
+            if not repeatable:
+                issues.append({'code': 'NoRepeatableSlot', 'location': f'{where}.repeat',
+                               'message': '该页型没有可复制的槽位。'})
+    return issues
+
+
+def build(pages: list[dict], spec: dict, plan: dict) -> dict:
+    """Assemble a new PPTD document from the template's own pages.
+
+    Each planned page starts from the template page its page type came from, grows
+    or trims the repeating unit to the requested count, and has its slots filled
+    inside the template's own markup. Nothing is drawn from scratch, so background,
+    chrome, components and typography stay the company's.
+    """
+    library = {index + 1: page for index, page in enumerate(pages)}
+    types = {item['id']: item for item in spec.get('pageTypes') or []}
+    output = []
+    for page in plan['pages']:
+        source = library.get(page['templatePage'])
+        if source is None:
+            raise ValueError(f"模板没有第 {page['templatePage']} 页。")
+        data = source
+        if page.get('repeat'):
+            data = expand_repeats(data, page['repeat'])
+        if page.get('fills'):
+            order = [slot['name'] for slot in (types.get(page['pageType']) or {}).get('slots') or []]
+            data = fill_named(data, page['fills'], order)
+        output.append(data)
+    return {'document': {'version': 'v2', 'title': plan['title'],
+                         'size': [960, 540], 'pages': [f'pages/{index + 1:02d}.page' for index in range(len(output))]},
+            'pages': [{'path': f'pages/{index + 1:02d}.page', 'data': data} for index, data in enumerate(output)]}
+
+
+def fill_named(page: dict, fills: dict[str, str], slot_order: list[str]) -> dict:
+    """Write the plan's text into the page's named slots.
+
+    The spec lists a page type's slots in reading order (title, lead, body, ...),
+    and the page's text elements are ranked by size then position; the i-th slot
+    lands on the i-th most prominent text. Numeric counters belong to repeating
+    units and are never treated as slots.
+    """
+    import copy as _copy
+    result = _copy.deepcopy(page)
+
+    def size_of(element: dict) -> float:
+        sizes = FONT_SIZE.findall(str((element.get('content') or {}).get('text', '')))
+        return max((float(value) for value in sizes), default=0.0)
+
+    candidates = [element for element in result['elements']
+                  if element.get('elementType') == 'text'
+                  and _plain((element.get('content') or {}).get('text')).strip()
+                  and not _NUMBERING.fullmatch(_plain(element['content']['text']).strip())]
+    candidates.sort(key=lambda element: (-size_of(element), (element.get('bounds') or [0, 0])[1]))
+    used = set()
+    for name in slot_order:
+        value = fills.get(name)
+        if value is None:
+            continue
+        target = next((element for element in candidates if id(element) not in used), None)
+        if target is None:
+            break
+        used.add(id(target))
+        content = target.setdefault('content', {})
+        content['text'] = _rewrite(content.get('text'), value)
+    return result
