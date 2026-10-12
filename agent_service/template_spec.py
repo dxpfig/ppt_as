@@ -410,16 +410,41 @@ def repeat_units(page: dict) -> dict:
     key, anchor = max(groups.items(), key=lambda item: len(item[1]))
     if len(anchor) < 2:
         return {}
-    starts = sorted(round(element['bounds'][1], 2) for element in anchor)
+    # Cards may be laid out in a column (contents rows) or in a row (icon cards):
+    # the axis with the larger spread is the one the template repeats along.
+    xs = [element['bounds'][0] for element in anchor]
+    ys = [element['bounds'][1] for element in anchor]
+    axis = 0 if (max(xs) - min(xs)) > (max(ys) - min(ys)) else 1
+    starts = sorted(round(element['bounds'][axis], 2) for element in anchor)
     step = round((starts[-1] - starts[0]) / (len(starts) - 1), 2)
     if step <= 0:
         return {}
     units = []
+    cross_axis = 1 - axis
+    cross_low = min(element['bounds'][cross_axis] for element in anchor)
+    cross_high = max(element['bounds'][cross_axis] + element['bounds'][cross_axis + 2] for element in anchor)
+
+    def belongs(element: dict) -> bool:
+        bounds = element.get('bounds') or []
+        if len(bounds) != 4:
+            return False
+        if axis == 1:
+            # Column layout: the row band already separates rows, and a wide row
+            # (badge + bar + label) legitimately spans past a narrow anchor.
+            return True
+        low = bounds[cross_axis]
+        high = low + bounds[cross_axis + 2]
+        # A member shares the row/column slot *and* sits alongside the anchor on
+        # the other axis; without the second test a page header above a row of
+        # cards would be swallowed into the first card.
+        return high > cross_low and low < cross_high
+
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else start + step
         units.append([element for element in elements
-                      if len(element.get('bounds') or []) == 4 and start <= element['bounds'][1] < end])
-    return {'anchor': key, 'step': step, 'starts': starts, 'units': units}
+                      if len(element.get('bounds') or []) == 4
+                      and start <= element['bounds'][axis] < end and belongs(element)])
+    return {'anchor': key, 'step': step, 'starts': starts, 'units': units, 'axis': 'x' if axis == 0 else 'y'}
 
 
 _NUMBERING = re.compile(r'^0*(\d{1,3})$')
@@ -443,12 +468,13 @@ def expand_repeats(page: dict, count: int) -> dict:
     anchors = {id(element) for unit in units for element in unit}
     base = units[-1]
     step = found['step']
+    axis = 0 if found.get('axis', 'y') == 'x' else 1
     if count > len(units):
         for extra in range(1, count - len(units) + 1):
             for element in base:
                 clone = _copy.deepcopy(element)
                 bounds = clone['bounds']
-                bounds[1] = round(bounds[1] + step * extra, 2)
+                bounds[axis] = round(bounds[axis] + step * extra, 2)
                 elements.append(clone)
     elif count < len(units):
         drop = {id(element) for unit in units[count:] for element in unit}
@@ -505,7 +531,8 @@ class PlanPage(BaseModel):
     model_config = ConfigDict(extra='forbid')
     pageType: str = Field(min_length=1, max_length=40)
     templatePage: int = Field(ge=1, le=400)
-    repeat: int = Field(default=0, ge=0, le=40)
+    # One entry per copy of the page type's repeatable slot (contents rows, cards).
+    entries: list[str] = Field(default_factory=list, max_length=40)
     fills: dict[str, str] = Field(default_factory=dict, max_length=12)
 
 
@@ -519,8 +546,6 @@ def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
     """A plan may only use page types and capacity the spec actually grants."""
     issues = []
     types = {item['id']: item for item in spec.get('pageTypes') or []}
-    limits = {page['path']: {slot['name']: slot for slot in []} for page in []}
-    del limits
     for index, page in enumerate(plan.get('pages') or []):
         where = f'pages[{index}]'
         page_type = types.get(page.get('pageType'))
@@ -540,11 +565,28 @@ def validate_plan(plan: dict, spec: dict, summary: dict) -> list[dict]:
             elif len(value) > max(slot['characters'], 1):
                 issues.append({'code': 'SlotOverflow', 'location': f'{where}.fills.{name}',
                                'message': f"槽位 {name} 容量 {slot['characters']} 字，收到 {len(value)} 字。"})
-        if page.get('repeat'):
-            repeatable = [slot for slot in slots.values() if slot.get('repeatable')]
+        repeatable = [slot for slot in slots.values() if slot.get('repeatable')]
+        entries = page.get('entries') or []
+        if entries:
             if not repeatable:
-                issues.append({'code': 'NoRepeatableSlot', 'location': f'{where}.repeat',
-                               'message': '该页型没有可复制的槽位。'})
+                issues.append({'code': 'NoRepeatableSlot', 'location': f'{where}.entries',
+                               'message': '该页型没有可复制的槽位，不能给出 entries。'})
+            else:
+                # The widest repeatable slot is the label column; the counter next
+                # to it is generated, not written by the plan.
+                widest = max(repeatable, key=lambda slot: slot['characters'])
+                limit = max(widest['characters'], 1)
+                for position, value in enumerate(entries):
+                    if len(value) > limit:
+                        issues.append({'code': 'SlotOverflow', 'location': f'{where}.entries[{position}]',
+                                       'message': f"可复制槽位 {widest['name']} 容量 {limit} 字，收到 {len(value)} 字。"})
+        # A template slot must never ship the company's own words: every slot the
+        # page type declares has to be addressed by the plan.
+        missing = [slot['name'] for slot in slots.values()
+                   if not slot.get('repeatable') and slot['name'] not in (page.get('fills') or {})]
+        if missing:
+            issues.append({'code': 'SlotMissing', 'location': f'{where}.fills',
+                           'message': f'这些槽位必须给出内容（可填空字符串表示留空）：{missing}'})
     return issues
 
 
@@ -563,25 +605,52 @@ def build(pages: list[dict], spec: dict, plan: dict) -> dict:
         source = library.get(page['templatePage'])
         if source is None:
             raise ValueError(f"模板没有第 {page['templatePage']} 页。")
+        page_type = types.get(page['pageType']) or {}
+        slots = page_type.get('slots') or []
         data = source
-        if page.get('repeat'):
-            data = expand_repeats(data, page['repeat'])
-        if page.get('fills'):
-            order = [slot['name'] for slot in (types.get(page['pageType']) or {}).get('slots') or []]
-            data = fill_named(data, page['fills'], order)
+        entries = page.get('entries') or []
+        if entries:
+            data = fill_slots(expand_repeats(data, len(entries)), {'repeat': entries})
+        elif any(slot.get('repeatable') for slot in slots):
+            # No entries for this page: empty the unit's own text as well, so the
+            # template's example rows never ship.
+            data = blank_repeatable(data)
+        if page.get('fills') or slots:
+            data = fill_named(data, page.get('fills') or {}, slots)
         output.append(data)
     return {'document': {'version': 'v2', 'title': plan['title'],
                          'size': [960, 540], 'pages': [f'pages/{index + 1:02d}.page' for index in range(len(output))]},
             'pages': [{'path': f'pages/{index + 1:02d}.page', 'data': data} for index, data in enumerate(output)]}
 
 
-def fill_named(page: dict, fills: dict[str, str], slot_order: list[str]) -> dict:
-    """Write the plan's text into the page's named slots.
+def blank_repeatable(page: dict) -> dict:
+    """Empty the repeating unit's text, keeping its counters and geometry."""
+    found = repeat_units(page)
+    if not found:
+        # The page type declares a repeatable slot but this page shows none: leave
+        # the page as it is rather than inventing a row.
+        return page
+    result = expand_repeats(page, len(found['units']))
+    for unit in repeat_units(result).get('units') or []:
+        for element in unit:
+            content = element.get('content')
+            if element.get('elementType') != 'text' or not isinstance(content, dict):
+                continue
+            if _NUMBERING.fullmatch(_plain(content.get('text')).strip()):
+                continue
+            content['text'] = _rewrite(content.get('text'), '')
+    return result
 
-    The spec lists a page type's slots in reading order (title, lead, body, ...),
-    and the page's text elements are ranked by size then position; the i-th slot
-    lands on the i-th most prominent text. Numeric counters belong to repeating
-    units and are never treated as slots.
+
+def fill_named(page: dict, fills: dict[str, str], slots: list[dict]) -> dict:
+    """Write the plan's text into the page's named slots, blanking the rest.
+
+    The spec lists a page type's slots in reading order (title, lead, body, ...);
+    the page's non-repeating text elements are ranked by size then position and the
+    i-th slot lands on the i-th most prominent one. Repeatable slots are handled by
+    ``entries``, and numeric counters belong to the repeating unit, so neither is
+    treated as a named slot. A slot the plan does not address is emptied rather
+    than left showing the company's own words.
     """
     import copy as _copy
     result = _copy.deepcopy(page)
@@ -590,20 +659,22 @@ def fill_named(page: dict, fills: dict[str, str], slot_order: list[str]) -> dict
         sizes = FONT_SIZE.findall(str((element.get('content') or {}).get('text', '')))
         return max((float(value) for value in sizes), default=0.0)
 
+    unit_ids = {id(element) for unit in (repeat_units(result).get('units') or []) for element in unit}
     candidates = [element for element in result['elements']
                   if element.get('elementType') == 'text'
+                  and id(element) not in unit_ids
                   and _plain((element.get('content') or {}).get('text')).strip()
                   and not _NUMBERING.fullmatch(_plain(element['content']['text']).strip())]
     candidates.sort(key=lambda element: (-size_of(element), (element.get('bounds') or [0, 0])[1]))
-    used = set()
-    for name in slot_order:
-        value = fills.get(name)
-        if value is None:
+    position = 0
+    for slot in slots:
+        if slot.get('repeatable'):
             continue
-        target = next((element for element in candidates if id(element) not in used), None)
-        if target is None:
+        if position >= len(candidates):
             break
-        used.add(id(target))
+        target = candidates[position]
+        position += 1
+        value = fills.get(slot['name'])
         content = target.setdefault('content', {})
-        content['text'] = _rewrite(content.get('text'), value)
+        content['text'] = _rewrite(content.get('text'), value or '')
     return result

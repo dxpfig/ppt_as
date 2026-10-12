@@ -167,6 +167,20 @@ background/notes/animations changes omit elementId. Never replace the entire
 page or elements array. Do not modify pages outside selectedSlideId. Preserve
 existing notes/animations unless explicitly asked to alter them.""",
     "plan-repair": "Repair the supplied plan and validation errors. Return the complete plan using exactly the plan JSON contract supplied in the context. Preserve user requirements and inspected source material.",
+    "template-build": """Plan a new presentation on top of a company template's written
+specification. The spec lists the template's page types, each with the template
+pages it comes from, its skeleton, and its slots with a character capacity and a
+repeatable flag. Return {title, pages:[{pageType, templatePage, entries, fills}]}.
+- Choose the page types this deck needs, in order: start with the cover type and
+  end with the closing type. Honour the user's page count when one is given.
+- `fills` must cover every non-repeatable slot of that page type, keyed by slot
+  name, within its capacity. A slot you deliberately leave empty gets "".
+- `entries` fills a page type's repeatable slot, one string per copy: four
+  contents entries for four sections, five cards for five items. Use it whenever
+  the content has a different count than the template happens to show.
+- Never invent a page type or slot name, never exceed a capacity, and never write
+  the template's own example words: everything on the page must be this deck's
+  content.""",
     "template-spec": """Write the reusable specification of a company template from its
 rendered pages and measured parameters. Return {summary, pageTypes, components,
 rules, prohibitions}. Look at the attached overview sheet and page renders together

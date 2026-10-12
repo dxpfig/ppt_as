@@ -28,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from agentscope.message import Msg
 
 from . import surgical
+from . import template_spec
+from . import template_reference
 from .kimi_rules import KimiRules
 from .pptd_generation import _await_model, _message_content, _parse_json_response
 from .agents import make_agent
@@ -171,6 +173,85 @@ async def ask_deck(model, rules: KimiRules, request, pages: dict, scenario: str,
     response = await _await_model(agent, message, {"phase": "pages"}, on_event, timeout=timeout)
     parsed = _parse_json_response(response.get_text_content(), reasoning_prefix="minimax" in str(getattr(model, "model", "")).lower())
     return TemplateDeck.model_validate(parsed, strict=True).model_dump()
+
+
+async def ask_plan(model, rules: KimiRules, request, spec: dict, tokens: dict, scenario: str, *,
+                   issues: list[dict] | None = None, session_id=None, on_event=None):
+    """One strict JSON round trip for the rebuild plan."""
+    from .agents import make_agent
+    contract = ('\n\nJSON TRANSPORT CONTRACT\nReturn exactly one JSON object as assistant text, no tool call, '
+                'no XML, no explanation, no code fence. Schema:\n'
+                + json.dumps(template_spec.BuildPlan.model_json_schema(), ensure_ascii=False))
+    system = rules.system('template-build', scenario, template=True) + contract
+    agent = make_agent('TemplateBuild', system, model, session_id)
+    payload = {
+        'request': request.prompt,
+        'audience': request.audience,
+        'pageCount': getattr(request, 'pageCount', None),
+        'templateSpec': spec,
+        'design': tokens,
+    }
+    if issues:
+        payload['validationErrors'] = issues
+    message = Msg(name='user', content=_message_content(payload), role='user')
+    response = await _await_model(agent, message, {'phase': 'plan'}, on_event,
+                                  timeout=min(float(getattr(model, 'pptd_request_timeout', 180)), 480))
+    parsed = _parse_json_response(response.get_text_content(),
+                                  reasoning_prefix='minimax' in str(getattr(model, 'model', '')).lower())
+    return template_spec.BuildPlan.model_validate(parsed, strict=True).model_dump()
+
+
+async def build_deck(request, progress, *, root: Path, template_id: str, model,
+                     rules: KimiRules | None = None, on_event=None, attempts: int = 3):
+    """Rebuild route: plan against the template's spec, then compose new pages.
+
+    The spec has already measured the template (page types, slots, capacities,
+    repeating units). The model only chooses pages and writes text inside those
+    limits, and the composer grows repeating slots to the content's own count.
+    """
+    reference = template_reference.load(root, template_id)
+    if not reference:
+        raise TemplateIncomplete('模板参考不存在，请先导入模板。')
+    folder = template_reference.reference_path(root, template_id) / 'overview'
+    spec = template_spec.load_spec(folder)
+    if not spec:
+        raise TemplateIncomplete('这份模板还没有归纳出规范（spec.json），请先完成模板分析。')
+    sources = reference['sources']
+    pages = [json.loads(sources[key]) for key in sorted(sources)]
+    rules = rules or KimiRules()
+    scenario = getattr(request, 'scenario', 'auto')
+    from .kimi_rules import SCENARIOS
+    if scenario not in SCENARIOS:
+        scenario = 'management-report'
+    progress(0, f"已读取模板规范（{len(spec['pageTypes'])} 个页型），正在规划本次页面与内容")
+    issues: list[dict] = []
+    plan = None
+    previous: set[str] = set()
+    for attempt in range(attempts):
+        try:
+            plan = await ask_plan(model, rules, request, spec, reference['summary'].get('design') or {},
+                                  scenario, issues=issues or None,
+                                  session_id=getattr(getattr(request, 'project', None), 'id', None),
+                                  on_event=on_event)
+        except Exception as error:  # provider failures must fail with a reason
+            issues = [{'code': 'ModelUnavailable', 'location': 'plan',
+                       'message': f'{type(error).__name__}: {error}'[:300]}]
+        else:
+            issues = template_spec.validate_plan(plan, spec, reference['summary'])
+            if not issues:
+                break
+        fingerprint = json.dumps([issue.get('message') for issue in issues], ensure_ascii=False)
+        if fingerprint in previous:
+            raise TemplateIncomplete('模板重建计划连续返回相同问题，已停止。', plan, issues)
+        previous.add(fingerprint)
+        progress(1, f"第 {attempt + 1} 轮调整：{len(issues)} 项需要修正")
+    if issues or plan is None:
+        raise TemplateIncomplete('未能生成符合模板规范的计划。', plan, issues)
+    progress(2, f"已确定 {len(plan['pages'])} 页：正在按模板组件与槽位组装")
+    built = await asyncio.to_thread(template_spec.build, pages, spec, plan)
+    progress(3, '已按模板组装完成，准备渲染与导出验收')
+    return {'plan': plan, 'document': built['document'], 'pages': built['pages'],
+            'assets': reference['media']}
 
 
 class TemplateIncomplete(ValueError):
