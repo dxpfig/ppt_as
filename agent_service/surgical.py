@@ -26,10 +26,10 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills' / 'pptx-surgical' / 'scripts'
 TEXT_LIMIT = 5000
-# One deck can legitimately rewrite every paragraph of every page it keeps; a
-# company template page often carries 40-60 of them, so this bound only guards
-# against pathological output instead of normal fills.
-OPERATION_LIMIT = 2000
+# A deck can legitimately rewrite every paragraph of every page it keeps; a
+# company template page often carries 40-60 of them. The schema already bounds a
+# plan at 60 pages x 80 paragraphs, so this guard only catches malformed output.
+OPERATION_LIMIT = 60 * 80
 
 P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
