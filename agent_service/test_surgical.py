@@ -65,6 +65,15 @@ class SurgicalTests(unittest.TestCase):
                     surgical.apply(self.source, operations, self.root / 'never.pptx')
         self.assertFalse((self.root / 'never.pptx').exists())
 
+    def test_a_full_deck_of_paragraph_edits_is_accepted(self):
+        # A real template page carries dozens of paragraphs, so filling several
+        # pages easily passes 200 operations; the guard must not reject that.
+        operations = [{'id': f's{1 + index // 40}#p{index % 40}', 'text': f'第 {index} 段'} for index in range(400)]
+        self.assertEqual(len(surgical.validate(operations)), 400)
+        with self.assertRaises(surgical.SurgicalError) as caught:
+            surgical.validate([{'id': 's1#p0', 'text': 'x'}] * (surgical.OPERATION_LIMIT + 1))
+        self.assertIn(str(surgical.OPERATION_LIMIT), str(caught.exception))
+
     def test_missing_find_target_is_reported_not_silently_skipped(self):
         with self.assertRaises(surgical.SurgicalError):
             surgical.apply(self.source, [{'slide': 2, 'find': '不存在的句子', 'replace': '新文字'}],

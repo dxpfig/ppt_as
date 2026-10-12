@@ -721,6 +721,10 @@ async def run_template_job(identifier, request):
     except Exception as exc:
         # Never leave a template job 'running' forever: report the real reason.
         message, diagnostic, context = diagnose_error(exc, 'template')
+        # This route keeps no generation checkpoint, so the shared "resume from
+        # checkpoint" tail would promise something that does not exist here.
+        message = message.removesuffix('。已保留检查点，可继续恢复；无需重新生成已完成页面。')
+        message += '。请重新发起一次模板生成（本路线不保留生成检查点）。'
         update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic,
                    recoverable=False,
                    execution=terminal_execution(read(job_path(identifier)).get('execution'), 'failed', message, context))

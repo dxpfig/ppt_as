@@ -26,6 +26,10 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills' / 'pptx-surgical' / 'scripts'
 TEXT_LIMIT = 5000
+# One deck can legitimately rewrite every paragraph of every page it keeps; a
+# company template page often carries 40-60 of them, so this bound only guards
+# against pathological output instead of normal fills.
+OPERATION_LIMIT = 2000
 
 P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -70,8 +74,8 @@ def validate(operations: object) -> list[dict]:
     """Accept only the two documented operations, with bounded text."""
     if not isinstance(operations, list) or not operations:
         raise SurgicalError('需要非空的 ops 列表。')
-    if len(operations) > 200:
-        raise SurgicalError('一次最多 200 条 ops。')
+    if len(operations) > OPERATION_LIMIT:
+        raise SurgicalError(f'一次最多 {OPERATION_LIMIT} 条 ops，收到 {len(operations)} 条。')
     cleaned = []
     for item in operations:
         if not isinstance(item, dict):
