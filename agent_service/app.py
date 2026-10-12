@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference
+from . import agents, images as image_service, surgical, telemetry, template_reference
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
@@ -433,6 +433,46 @@ async def artifact_file(identifier: str, filename: str):
     if not path.is_file():
         raise HTTPException(404, "未找到文件。")
     return FileResponse(path, filename=filename if not filename.endswith(".png") else None)
+
+
+@app.get(PREFIX + '/templates/{identifier}/surgical')
+async def template_surgical_inspect(identifier: str):
+    """Paragraph addresses a surgical edit can target in this template.
+
+    Editing a real corporate deck in place is lossless; converting it to PPTD is
+    not (add-in data, embedded workbooks and embedded fonts do not survive). This
+    route exposes the same three-step loop the reference skill uses: prep here,
+    edit below, verify inside ``apply``.
+    """
+    source = ROOT / 'templates' / key(identifier) / 'template.pptx'
+    if not source.is_file():
+        raise HTTPException(404, '未找到公司模板。')
+    try:
+        return await asyncio.to_thread(surgical.inspect, source)
+    except surgical.SurgicalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post(PREFIX + '/templates/{identifier}/surgical')
+async def template_surgical_apply(identifier: str, body: dict = Body(...)):
+    """Apply surgical operations to a copy of the template, keeping all else byte-identical."""
+    source = ROOT / 'templates' / key(identifier) / 'template.pptx'
+    if not source.is_file():
+        raise HTTPException(404, '未找到公司模板。')
+    artifact_id = uuid4().hex
+    folder = ROOT / 'artifacts' / artifact_id
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / 'presentation.pptx'
+    try:
+        report = await asyncio.to_thread(surgical.apply, source, body.get('operations'), destination)
+    except surgical.SurgicalError as exc:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(422, str(exc)) from exc
+    save(folder / 'metadata.json', {'id': artifact_id, 'source': 'surgical', 'templateId': identifier,
+                                    'operations': report['operations'], 'verification': report['verification']})
+    return {**report, 'artifactId': artifact_id,
+            'url': f'{PREFIX}/artifacts/{artifact_id}/presentation.pptx'}
 
 
 @app.exception_handler(RevisionConflict)
