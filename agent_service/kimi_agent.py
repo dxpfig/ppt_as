@@ -244,6 +244,11 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "20"))
     template_path = _prepare_template(data_root, getattr(request, "templateId", None), workspace)
     model = make_model()
+    # The agentic ReAct loop makes many short model calls. Per-call remote token
+    # counting is both slow and rate-limit-prone, and AgentScope's own context
+    # compression already bounds the loop. Disable the deterministic-pipeline
+    # budget for this route so one busy counting endpoint cannot abort the job.
+    model.budget_enabled = False
 
     async def emit(phase, status, message, **fields):
         if on_event:
