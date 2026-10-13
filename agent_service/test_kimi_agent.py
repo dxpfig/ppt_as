@@ -82,6 +82,47 @@ class KimiAgentUnitTests(unittest.TestCase):
             (root / "deck" / "deck.pptd").write_text("version: v2\n", encoding="utf-8")
             self.assertEqual(kimi_agent._find_entry(root).name, "deck.pptd")
 
+    def test_extract_and_apply_company_chrome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template-pptd"
+            (template / "media").mkdir(parents=True)
+            (template / "media" / "top.png").write_bytes(b"top")
+            (template / "media" / "logo.png").write_bytes(b"logo")
+            (template / "template.pptd").write_text(
+                "version: v2\nsize: [960, 540]\npages: [pages/a.page, pages/b.page]\n", encoding="utf-8")
+            (template / "pages").mkdir()
+            page = (
+                "elements:\n"
+                "- elementId: t\n  elementType: image\n  src: media/top.png\n  bounds: [758, -22, 210, 130]\n"
+                "- elementId: l\n  elementType: image\n  src: media/logo.png\n  bounds: [730, 518, 74, 13]\n"
+                "- elementId: n\n  elementType: text\n  content: {text: 长沙湘计海盾科技有限公司}\n  bounds: [805, 516, 156, 15]\n"
+            )
+            (template / "pages" / "a.page").write_text(page, encoding="utf-8")
+            (template / "pages" / "b.page").write_text(page, encoding="utf-8")
+
+            chrome = kimi_agent._extract_chrome(template)
+            self.assertEqual(len(chrome), 3)
+            self.assertTrue(any(e.get("src") == "media/top.png" for e in chrome))
+            self.assertTrue(any(e.get("src") == "media/logo.png" for e in chrome))
+
+            deck = root / "deck"
+            (deck / "media").mkdir(parents=True)
+            (deck / "deck.pptd").write_text("version: v2\nsize: [960, 540]\npages: [pages/one.page]\n", encoding="utf-8")
+            (deck / "pages").mkdir()
+            (deck / "pages" / "one.page").write_text(
+                "elements:\n- elementId: x\n  elementType: text\n  content: {text: hi}\n  bounds: [40, 40, 400, 60]\n",
+                encoding="utf-8")
+            document = {"size": [960, 540]}
+            pages = [{"path": "pages/one.page", "data": {"elements": [
+                {"elementId": "x", "elementType": "text", "content": {"text": "hi"}, "bounds": [40, 40, 400, 60]}]}}]
+            kimi_agent._apply_chrome(deck, document, pages, chrome, template)
+            ids = [e["elementId"] for e in pages[0]["data"]["elements"]]
+            self.assertEqual(len(ids), 4)
+            self.assertEqual(len(set(ids)), 4)
+            self.assertTrue((deck / "media" / "top.png").is_file())
+            self.assertTrue((deck / "media" / "logo.png").is_file())
+
 
 @unittest.skipUnless(
     os.getenv("PPT_KIMI_RUN_E2E") == "1",

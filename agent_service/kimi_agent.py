@@ -278,6 +278,100 @@ def _collect_assets(entry: Path) -> dict[str, Path]:
     return assets
 
 
+def _corner(bounds, size):
+    """Classify an element into the top-right / bottom-right company chrome band."""
+    if not (isinstance(bounds, list) and len(bounds) == 4 and all(isinstance(v, (int, float)) for v in bounds)):
+        return False, False
+    x, y, w, h = bounds
+    width, height = size
+    # Deliberately tight: chrome is a small element glued to the right edge, not a
+    # full-page background, a wide title, or a large content shape.
+    right = x >= width * 0.72 and w <= width * 0.4
+    top = right and h <= height * 0.4 and y <= height * 0.03
+    bottom = right and h <= height * 0.12 and y + h >= height * 0.97
+    return bool(top), bool(bottom)
+
+
+def _chrome_signature(element):
+    if element.get("elementType") == "image":
+        return ("image", element.get("src"))
+    if element.get("elementType") == "text":
+        text = re.sub(r"<[^>]+>", "", str((element.get("content") or {}).get("text", ""))).strip()
+        return ("text", text[:40])
+    return (element.get("elementType"), element.get("shapeName") or element.get("elementId"))
+
+
+def _extract_chrome(template_dir: Path) -> list[dict]:
+    """Recurring top-right / bottom-right elements shared by the template's pages."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        return []
+    document = load_yaml(entries[0])
+    size = document.get("size")
+    if not (isinstance(size, list) and len(size) == 2):
+        return []
+    top: dict[tuple, list] = {}
+    bottom: dict[tuple, list] = {}
+    for ref in document.get("pages", []):
+        data = load_yaml(template_dir / ref)
+        for element in data.get("elements", []):
+            if not isinstance(element, dict):
+                continue
+            in_top, in_bottom = _corner(element.get("bounds"), size)
+            if not (in_top or in_bottom):
+                continue
+            bucket = top if in_top else bottom
+            signature = _chrome_signature(element)
+            count, representative = bucket.get(signature, (0, element))
+            bucket[signature] = (count + 1, representative)
+    chrome: list[dict] = []
+    for bucket in (top, bottom):
+        if not bucket:
+            continue
+        highest = max(count for count, _ in bucket.values())
+        threshold = 2 if highest >= 2 else 1
+        chrome.extend(representative for count, representative in bucket.values() if count >= threshold)
+    return chrome
+
+
+def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: list[dict], template_dir: Path) -> None:
+    """Re-impose the template's company chrome onto every generated page."""
+    if not chrome:
+        return
+    size = document.get("size")
+    for element in chrome:
+        src = element.get("src")
+        if isinstance(src, str) and src.startswith("media/"):
+            source = template_dir / src
+            target = deck_dir / src
+            if source.is_file() and not target.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+    top = [e for e in chrome if _corner(e.get("bounds"), size)[0]]
+    bottom = [e for e in chrome if _corner(e.get("bounds"), size)[1]]
+    for page in pages:
+        data = page.get("data")
+        if not isinstance(data, dict):
+            continue
+        elements = data.setdefault("elements", [])
+        has_top = any(_corner(e.get("bounds"), size)[0] for e in elements if isinstance(e, dict))
+        has_bottom = any(_corner(e.get("bounds"), size)[1] for e in elements if isinstance(e, dict))
+        for group, present in ((top, has_top), (bottom, has_bottom)):
+            if present:
+                continue
+            for element in group:
+                clone = json.loads(json.dumps(element))
+                ids = {e.get("elementId") for e in elements if isinstance(e, dict)}
+                base = str(clone.get("elementId") or "chrome")
+                new_id = f"{base}-chrome"
+                while new_id in ids:
+                    new_id += "x"
+                clone["elementId"] = new_id
+                elements.append(clone)
+
+
 async def run_kimi(request, *, data_root: Path, progress, on_event=None, project_id: str, job_id: str):
     """Run the agentic loop, validate, and commit the produced deck."""
     workspace = _workspace(data_root, project_id, job_id)
@@ -312,6 +406,8 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         reply = _reply_text(reply_msg)
         entry = _find_entry(workspace)
         document, pages = _load_deck(entry)
+        if template_info:
+            _apply_chrome(entry.parent, document, pages, _extract_chrome(Path(template_info["pptd"])), Path(template_info["pptd"]))
         issues = validate_document({"document": document, "pages": pages}, resource_root=entry.parent)
         if issues:
             detail = "; ".join(f"{i.get('location')}: {i.get('message')}" for i in issues[:8])
