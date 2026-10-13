@@ -123,6 +123,58 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertTrue((deck / "media" / "top.png").is_file())
             self.assertTrue((deck / "media" / "logo.png").is_file())
 
+    def test_template_cover_and_closing_are_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template-pptd"
+            (template / "media").mkdir(parents=True)
+            (template / "media" / "cover.jpg").write_bytes(b"cover")
+            (template / "media" / "end.jpg").write_bytes(b"end")
+            (template / "template.pptd").write_text(
+                "version: v2\nsize: [960, 540]\npages: [pages/c.page, pages/e.page]\n", encoding="utf-8")
+            (template / "pages").mkdir()
+            (template / "pages" / "c.page").write_text(
+                "elements:\n"
+                "- elementId: bg\n  elementType: image\n  src: media/cover.jpg\n  bounds: [0, 0, 960, 540]\n"
+                '- elementId: t\n  elementType: text\n  bounds: [0, 100, 960, 80]\n  content: {text: \'<p style="text-align:center"><span style="font-family:MiSans;font-size:66.0px">模板标题</span></p>\'}\n'
+                '- elementId: s\n  elementType: text\n  bounds: [0, 244, 960, 36]\n  content: {text: \'<p style="text-align:center"><span style="font-size:24.0px">模板副标题</span></p>\'}\n',
+                encoding="utf-8")
+            (template / "pages" / "e.page").write_text(
+                "elements:\n"
+                "- elementId: bg\n  elementType: image\n  src: media/end.jpg\n  bounds: [0, 0, 960, 540]\n"
+                '- elementId: t\n  elementType: text\n  bounds: [0, 119, 960, 128]\n  content: {text: \'<p style="text-align:center"><span style="font-size:100.0px">请领导讲话！</span></p>\'}\n',
+                encoding="utf-8")
+
+            deck = root / "deck"
+            (deck / "media").mkdir(parents=True)
+            (deck / "pages").mkdir()
+            (deck / "deck.pptd").write_text("version: v2\nsize: [960, 540]\npages: [pages/one.page, pages/two.page]\n", encoding="utf-8")
+            (deck / "pages" / "one.page").write_text(
+                "elements:\n"
+                '- elementId: t\n  elementType: text\n  bounds: [40, 60, 800, 70]\n  content: {text: \'<p><span style="font-size:60.0px">新标题</span></p>\'}\n'
+                '- elementId: s\n  elementType: text\n  bounds: [40, 200, 800, 30]\n  content: {text: "新副标题"}\n',
+                encoding="utf-8")
+            (deck / "pages" / "two.page").write_text(
+                "elements:\n- elementId: b\n  elementType: text\n  bounds: [40, 40, 800, 300]\n  content: {text: '正文内容'}\n",
+                encoding="utf-8")
+            document = {"size": [960, 540], "pages": ["pages/one.page", "pages/two.page"]}
+            pages = [
+                {"path": "pages/one.page", "data": kimi_agent._load_deck(deck / "deck.pptd")[1][0]["data"]},
+                {"path": "pages/two.page", "data": kimi_agent._load_deck(deck / "deck.pptd")[1][1]["data"]},
+            ]
+            kimi_agent._apply_template_cover_closing(template, deck, document, pages)
+
+            cover = pages[0]["data"]
+            self.assertTrue(any(e.get("src") == "media/cover.jpg" for e in cover["elements"]))
+            cover_text = " ".join(kimi_agent._visible_text(e.get("content") or {}) for e in cover["elements"] if e.get("elementType") == "text")
+            self.assertIn("新标题", cover_text)
+            self.assertNotIn("模板标题", cover_text)
+            self.assertEqual(len(pages), 3)
+            closing_text = " ".join(kimi_agent._visible_text(e.get("content") or {}) for e in pages[-1]["data"]["elements"] if e.get("elementType") == "text")
+            self.assertIn("请领导讲话", closing_text)
+            self.assertEqual(document["pages"], [p["path"] for p in pages])
+            self.assertTrue((deck / "media" / "end.jpg").is_file())
+
 
 @unittest.skipUnless(
     os.getenv("PPT_KIMI_RUN_E2E") == "1",

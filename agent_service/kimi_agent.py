@@ -8,6 +8,7 @@ and close the ``kimi-slides check`` / ``screenshot`` loop before finishing.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import re
@@ -227,6 +228,8 @@ def _initial_message(request, template_info: dict | None = None) -> str:
             f"（入口 {template_info['entry']}），总览截图={template_info['screenshots']}。"
             "按 SKILL.md「Using a template」：分析其配色/字体/版式/可复用组件，然后为本次需求从头生成新内容。"
             "template-pptd/ 与 template-screenshots/ 只是分析素材，严禁把它们当作交付物，也严禁照抄模板的文字、数据或页数。"
+            "封面与致谢页会由宿主统一套用模板设计：首页给出标题/副标题/日期即可，末页只写一句收尾语（如「感谢观看」），"
+            "正文内容放在中间页。"
         )
     return json.dumps(payload, ensure_ascii=False)
 
@@ -336,7 +339,8 @@ def _extract_chrome(template_dir: Path) -> list[dict]:
     return chrome
 
 
-def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: list[dict], template_dir: Path) -> None:
+def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: list[dict], template_dir: Path,
+                  *, skip_first: bool = False, skip_last: bool = False) -> None:
     """Re-impose the template's company chrome onto every generated page."""
     if not chrome:
         return
@@ -351,7 +355,10 @@ def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: lis
                 target.write_bytes(source.read_bytes())
     top = [e for e in chrome if _corner(e.get("bounds"), size)[0]]
     bottom = [e for e in chrome if _corner(e.get("bounds"), size)[1]]
-    for page in pages:
+    start = 1 if skip_first else 0
+    stop = len(pages) - 1 if skip_last else len(pages)
+    for index in range(start, max(start, stop)):
+        page = pages[index]
         data = page.get("data")
         if not isinstance(data, dict):
             continue
@@ -370,6 +377,99 @@ def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: lis
                     new_id += "x"
                 clone["elementId"] = new_id
                 elements.append(clone)
+
+
+CLOSING_MARKERS = ("感谢", "谢谢", "请领导", "敬请", "thank you", "thanks", "q&a")
+
+
+def _font_size(content: dict) -> float:
+    value = content.get("fontSize")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    match = re.search(r"font-size:\s*([0-9.]+)px", str(content.get("text", "")))
+    return float(match.group(1)) if match else 0.0
+
+
+def _visible_text(content: dict) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", str(content.get("text", "")))).strip()
+
+
+def _text_slots(page_data: dict) -> list[dict]:
+    """Text elements ordered by prominence: largest font first, then top to bottom."""
+    slots = [e for e in page_data.get("elements", []) if isinstance(e, dict) and e.get("elementType") == "text"]
+    slots.sort(key=lambda e: (-_font_size(e.get("content") or {}), (e.get("bounds") or [0, 0, 0, 0])[1]))
+    return slots
+
+
+def _relabel(content: dict, text: str) -> dict:
+    """Replace visible text while keeping the template paragraph/run styling."""
+    markup = str(content.get("text", ""))
+    paragraph = re.search(r'<p[^>]*\sstyle="([^"]*)"', markup)
+    span = re.search(r'<span[^>]*\sstyle="([^"]*)"', markup)
+    escaped = html.escape(text)
+    body = f'<span style="{span.group(1)}">{escaped}</span>' if span else escaped
+    body = f'<p style="{paragraph.group(1)}">{body}</p>' if paragraph else f"<p>{body}</p>"
+    return {**content, "text": body}
+
+
+def _fill_template_page(template_page: dict, texts: list[str], *, keep_unfilled: bool) -> dict:
+    data = json.loads(json.dumps(template_page))
+    for index, element in enumerate(_text_slots(data)):
+        if index < len(texts):
+            element["content"] = _relabel(element.get("content") or {}, texts[index])
+        elif not keep_unfilled:
+            element["content"] = _relabel(element.get("content") or {}, "")
+    return data
+
+
+def _copy_page_media(page_data: dict, template_dir: Path, deck_dir: Path) -> None:
+    for element in page_data.get("elements", []):
+        src = element.get("src") if isinstance(element, dict) else None
+        if isinstance(src, str) and src.startswith("media/"):
+            source, target = template_dir / src, deck_dir / src
+            if source.is_file() and not target.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+
+
+def _is_closing_like(page_data: dict, path: str = "") -> bool:
+    """Only explicit closing wording or a closing-style page name counts."""
+    texts = [_visible_text(e.get("content") or {}) for e in page_data.get("elements", []) if isinstance(e, dict) and e.get("elementType") == "text"]
+    joined = (" ".join(t for t in texts if t) + " " + str(path)).lower()
+    return any(marker in joined for marker in CLOSING_MARKERS)
+
+
+def _apply_template_cover_closing(template_dir: Path, deck_dir: Path, document: dict, pages: list[dict]) -> None:
+    """Use the template's own cover and closing designs for the first/last page."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        return
+    template = load_yaml(entries[0])
+    refs = template.get("pages", [])
+    if len(refs) < 1 or not pages:
+        return
+    cover_template = load_yaml(template_dir / refs[0])
+    _copy_page_media(cover_template, template_dir, deck_dir)
+    cover_texts = [t for t in (_visible_text(e.get("content") or {}) for e in _text_slots(pages[0]["data"])) if t]
+    pages[0]["data"] = _fill_template_page(cover_template, cover_texts, keep_unfilled=False)
+    if len(refs) < 2:
+        document["pages"] = [p["path"] for p in pages]
+        return
+    closing_template = load_yaml(template_dir / refs[-1])
+    _copy_page_media(closing_template, template_dir, deck_dir)
+    if len(pages) >= 2 and _is_closing_like(pages[-1]["data"], pages[-1]["path"]):
+        closing_texts = [t for t in (_visible_text(e.get("content") or {}) for e in _text_slots(pages[-1]["data"])) if t]
+        pages[-1]["data"] = _fill_template_page(closing_template, closing_texts, keep_unfilled=False)
+    else:
+        existing = {p["path"] for p in pages}
+        path, n = "pages/closing.page", 1
+        while path in existing:
+            path = f"pages/closing-{n}.page"
+            n += 1
+        pages.append({"path": path, "data": _fill_template_page(closing_template, [], keep_unfilled=True)})
+    document["pages"] = [p["path"] for p in pages]
 
 
 async def run_kimi(request, *, data_root: Path, progress, on_event=None, project_id: str, job_id: str):
@@ -407,7 +507,10 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         entry = _find_entry(workspace)
         document, pages = _load_deck(entry)
         if template_info:
-            _apply_chrome(entry.parent, document, pages, _extract_chrome(Path(template_info["pptd"])), Path(template_info["pptd"]))
+            template_dir = Path(template_info["pptd"])
+            _apply_template_cover_closing(template_dir, entry.parent, document, pages)
+            _apply_chrome(entry.parent, document, pages, _extract_chrome(template_dir), template_dir,
+                          skip_first=True, skip_last=True)
         issues = validate_document({"document": document, "pages": pages}, resource_root=entry.parent)
         if issues:
             detail = "; ".join(f"{i.get('location')}: {i.get('message')}" for i in issues[:8])
