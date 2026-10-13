@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Linux-native kimi-slides CLI shim. Runs the PPTD engine through the project
+# virtualenv so it works exactly like the documented `kimi-slides` command.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$ROOT/.venv/bin/python" -m pptd_engine.cli "$@"

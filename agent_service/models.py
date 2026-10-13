@@ -62,7 +62,7 @@ class Project(BaseModel):
 
 
 class JobRequest(BaseModel):
-    kind: Literal["outline", "revise", "render"]
+    kind: Literal["outline", "revise", "render", "kimi-slides"]
     project: Project
     prompt: str = Field(default="", max_length=30000)
     pageCount: int | None = Field(default=None, ge=1, le=60)

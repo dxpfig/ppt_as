@@ -96,6 +96,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const [mode, setMode] = useState<'preview' | 'edit'>('preview');
 	const [showVersions, setShowVersions] = useState(false);
 	const [scope, setScope] = useState<'page' | 'deck'>('page');
+	const [expertMode, setExpertMode] = useState(false);
 	const [notice, setNotice] = useState('');
 	const [deleteId, setDeleteId] = useState<string | null>(null);
 	useEffect(() => {
@@ -251,7 +252,11 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		event.preventDefault();
 		if (!prompt.trim() || !canGenerate) return;
 		try {
-			const kind = project.pptd && preferences.workflow === 'edit' ? 'revise' : 'outline';
+			const kind = expertMode
+				? 'kimi-slides'
+				: project.pptd && preferences.workflow === 'edit'
+					? 'revise'
+					: 'outline';
 			const started = await studio.start(kind, {
 				...generationOptions(preferences),
 				prompt: prompt.trim(),
@@ -750,6 +755,15 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									添加演示动画
 								</label>
 							</details>
+							<label className="pptd-check">
+								<input
+									type="checkbox"
+									checked={expertMode}
+									disabled={busy}
+									onChange={(event) => setExpertMode(event.target.checked)}
+								/>
+								Kimi 专家（agentic，1:1 复刻）
+							</label>
 							{project.pptd && preferences.workflow === 'edit' && (
 								<label className="pptd-field">
 									<span>修改范围</span>
@@ -771,11 +785,13 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 								disabled={
 									!canGenerate ||
 									!prompt.trim() ||
-									(preferences.designMode === 'template' && !templateId)
+									(!expertMode && preferences.designMode === 'template' && !templateId)
 								}
 							>
 								<Sparkles size={17} />
-								{project.pptd && preferences.workflow === 'edit'
+								{expertMode
+									? '生成演示（Kimi）'
+									: project.pptd && preferences.workflow === 'edit'
 									? '应用修改'
 									: '生成演示'}
 								<ArrowUpRight size={16} />

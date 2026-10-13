@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, File, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import pptd_exports, pptd_generation, visual_pipeline
@@ -661,7 +661,64 @@ def clean_error(exc):
     return message[:1500]
 
 
+async def run_kimi_job(identifier, request):
+    """Agentic kimi-slides route: the model owns the workflow; no export gate."""
+    project_id = request.project.id
+
+    def progress(stage, message):
+        assert_current_job(identifier, project_id)
+        update_job(identifier, status='running', stage=stage, message=message)
+
+    def execution_event(event):
+        assert_current_job(identifier, project_id)
+        current = read(job_path(identifier))
+        execution = record_event(current.get('execution'), event)
+        stage = current.get('stage', 0)
+        update_job(identifier, stage=stage, execution=execution,
+                   message=execution['events'][-1]['message'] if execution['events'] else current['message'])
+
+    try:
+        progress(0, '准备 Kimi PPT 专家任务')
+        async with LLM_LIMIT:
+            result = await asyncio.wait_for(
+                kimi_agent.run_kimi(request, data_root=ROOT, progress=progress,
+                                    on_event=execution_event, project_id=project_id, job_id=identifier),
+                timeout=agents.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 1800),
+            )
+        project = assert_current_job(identifier, project_id)
+        project.update(workflow='pptd-v2', artifact=None,
+                       title=result['document'].get('title', project['title']),
+                       generationMeta=result.get('generationMeta', {}),
+                       phase='ready', activeJobId=None, contentGenerated=True, updatedAt=time.time())
+        reply = result.get('reply', '') or '演示文稿已生成，可编辑预览并手动导出。'
+        project['messages'] = [*project.get('messages', []), {'id': uuid4().hex, 'role': 'assistant', 'text': reply}][-1000:]
+        save(project_path(project_id), project)
+        execution = record_event(read(job_path(identifier)).get('execution'),
+                                 {'phase': 'done', 'status': 'completed', 'message': f'共 {len(result["pages"])} 页，演示文件已就绪'})
+        update_job(identifier, status='completed', stage=100, message='生成完成', recoverable=False,
+                   execution=execution,
+                   result={'reply': reply, 'revision': result['revision'],
+                           'pageCount': len(result['pages']), 'project': hydrate_project(project)})
+    except asyncio.CancelledError:
+        if read(job_path(identifier))['status'] != 'cancelled':
+            update_job(identifier, status='interrupted', message='任务中断，未生成可用文档。', recoverable=False,
+                       execution=terminal_execution(read(job_path(identifier)).get('execution'), 'interrupted', '任务中断，未生成可用文档。'))
+        finish_project_job(identifier)
+        raise
+    except Exception as exc:
+        current = read(job_path(identifier))
+        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'))
+        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic, recoverable=False,
+                   execution=terminal_execution(current.get('execution'), 'failed', message, context))
+        finish_project_job(identifier)
+    finally:
+        await telemetry.flush()
+        TASKS.pop(identifier, None)
+
+
 async def run_job(identifier, request):
+    if request.kind == 'kimi-slides':
+        return await run_kimi_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
         return await run_legacy_job(identifier, request)
     store = document_store()
