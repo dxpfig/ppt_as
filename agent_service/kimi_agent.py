@@ -31,7 +31,9 @@ ORIGINAL = ROOT / "docs" / "kimi-ppt" / "original"
 
 
 def _workspace(data_root: Path, project_id: str, job_id: str) -> Path:
-    return data_root / "kimi-workspace" / project_id / job_id
+    override = os.getenv("PPT_KIMI_WORKSPACE", "").strip()
+    base = Path(override).expanduser().resolve() if override else data_root
+    return base / "kimi-workspace" / project_id / job_id
 
 
 def _skill_text() -> str:
