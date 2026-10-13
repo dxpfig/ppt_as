@@ -48,6 +48,25 @@ class KimiAgentUnitTests(unittest.TestCase):
             assets = kimi_agent._collect_assets(entry)
             self.assertIn("media/a.png", assets)
 
+    def test_prepare_template_and_message(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "templates" / "abc123" / "template.pptx"
+            template.parent.mkdir(parents=True)
+            template.write_bytes(b"PPTX")
+            workspace = root / "ws"
+            workspace.mkdir()
+            path = kimi_agent._prepare_template(root, "abc123", workspace)
+            self.assertEqual(path.name, "template.pptx")
+            message = kimi_agent._initial_message(
+                SimpleNamespace(prompt="p", audience="a", pageCount=None, references="", attachments=[]),
+                path,
+            )
+            self.assertIn(str(path), message)
+            self.assertIn("Using a template", message)
+
 
 @unittest.skipUnless(
     os.getenv("PPT_KIMI_RUN_E2E") == "1",

@@ -36,6 +36,21 @@ def _workspace(data_root: Path, project_id: str, job_id: str) -> Path:
     return base / "kimi-workspace" / project_id / job_id
 
 
+def _prepare_template(data_root: Path, template_id, workspace: Path) -> Path | None:
+    """Copy the uploaded company template into the agent workspace and return it."""
+    if not template_id or not isinstance(template_id, str):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", template_id):
+        raise ValueError("无效的模板标识")
+    source = data_root / "templates" / template_id / "template.pptx"
+    if not source.is_file():
+        raise ValueError(f"未找到公司模板文件：{source}")
+    destination = workspace / "template" / "template.pptx"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
+    return destination
+
+
 def _skill_text() -> str:
     return (ORIGINAL / "SKILL.md").read_text(encoding="utf-8")
 
@@ -151,7 +166,7 @@ def _make_agent(model, workspace: Path, session_id: str | None, max_iters: int):
     )
 
 
-def _initial_message(request) -> str:
+def _initial_message(request, template_path: Path | None = None) -> str:
     attachments = []
     for item in getattr(request, "attachments", []) or []:
         if isinstance(item, dict):
@@ -162,8 +177,15 @@ def _initial_message(request) -> str:
         "pageCount": getattr(request, "pageCount", None),
         "references": getattr(request, "references", "") or "",
         "attachments": attachments,
+        "template": str(template_path) if template_path else None,
         "note": "附件仅提供名称与已有视觉分析；未提供的二进制内容不要假设。按 SKILL.md 判定任务与设计方式。",
     }
+    if template_path:
+        payload["note"] += (
+            " 已提供公司模板文件（template 字段为绝对路径）。按 SKILL.md「Using a template」执行："
+            "先用 kimi_slides convert 转成 PPTD、screenshot 看总览，分析配色/字体/版式/可复用组件后，"
+            "再据此生成本次演示内容；不要照搬模板的示例文字或页数。"
+        )
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -220,6 +242,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     workspace = _workspace(data_root, project_id, job_id)
     workspace.mkdir(parents=True, exist_ok=True)
     max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "20"))
+    template_path = _prepare_template(data_root, getattr(request, "templateId", None), workspace)
     model = make_model()
 
     async def emit(phase, status, message, **fields):
@@ -235,7 +258,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         agent = _make_agent(model, workspace, project_id, max_iters)
         await emit("pages", "started", "模型正在自由编排：判定任务、写页并自查。")
         reply_msg = await agent.reply(
-            Msg(name="user", role="user", content=[{"type": "text", "text": _initial_message(request)}])
+            Msg(name="user", role="user", content=[{"type": "text", "text": _initial_message(request, template_path)}])
         )
         reply = _reply_text(reply_msg)
         entry = _find_entry(workspace)

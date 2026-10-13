@@ -276,6 +276,7 @@ export function usePptdStudio() {
 			let current = projectRef.current;
 			const importTemplate =
 				kind !== 'render' &&
+				kind !== 'kimi-slides' &&
 				options.designMode === 'template' &&
 				options.templateId &&
 				(!current.pptd || current.templateId !== options.templateId);
