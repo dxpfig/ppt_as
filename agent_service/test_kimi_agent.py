@@ -60,12 +60,27 @@ class KimiAgentUnitTests(unittest.TestCase):
             workspace.mkdir()
             path = kimi_agent._prepare_template(root, "abc123", workspace)
             self.assertEqual(path.name, "template.pptx")
+            info = {"pptx": str(path), "pptd": str(workspace / "template-pptd"),
+                    "entry": str(workspace / "template-pptd" / "template.pptd"),
+                    "screenshots": str(workspace / "template-screenshots")}
             message = kimi_agent._initial_message(
                 SimpleNamespace(prompt="p", audience="a", pageCount=None, references="", attachments=[]),
-                path,
+                info,
             )
-            self.assertIn(str(path), message)
+            self.assertIn("template-pptd", message)
+            self.assertIn("严禁", message)
             self.assertIn("Using a template", message)
+
+    def test_find_entry_requires_new_deck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "template-pptd").mkdir()
+            (root / "template-pptd" / "template.pptd").write_text("version: v2\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                kimi_agent._find_entry(root)
+            (root / "deck").mkdir()
+            (root / "deck" / "deck.pptd").write_text("version: v2\n", encoding="utf-8")
+            self.assertEqual(kimi_agent._find_entry(root).name, "deck.pptd")
 
 
 @unittest.skipUnless(

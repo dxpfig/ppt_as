@@ -30,6 +30,13 @@ ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL = ROOT / "docs" / "kimi-ppt" / "original"
 
 
+def _cli_env() -> dict:
+    """Keep the repo importable when the CLI runs with the workspace as cwd."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
 def _workspace(data_root: Path, project_id: str, job_id: str) -> Path:
     override = os.getenv("PPT_KIMI_WORKSPACE", "").strip()
     base = Path(override).expanduser().resolve() if override else data_root
@@ -73,6 +80,12 @@ You are an agentic PPT expert in a local application. The archived Kimi
 - Your working directory is {workspace}. Produce the deck there with this
   layout: ``deck/deck.pptd`` (entry), ``deck/pages/*.page``, and
   ``deck/media/*`` for local images. Do not write to /tmp or /work.
+- The deliverable is ONLY a brand-new deck under ``{workspace}/deck/``. Any
+  converted template (``template-pptd/``) and its screenshots
+  (``template-screenshots/``) are analysis material: never deliver them, and
+  never copy the template's own text, data, page order or page count into the
+  answer. Generate content for the user's request and reuse only the template's
+  design language (colors, fonts, layout, reusable components).
 - ``<KIMI_REF .../>`` is not emitted as text. Finishing with a valid deck under
   the working directory is how you deliver; the host commits it and shows the
   editable card. The host owns export and versioning, so do not run any PPTX
@@ -100,7 +113,7 @@ def _cli_tool(workspace: Path) -> FunctionTool:
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "pptd_engine.cli", command, *args],
-                cwd=str(workspace), capture_output=True, text=True, timeout=360,
+                cwd=str(workspace), env=_cli_env(), capture_output=True, text=True, timeout=360,
             )
         except subprocess.TimeoutExpired:
             return "error: kimi_slides timed out"
@@ -166,7 +179,31 @@ def _make_agent(model, workspace: Path, session_id: str | None, max_iters: int):
     )
 
 
-def _initial_message(request, template_path: Path | None = None) -> str:
+def _run_cli(command: str, args: list[str], cwd: Path) -> str:
+    proc = subprocess.run(
+        [sys.executable, "-m", "pptd_engine.cli", command, *args],
+        cwd=str(cwd), env=_cli_env(), capture_output=True, text=True, timeout=900,
+    )
+    if proc.returncode:
+        raise ValueError(f"模板预处理 {command} 失败：{(proc.stderr or proc.stdout)[-2000:]}")
+    return proc.stdout or ""
+
+
+def _prepare_template_analysis(workspace: Path, template_pptx: Path) -> dict:
+    """Convert and screenshot the company template so the agent can analyze it."""
+    pptd_dir = workspace / "template-pptd"
+    shots_dir = workspace / "template-screenshots"
+    _run_cli("convert", [str(template_pptx), "-o", str(pptd_dir)], workspace)
+    _run_cli("screenshot", [str(pptd_dir), "-o", str(shots_dir)], workspace)
+    return {
+        "pptx": str(template_pptx),
+        "pptd": str(pptd_dir),
+        "entry": str(pptd_dir / f"{template_pptx.stem}.pptd"),
+        "screenshots": str(shots_dir),
+    }
+
+
+def _initial_message(request, template_info: dict | None = None) -> str:
     attachments = []
     for item in getattr(request, "attachments", []) or []:
         if isinstance(item, dict):
@@ -177,14 +214,19 @@ def _initial_message(request, template_path: Path | None = None) -> str:
         "pageCount": getattr(request, "pageCount", None),
         "references": getattr(request, "references", "") or "",
         "attachments": attachments,
-        "template": str(template_path) if template_path else None,
-        "note": "附件仅提供名称与已有视觉分析；未提供的二进制内容不要假设。按 SKILL.md 判定任务与设计方式。",
+        "template": template_info,
+        "note": (
+            "交付物必须在 deck/ 目录写出全新的 .pptd（建议 deck/deck.pptd + deck/pages/*.page + deck/media/*）；"
+            "不在 deck/ 下的产物不会被视为交付物。页数以用户指定为准。"
+            "附件仅提供名称与已有视觉分析；未提供的二进制内容不要假设。按 SKILL.md 判定任务与设计方式。"
+        ),
     }
-    if template_path:
+    if template_info:
         payload["note"] += (
-            " 已提供公司模板文件（template 字段为绝对路径）。按 SKILL.md「Using a template」执行："
-            "先用 kimi_slides convert 转成 PPTD、screenshot 看总览，分析配色/字体/版式/可复用组件后，"
-            "再据此生成本次演示内容；不要照搬模板的示例文字或页数。"
+            f" 已提供公司模板：pptx={template_info['pptx']}，已预转换的 PPTD={template_info['pptd']}"
+            f"（入口 {template_info['entry']}），总览截图={template_info['screenshots']}。"
+            "按 SKILL.md「Using a template」：分析其配色/字体/版式/可复用组件，然后为本次需求从头生成新内容。"
+            "template-pptd/ 与 template-screenshots/ 只是分析素材，严禁把它们当作交付物，也严禁照抄模板的文字、数据或页数。"
         )
     return json.dumps(payload, ensure_ascii=False)
 
@@ -208,12 +250,11 @@ def _reply_text(reply_msg) -> str:
 
 
 def _find_entry(workspace: Path) -> Path:
-    preferred = workspace / "deck" / "deck.pptd"
-    if preferred.is_file():
-        return preferred
-    entries = sorted(workspace.rglob("*.pptd"))
+    """Only the agent's brand-new deliverable counts; template analysis never does."""
+    deck_dir = workspace / "deck"
+    entries = sorted(deck_dir.glob("*.pptd")) if deck_dir.is_dir() else []
     if not entries:
-        raise ValueError("agent 未在工作目录生成 .pptd 入口")
+        raise ValueError("Kimi 专家没有在 deck/ 目录产出新的 .pptd 交付物（模板分析产物不会被当作答案）。")
     return entries[0]
 
 
@@ -241,8 +282,11 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     """Run the agentic loop, validate, and commit the produced deck."""
     workspace = _workspace(data_root, project_id, job_id)
     workspace.mkdir(parents=True, exist_ok=True)
-    max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "20"))
+    max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "40"))
     template_path = _prepare_template(data_root, getattr(request, "templateId", None), workspace)
+    template_info = None
+    if template_path:
+        template_info = await asyncio.to_thread(_prepare_template_analysis, workspace, template_path)
     model = make_model()
     # The agentic ReAct loop makes many short model calls. Per-call remote token
     # counting is both slow and rate-limit-prone, and AgentScope's own context
@@ -263,7 +307,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         agent = _make_agent(model, workspace, project_id, max_iters)
         await emit("pages", "started", "模型正在自由编排：判定任务、写页并自查。")
         reply_msg = await agent.reply(
-            Msg(name="user", role="user", content=[{"type": "text", "text": _initial_message(request, template_path)}])
+            Msg(name="user", role="user", content=[{"type": "text", "text": _initial_message(request, template_info)}])
         )
         reply = _reply_text(reply_msg)
         entry = _find_entry(workspace)
