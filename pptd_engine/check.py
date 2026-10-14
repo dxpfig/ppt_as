@@ -11,6 +11,7 @@ the actual design as the final source of truth.
 """
 from __future__ import annotations
 
+import colorsys
 import math
 import re
 from pathlib import Path
@@ -38,6 +39,7 @@ _CODE_META = {
     "TextUnderFill": ("TextUnderFill", "warning"),
     "TextOcclusion": ("TextOcclusion", "warning"),
     "TextDrift": ("TextDrift", "warning"),
+    "FillInconsistency": ("FillInconsistency", "warning"),
     # Structural codes produced by the local validator beyond the base 14.
     "InvalidSize": ("InvalidSize", "error"),
     "InvalidVersion": ("InvalidVersion", "error"),
@@ -254,6 +256,7 @@ def _heuristic_layout_issues(bundle: dict) -> list[dict]:
     document = bundle.get("document")
     if not isinstance(document, dict):
         return []
+    theme = document.get("theme") or {}
     size = document.get("size")
     if not (isinstance(size, list) and len(size) == 2 and all(isinstance(v, (int, float)) for v in size)):
         return []
@@ -267,6 +270,7 @@ def _heuristic_layout_issues(bundle: dict) -> list[dict]:
         elements = data.get("elements")
         if not isinstance(elements, list):
             continue
+        issues.extend(_fill_inconsistency_issues(path, elements, theme))
         for index, element in enumerate(elements):
             if not isinstance(element, dict):
                 continue
@@ -313,6 +317,72 @@ def _heuristic_layout_issues(bundle: dict) -> list[dict]:
                 if inter_w * inter_h > area * 0.3:
                     issues.append({"code": "TextOcclusion", "location": f"{path}.elements[{index}]", "elementId": element.get("elementId", "?"), "message": "Text may be occluded by a later element", "severity": "warning"})
                     break
+    return issues
+
+
+def _hex_rgb(value, theme: dict):
+    """Resolve a PPTD colour, theme references included, to an (r, g, b) tuple."""
+    seen = set()
+    while isinstance(value, str) and value.startswith("$"):
+        if value in seen:
+            return None
+        seen.add(value)
+        value = (theme.get("colors") or {}).get(value[1:])
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?", value.strip())
+    if not match:
+        return None
+    digits = match.group(1)
+    return tuple(int(digits[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def _fill_inconsistency_issues(path: str, elements: list, theme: dict) -> list[dict]:
+    """One row of sibling blocks fading a single brand colour into shades.
+
+    This is a review prompt, not a structural error: the original rules allow
+    deliberate category colours, but a numbered step row that walks from
+    ``$primary`` down to a tint reads as an accident and breaks the template's
+    colour discipline.
+    """
+    rows: dict[tuple, list] = {}
+    for element in elements:
+        if not isinstance(element, dict) or element.get("elementType") != "shape":
+            continue
+        bounds = element.get("bounds")
+        fill = element.get("fill")
+        color = fill.get("color") if isinstance(fill, dict) else None
+        if not (isinstance(bounds, list) and len(bounds) == 4) or not isinstance(color, str):
+            continue
+        rgb = _hex_rgb(color, theme)
+        if rgb is None:
+            continue
+        key = (round(bounds[1]), round(bounds[3]))
+        rows.setdefault(key, []).append((element.get("elementId", "?"), rgb))
+    issues: list[dict] = []
+    for (top, height), row in sorted(rows.items()):
+        if len(row) < 3:
+            continue
+        hues = []
+        for _, rgb in row:
+            hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in rgb))
+            if saturation < 0.15 or value < 0.15:
+                hues = []
+                break
+            hues.append(hue * 360)
+        if not hues or max(hues) - min(hues) > 25:
+            continue
+        if len({rgb for _, rgb in row}) < 3:
+            continue
+        ids = ", ".join(element_id for element_id, _ in row)
+        issues.append({
+            "code": "FillInconsistency",
+            "location": f"{path}.row[y={top}]",
+            "elementId": row[0][0],
+            "message": (f"Sibling blocks {ids} at y={top} use {len({rgb for _, rgb in row})} shades of one colour; "
+                        "use a single fill for parallel items and mark state with one accent instead."),
+            "severity": "warning",
+        })
     return issues
 
 

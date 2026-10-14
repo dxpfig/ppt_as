@@ -114,7 +114,13 @@ def redact(text):
     return text
 
 
-def diagnose_error(exc, phase='context'):
+def diagnose_error(exc, phase='context', *, resumable=True):
+    """Explain a failure without promising a resume checkpoint that does not exist.
+
+    ``resumable`` is False for routes that keep no per-page checkpoint (the
+    agentic Kimi expert writes whole files), so the message must not tell the
+    user to continue from one.
+    """
     chain, seen = [], set()
     current = exc
     context = {}
@@ -169,7 +175,10 @@ def diagnose_error(exc, phase='context'):
     else:
         code, message = ('render_error', '渲染导出失败') if phase == 'export' else ('generation_error', '生成过程发生异常')
     page = f"第 {context['pageIndex'] + 1} 页：" if isinstance(context.get('pageIndex'), int) and not message.startswith('第 ') else ''
-    message = page + message + '。已保留检查点，可继续恢复；无需重新生成已完成页面。'
+    if resumable:
+        message = page + message + '。已保留检查点，可继续恢复；无需重新生成已完成页面。'
+    else:
+        message = page + message + '。可重新尝试该任务。'
     diagnostic = {'code': code, 'phase': phase, 'exceptionTypes': types, **{k: context[k] for k in ('pageIndex', 'pagePath', 'attempt') if k in context}}
     rejections = next((getattr(item, 'rejections') for item in chain if getattr(item, 'rejections', None)), [])
     if rejections:

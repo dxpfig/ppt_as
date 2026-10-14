@@ -6,7 +6,7 @@
 
 文档模型决定：PPTD v2是页面内容与样式的权威定义，内部编辑对象和渲染缓存由其派生；不另立一套简化的主文档格式。详见[已确认的文档模型及下一步讨论](gap-and-decisions.md#d01-已确认采用a)。
 
-最新进展：[主应用集成与实际验收](main-integration.md)、[集成计划](main-integration-plan.md)与[五项高级能力实现与验收](advanced-capabilities.md)。早期基线见[联合选型实测与推荐](engine-evaluation.md)，包含可运行实验、编辑后 PPTD/PPTX、呈现对比图及明确的能力缺口；[候选技术研究](engine-candidates.md)提供三条路线的一手资料依据。
+最新进展：[Kimi 专家（agentic）路线的宿主层与交付门禁](agentic-host-layer.md)、[主应用集成与实际验收](main-integration.md)、[集成计划](main-integration-plan.md)与[五项高级能力实现与验收](advanced-capabilities.md)。早期基线见[联合选型实测与推荐](engine-evaluation.md)，包含可运行实验、编辑后 PPTD/PPTX、呈现对比图及明确的能力缺口；[候选技术研究](engine-candidates.md)提供三条路线的一手资料依据。
 
 ## 本次目标
 
@@ -27,15 +27,15 @@
 - [原文章节索引](source-index.md) / [机器可读章节索引](sections.json)：224 个代码块之外的 Markdown 标题定位。
 - 这份副本是需求与兼容性基线，**并非私有 Kimi 引擎**。`agent_service/kimi_rules.py` 将核心六份原文及选中场景的完整规则注入实际 AgentScope 调用，原始文件未修改；私有工具由末尾明确列出的本地实现映射承接。
 
-| 原文 | 范围 | 行数 |
-|---|---|---:|
-| [SKILL.md](original/SKILL.md) | 主流程、输入分型、生成分支、校验、交付 | 120 |
-| [slides_categories.md](original/reference/slides_categories.md) | 通用约束及七类场景选择 | 34 |
-| [七类场景](original/reference/slides_categories/) | 场景叙事、布局、配色、字体、图表与检查规则 | 924 |
-| [pptd.md](original/reference/pptd.md) | 完整文档格式、字段与渲染语义 | 1,644 |
-| [cli.md](original/reference/cli.md) | 三个已公开命令与检查问题类型 | 111 |
-| [fonts.md](original/reference/fonts.md) | 字体选择、名称、CDN 与 Google Fonts | 86 |
-| [shapes.md](original/reference/shapes.md) | 内置形状目录、调整参数和默认值 | 258 |
+| 原文                                                            | 范围                                       |  行数 |
+| --------------------------------------------------------------- | ------------------------------------------ | ----: |
+| [SKILL.md](original/SKILL.md)                                   | 主流程、输入分型、生成分支、校验、交付     |   120 |
+| [slides_categories.md](original/reference/slides_categories.md) | 通用约束及七类场景选择                     |    34 |
+| [七类场景](original/reference/slides_categories/)               | 场景叙事、布局、配色、字体、图表与检查规则 |   924 |
+| [pptd.md](original/reference/pptd.md)                           | 完整文档格式、字段与渲染语义               | 1,644 |
+| [cli.md](original/reference/cli.md)                             | 三个已公开命令与检查问题类型               |   111 |
+| [fonts.md](original/reference/fonts.md)                         | 字体选择、名称、CDN 与 Google Fonts        |    86 |
+| [shapes.md](original/reference/shapes.md)                       | 内置形状目录、调整参数和默认值             |   258 |
 
 ## 阅读顺序
 

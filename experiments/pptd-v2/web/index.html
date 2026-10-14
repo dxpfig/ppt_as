@@ -192,6 +192,11 @@
         const parsed = new DOMParser().parseFromString(value, 'text/html');
         for (const child of parsed.body.childNodes) destination.append(cloneSafe(child));
       }
+      // PowerPoint gives an empty paragraph a full line box; a bare <p></p>
+      // collapses to zero height in the browser and shifts centred titles.
+      for (const paragraph of destination.querySelectorAll('p, li')) {
+        if (paragraph.childNodes.length === 0) paragraph.append(document.createTextNode('\u00a0'));
+      }
       return destination;
     }
     function align(node, alignment = ['left', 'top']) {

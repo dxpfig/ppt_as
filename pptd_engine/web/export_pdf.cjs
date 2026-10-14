@@ -25,9 +25,13 @@ async function main() {
       const state = window.pptdWorkbench.state;
       return { title: state.document.title, size: state.document.size, count: state.pages.length, pagePaths: state.pages.map(p => p.path), fonts: state.fonts, fontErrors: state.fontWarnings, fontIssues: state.fontIssues };
     });
+    // Unresolved fonts used to abort this check outright, which silently hid
+    // every layout finding behind a font warning. Collect them and keep going so
+    // one round reports overflow, overlap and clipping together.
+    const fontIssues = [];
     if (document.fontErrors.length || document.fonts.some(font => font.status !== 'loaded')) {
       const detailed = document.fontIssues.length ? document.fontIssues : document.fontErrors.map(error => ({ error, pages: document.pagePaths }));
-      reject(detailed.flatMap(issue => (issue.pages?.length ? issue.pages : document.pagePaths).flatMap(page => (issue.elementIds?.length ? issue.elementIds : [null]).map(elementId => ({ page, ...(elementId ? { elementId } : {}), location: issue.location || (elementId ? `${page}#${elementId}` : page), code: 'font-unresolved', severity: 'error', message: `${issue.family || '字体'}: ${issue.error || issue.message}` })))));
+      fontIssues.push(...detailed.flatMap(issue => (issue.pages?.length ? issue.pages : document.pagePaths).flatMap(page => (issue.elementIds?.length ? issue.elementIds : [null]).map(elementId => ({ page, ...(elementId ? { elementId } : {}), location: issue.location || (elementId ? `${page}#${elementId}` : page), code: 'font-unresolved', severity: 'error', message: `${issue.family || '字体'}: ${issue.error || issue.message}` })))));
     }
     const [width, height] = document.size;
     if (![width, height].every(v => Number.isFinite(v) && v > 0)) throw new Error('Invalid PPTD page dimensions');
@@ -156,7 +160,7 @@ async function main() {
       await page.pdf({ path: path.join(output, filename), width: `${width / 72}in`, height: `${height / 72}in`, margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }, preferCSSPageSize: true, printBackground: true, tagged: true });
       pages.push({ index, file: filename, widthPt: width, heightPt: height, ...evidence });
     }
-    if (allIssues.length) reject(allIssues, previews, layouts);
+    if (allIssues.length || fontIssues.length) reject([...allIssues, ...fontIssues], previews, layouts);
     if (errors.length) throw new Error('Browser PDF failed: ' + errors.join('; '));
     const report = { status: 'passed', renderer: `Chromium ${browser.version()} vector print`, title: document.title, rasterized: false, fonts: document.fonts, pages, errors };
     fs.writeFileSync(path.join(output, 'pdf-pages.json'), JSON.stringify(report, null, 2) + '\n');

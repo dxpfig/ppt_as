@@ -171,9 +171,158 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertNotIn("模板标题", cover_text)
             self.assertEqual(len(pages), 3)
             closing_text = " ".join(kimi_agent._visible_text(e.get("content") or {}) for e in pages[-1]["data"]["elements"] if e.get("elementType") == "text")
-            self.assertIn("请领导讲话", closing_text)
+            self.assertIn("感谢观看", closing_text)
+            self.assertNotIn("请领导讲话", closing_text)
             self.assertEqual(document["pages"], [p["path"] for p in pages])
             self.assertTrue((deck / "media" / "end.jpg").is_file())
+
+    def test_relabel_keeps_trailing_empty_paragraphs(self):
+        content = {"text": '<p style="text-align:center;line-height:1.2">'
+                           '<span style="font-family:MiSans;font-size:66.0px;color:#FFFFFF">关于AI服务器</span></p>'
+                           '<p style="text-align:center;line-height:1.2"></p>'
+                           '<p style="text-align:center;line-height:1.2"></p>'}
+        updated = kimi_agent._relabel(content, "新标题")
+        markup = updated["text"]
+        self.assertEqual(markup.count("<p"), 3)
+        self.assertIn("color:#FFFFFF", markup)
+        self.assertIn("新标题", markup)
+        self.assertNotIn("关于AI服务器", markup)
+        # The trailing empty lines must keep the slot's size, otherwise the
+        # browser collapses them and the centred title slides onto the subtitle.
+        self.assertEqual(markup.count("&nbsp;</span>"), 2)
+        self.assertEqual(markup.count("font-size:66.0px"), 3)
+
+    def test_fill_template_page_skips_a_slot_that_cannot_fit(self):
+        template = {"elements": [
+            {"elementId": "big", "elementType": "text", "bounds": [0, 100, 960, 130],
+             "content": {"text": '<p><span style="font-size:100.0px">模板</span></p>'}},
+            {"elementId": "date", "elementType": "text", "bounds": [400, 321, 175, 46],
+             "content": {"text": '<p><span style="font-size:32.0px">2026年1月</span></p>'}},
+        ]}
+        filled = kimi_agent._fill_template_page(template, ["感谢观看", "欢迎一起交流 AI 生成 PPT 的实战经验"], keep_unfilled=False)
+        self.assertIn("感谢观看", filled["elements"][0]["content"]["text"])
+        self.assertNotIn("欢迎一起交流", filled["elements"][1]["content"]["text"])
+
+    def test_body_background_is_copied_from_the_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template-pptd"
+            (template / "media").mkdir(parents=True)
+            (template / "media" / "body.jpg").write_bytes(b"body")
+            (template / "media" / "cover.jpg").write_bytes(b"cover")
+            (template / "template.pptd").write_text(
+                "version: v2\nsize: [960, 540]\npages: [pages/a.page, pages/b.page, pages/c.page, pages/d.page]\n",
+                encoding="utf-8")
+            (template / "pages").mkdir()
+            (template / "pages" / "a.page").write_text(
+                "elements:\n- elementId: cover\n  elementType: image\n  src: media/cover.jpg\n  bounds: [0, 0, 960, 540]\n",
+                encoding="utf-8")
+            for name in ("b", "c"):
+                (template / "pages" / f"{name}.page").write_text(
+                    "elements:\n- elementId: bg\n  elementType: image\n  src: media/body.jpg\n  bounds: [0, 0, 960, 540]\n",
+                    encoding="utf-8")
+            (template / "pages" / "d.page").write_text(
+                "elements:\n- elementId: end\n  elementType: image\n  src: media/cover.jpg\n  bounds: [0, 0, 960, 540]\n",
+                encoding="utf-8")
+
+            background = kimi_agent._extract_body_background(template)
+            self.assertIsNotNone(background)
+            self.assertEqual(background["src"], "media/body.jpg")
+
+            deck = root / "deck"
+            (deck / "media").mkdir(parents=True)
+            (deck / "deck.pptd").write_text(
+                "version: v2\nsize: [960, 540]\npages: [pages/one.page, pages/two.page, pages/three.page]\n",
+                encoding="utf-8")
+            (deck / "pages").mkdir()
+            (deck / "pages" / "one.page").write_text("elements: []\n", encoding="utf-8")
+            (deck / "pages" / "two.page").write_text(
+                "elements:\n"
+                "- elementId: wave-band\n  elementType: shape\n  shapeName: custom\n  path: M0,0 L10,10\n  bounds: [0, 490, 960, 50]\n"
+                "- elementId: title\n  elementType: text\n  bounds: [60, 40, 400, 40]\n  content: {text: 标题}\n",
+                encoding="utf-8")
+            (deck / "pages" / "three.page").write_text("elements: []\n", encoding="utf-8")
+            document = {"size": [960, 540], "pages": ["pages/one.page", "pages/two.page", "pages/three.page"]}
+            pages = [
+                {"path": "pages/one.page", "data": {"elements": []}},
+                {"path": "pages/two.page", "data": {"elements": [
+                    {"elementId": "wave-band", "elementType": "shape", "shapeName": "custom", "path": "M0,0", "bounds": [0, 490, 960, 50]},
+                    {"elementId": "title", "elementType": "text", "bounds": [60, 40, 400, 40], "content": {"text": "标题"}},
+                ]}},
+                {"path": "pages/three.page", "data": {"elements": []}},
+            ]
+            kimi_agent._apply_background(deck, document, pages, background, template)
+            body = pages[1]["data"]["elements"]
+            self.assertNotIn("wave-band", [e["elementId"] for e in body])
+            self.assertEqual(pages[1]["data"]["background"], {
+                "elementId": "bg", "elementType": "image", "src": "media/body.jpg",
+                "bounds": [0, 0, 960, 540]})
+            self.assertTrue((deck / "media" / "body.jpg").is_file())
+
+    def test_page_background_is_repointed_at_the_template_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template-pptd"
+            (template / "media").mkdir(parents=True)
+            (template / "media" / "canonical.jpg").write_bytes(b"canonical")
+            (template / "media" / "other.jpg").write_bytes(b"other")
+            background = {"elementId": "bg", "elementType": "image", "src": "media/canonical.jpg",
+                          "bounds": [0, 0, 960, 540]}
+            deck = root / "deck"
+            (deck / "media").mkdir(parents=True)
+            (deck / "media" / "mine.jpg").write_bytes(b"other")
+            document = {"size": [960, 540]}
+            pages = [
+                {"path": "pages/cover.page", "data": {"elements": [], "background": {"type": "solid", "color": "#FFFFFF"}}},
+                {"path": "pages/plain.page", "data": {"elements": [], "background": {"type": "solid", "color": "#FFFFFF"}}},
+                {"path": "pages/wrong.page", "data": {"elements": [], "background": {
+                    "type": "image", "src": "media/mine.jpg", "fit": {"mode": "fill"}}}},
+                {"path": "pages/same.page", "data": {"elements": [], "background": {
+                    "type": "image", "src": "media/canonical.jpg", "fit": {"mode": "fill"}}}},
+                {"path": "pages/closing.page", "data": {"elements": [], "background": {"type": "solid", "color": "#FFFFFF"}}},
+            ]
+            (deck / "media" / "canonical.jpg").write_bytes(b"canonical")
+            kimi_agent._apply_background(deck, document, pages, background, template)
+            self.assertEqual(pages[0]["data"]["background"], {"type": "solid", "color": "#FFFFFF"})
+            self.assertEqual(pages[1]["data"]["background"]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[2]["data"]["background"]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[2]["data"]["background"]["fit"], {"mode": "fill"})
+            self.assertEqual(pages[3]["data"]["background"]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[4]["data"]["background"], {"type": "solid", "color": "#FFFFFF"})
+            self.assertTrue((deck / "media" / "canonical.jpg").is_file())
+
+    def test_tables_without_a_font_keep_the_deck_typeface(self):
+        document = {"theme": {"textStyles": {"body": {"fontFamily": "微软雅黑"}}}}
+        pages = [{"path": "pages/one.page", "data": {"elements": [
+            {"elementId": "t", "elementType": "table", "style": {
+                "firstRowStyle": {"fontSize": 12},
+                "bodyStyles": [{"fontSize": 11}, {"fontSize": 11}]}},
+        ]}}]
+        kimi_agent._normalize_table_fonts(document, pages)
+        style = pages[0]["data"]["elements"][0]["style"]
+        self.assertEqual(style["firstRowStyle"]["fontFamily"], "微软雅黑")
+        self.assertTrue(all(part["fontFamily"] == "微软雅黑" for part in style["bodyStyles"]))
+
+    def test_corner_conflicts_are_relocated_out_of_the_company_mark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template-pptd"
+            (template / "media").mkdir(parents=True)
+            (template / "media" / "logo.png").write_bytes(b"logo")
+            chrome = [
+                {"elementId": "logo", "elementType": "image", "src": "media/logo.png", "bounds": [730, 518, 74, 13]},
+                {"elementId": "name", "elementType": "text", "bounds": [805, 516, 156, 15],
+                 "content": {"text": "长沙湘计海盾科技有限公司"}},
+            ]
+            elements = [
+                {"elementId": "footer", "elementType": "text", "bounds": [40, 500, 880, 24],
+                 "content": {"text": "01 背景与趋势"}},
+                {"elementId": "card", "elementType": "shape", "bounds": [40, 140, 280, 100]},
+            ]
+            moved = kimi_agent._clear_corner_conflicts(elements, chrome, template, [960, 540])
+            self.assertEqual(moved, ["footer"])
+            self.assertLessEqual(elements[0]["bounds"][0] + elements[0]["bounds"][2], 730)
+            self.assertEqual(elements[1]["bounds"], [40, 140, 280, 100])
 
 
 @unittest.skipUnless(

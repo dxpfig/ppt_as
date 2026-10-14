@@ -33,7 +33,7 @@ from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
-from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE, MSO_LINE_DASH_STYLE
+from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE, MSO_LINE_DASH_STYLE, MSO_THEME_COLOR
 from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR, MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Pt
@@ -59,6 +59,17 @@ ALIGN = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIG
 VALIGN = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}
 DASH = {"solid": MSO_LINE_DASH_STYLE.SOLID, "dash": MSO_LINE_DASH_STYLE.DASH,
         "dot": MSO_LINE_DASH_STYLE.ROUND_DOT}
+# MSO_THEME_COLOR member -> clrScheme attribute. bg1/tx1/bg2/tx2 run through the
+# master's a:clrMap first; dk1/lt1/dk2/lt2 name the palette entry directly.
+SCHEME_SLOTS = {
+    "DARK_1": "dk1", "LIGHT_1": "lt1", "DARK_2": "dk2", "LIGHT_2": "lt2",
+    "BACKGROUND_1": "bg1", "TEXT_1": "tx1", "BACKGROUND_2": "bg2", "TEXT_2": "tx2",
+    "ACCENT_1": "accent1", "ACCENT_2": "accent2", "ACCENT_3": "accent3",
+    "ACCENT_4": "accent4", "ACCENT_5": "accent5", "ACCENT_6": "accent6",
+    "HYPERLINK": "hlink", "FOLLOWED_HYPERLINK": "folHlink",
+}
+CLRMAP_SLOTS = {"bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3",
+                "accent4", "accent5", "accent6", "hlink", "folHlink"}
 SVG_PATH_TOKEN = re.compile(r"([MmLlHhVvCcSsQqTtAaZz])|([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)")
 # Office chart type -> (PPTD series type, stack mode, category orientation).
 # Horizontal bars keep the same series type but swap the value/category channels,
@@ -1121,10 +1132,70 @@ class Importer:
         self.report.note("PPTD has no text-bearing shape: source shapes containing text are split into native shape + separate text elements.")
         self.report.issue("presentation", "theme-and-master-inheritance", "Office master/layout inheritance, theme fonts/colors, paragraph defaults and effects are not fully resolved. Only exposed direct formatting is mapped; defaults may differ visually.")
         self.media_count = 0
+        self.color_map, self.scheme_colors = self.load_scheme_palette()
+
+    def load_scheme_palette(self) -> tuple[dict, dict]:
+        """Read the theme palette and the master's colour map.
+
+        Without this step every ``a:schemeClr`` run (for example a white
+        ``bg1`` cover title over a red photo) imported as "no colour" and the
+        renderer fell back to black, which is how an unreadable black-on-red
+        cover was produced from a template whose title is white.
+        """
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+
+        color_map: dict[str, str] = {}
+        scheme: dict[str, str] = {}
+        try:
+            master = self.prs.slide_masters[0]
+            color_map_element = master._element.find("{" + NS["p"] + "}clrMap")
+            if color_map_element is not None:
+                color_map = {key: value for key, value in color_map_element.attrib.items()}
+            theme = master.part.part_related_by(RT.THEME)
+            root = etree.fromstring(theme.blob)
+            palette = root.find(".//{" + NS["a"] + "}clrScheme")
+            if palette is None:
+                raise ValueError("theme has no a:clrScheme")
+            for entry in palette:
+                name = etree.QName(entry).localname
+                value = None
+                srgb = entry.find("{" + NS["a"] + "}srgbClr")
+                system = entry.find("{" + NS["a"] + "}sysClr")
+                if srgb is not None:
+                    value = srgb.get("val")
+                elif system is not None:
+                    value = system.get("lastClr")
+                if value and re.fullmatch(r"[0-9a-fA-F]{6}", value):
+                    scheme[name] = "#" + value.upper()
+        except Exception as exception:  # pragma: no cover - defensive boundary
+            self.report.issue("presentation", "theme-color",
+                              f"Theme palette could not be read ({exception}); scheme colours stay unresolved.")
+            return {}, {}
+        if scheme:
+            self.report.note("Scheme colours (a:schemeClr) are resolved through the master colour map and theme palette. "
+                             "DrawingML colour modifiers (lumMod/lumOff/tint/shade) are not applied.")
+        return color_map, scheme
+
+    def scheme_color(self, theme_color: Any) -> str | None:
+        """Resolve an MSO_THEME_COLOR through a:clrMap and the theme palette."""
+        name = getattr(theme_color, "name", None)
+        if not isinstance(name, str) or theme_color is MSO_THEME_COLOR.NOT_THEME_COLOR:
+            return None
+        slot = SCHEME_SLOTS.get(name)
+        if slot is None or not self.scheme_colors:
+            return None
+        resolved = slot
+        if slot in CLRMAP_SLOTS:
+            resolved = self.color_map.get(slot, slot)
+        return self.scheme_colors.get(resolved) or self.scheme_colors.get(slot)
 
     def color(self, color: Any, loc: str) -> str | None:
         if color.type == MSO_COLOR_TYPE.RGB:
             return "#" + str(color.rgb)
+        if color.type == MSO_COLOR_TYPE.SCHEME:
+            resolved = self.scheme_color(color.theme_color)
+            if resolved:
+                return resolved
         if color.type is not None:
             self.report.issue(loc, "theme-color", "Color is not an explicit sRGB color; inherited/theme color omitted.")
         return None

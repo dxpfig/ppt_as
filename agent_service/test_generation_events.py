@@ -263,6 +263,15 @@ class VisualExecutionEvents(unittest.TestCase):
                 self.assertEqual(diagnostic['issues'][0]['code'], 'missing-body-content')
                 self.assertEqual(diagnostic['issues'][0]['pageIndex'], 10)
 
+    def test_routes_without_a_checkpoint_do_not_promise_a_resume(self):
+        from agent_service.job_execution import diagnose_error
+        error = ValueError('最终排版检查未通过')
+        message, _, _ = diagnose_error(error, 'validate', resumable=False)
+        self.assertIn('可重新尝试该任务', message)
+        self.assertNotIn('检查点', message)
+        resumable, _, _ = diagnose_error(error, 'validate')
+        self.assertIn('已保留检查点', resumable)
+
     def test_model_failure_during_content_recovery_takes_precedence_over_missing_body(self):
         from agent_service.job_execution import diagnose_error
         issues = [{'code': 'PlannedContentMissing', 'pagePath': 'pages/11.page',

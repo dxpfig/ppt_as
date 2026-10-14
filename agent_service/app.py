@@ -691,14 +691,19 @@ async def run_kimi_job(identifier, request):
                        generationMeta=result.get('generationMeta', {}),
                        phase='ready', activeJobId=None, contentGenerated=True, updatedAt=time.time())
         reply = result.get('reply', '') or '演示文稿已生成，可编辑预览并手动导出。'
+        warnings = result.get('warnings') or []
         project['messages'] = [*project.get('messages', []), {'id': uuid4().hex, 'role': 'assistant', 'text': reply}][-1000:]
         save(project_path(project_id), project)
+        summary = f'共 {len(result["pages"])} 页，演示文件已就绪'
+        if warnings:
+            summary += f'；{len(warnings)} 项排版问题待确认'
         execution = record_event(read(job_path(identifier)).get('execution'),
-                                 {'phase': 'done', 'status': 'completed', 'message': f'共 {len(result["pages"])} 页，演示文件已就绪'})
-        update_job(identifier, status='completed', stage=100, message='生成完成', recoverable=False,
+                                 {'phase': 'done', 'status': 'completed', 'message': summary})
+        update_job(identifier, status='completed', stage=100, message=summary, recoverable=False,
                    execution=execution,
                    result={'reply': reply, 'revision': result['revision'],
-                           'pageCount': len(result['pages']), 'project': hydrate_project(project)})
+                           'pageCount': len(result['pages']), 'warnings': warnings,
+                           'project': hydrate_project(project)})
     except asyncio.CancelledError:
         if read(job_path(identifier))['status'] != 'cancelled':
             update_job(identifier, status='interrupted', message='任务中断，未生成可用文档。', recoverable=False,
@@ -707,8 +712,8 @@ async def run_kimi_job(identifier, request):
         raise
     except Exception as exc:
         current = read(job_path(identifier))
-        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'))
-        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic, recoverable=False,
+        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'), resumable=False)
+        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic, recoverable=True,
                    execution=terminal_execution(current.get('execution'), 'failed', message, context))
         finish_project_job(identifier)
     finally:
@@ -861,7 +866,8 @@ async def run_job(identifier, request):
         if isinstance(exc, pptd_generation.GenerationIncomplete):
             checkpoint_save(exc.checkpoint)
         current = read(job_path(identifier))
-        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'))
+        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'),
+                                                      resumable=cp_path.is_file())
         if diagnostic.get('issues') and cp_path.is_file():
             plan = read(cp_path).get('plan', {})
             paths = plan.get('document', {}).get('pages', [])

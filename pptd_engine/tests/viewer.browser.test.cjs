@@ -36,6 +36,14 @@ pages[1].data.elements.push(
   { elementId: 'art-homePlate', elementType: 'shape', shapeName: 'homePlate', bounds: [400, 300, 160, 50],
     fill: { type: 'solid', color: '#1783FF' } },
 );
+// Page 3 carries the trailing empty paragraph an imported title placeholder
+// uses to lift a centred title above its subtitle.
+pages[2].data.elements.push({
+  elementId: 'spaced-title', elementType: 'text', bounds: [80, 380, 800, 130],
+  content: { align: ['left', 'middle'],
+    text: '<p style="text-align:center;line-height:1.2"><span style="font-size:30.0px;color:#111111">\u6807\u9898</span></p>'
+      + '<p style="text-align:center;line-height:1.2"></p>' },
+});
 let server, browser, origin;
 
 before(async () => {
@@ -191,5 +199,24 @@ test('custom freeform, preset and gradient shapes render as vectors, not placeho
     assert.equal(await frame.locator('[data-element-id="art-chevron"] svg linearGradient').count(), 1);
     assert.equal(await frame.locator('[data-element-id="art-chevron"] svg stop').count(), 2);
     assert.equal(await frame.locator('#warnings').isVisible(), false);
+  } finally { await page.close(); }
+});
+
+test('an empty paragraph keeps a full line box so a centred title keeps its spacing', async () => {
+  const { page, frame } = await openViewer();
+  try {
+    await send(page, { type: 'pptd:select-page', projectId, page: 'pages/3.page' });
+    await assertPage(frame, 2);
+    // The preview scales the slide, so compare paragraph heights with each
+    // other instead of against an absolute pixel count.
+    const heights = await frame.locator('[data-element-id="spaced-title"] p').evaluateAll(
+      (nodes) => nodes.map((node) => node.getBoundingClientRect().height));
+    assert.equal(heights.length, 2);
+    assert.ok(heights[1] > 0, 'the trailing empty paragraph must keep a line box');
+    // The host sizes these trailing lines by writing the slot's span inside
+    // them; this only guards that the renderer gives an empty paragraph a line
+    // box at all instead of collapsing it to zero height.
+    assert.ok(heights[1] > heights[0] * 0.4,
+      `empty paragraph must occupy a line, got ${heights.join(' vs ')}`);
   } finally { await page.close(); }
 });

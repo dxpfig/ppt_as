@@ -483,7 +483,49 @@ def _validate_verdict(result, requested, all_metadata, deck_findings=None):
     return {'status': result['status'], 'coveredPages': expected, 'observations': clean_observations, 'issues': clean, 'deckFindingDecisions': clean_decisions}
 
 
+async def review_deck_overview(state, artifact_dir: Path, *, scenario='auto', usage='reading', on_event=None):
+    """Whole-deck visual review, for callers that cannot afford a page pass.
+
+    The agentic route renders a final deck the model never inspected (the host
+    swaps in the template cover, closing page, background and chrome afterwards)
+    and needs an opinion on what a person sees: redundant decoration, uneven
+    type, crowded text, pages that no longer read as one deck. One contact sheet
+    per 12 pages plus the capability challenge covers exactly that.
+    """
+    artifact_dir = Path(artifact_dir)
+    metadata, images = _inspect_source(state, artifact_dir)
+    config = vision_configuration()
+    sheets = _contact_sheets(artifact_dir, images)
+    async with VisionClient(config) as client:
+        await _emit(on_event, status='started', scope='deck', message='正在验证视觉模型的实际看图能力', covered=0, total=len(metadata))
+        capability = await client.verify_vision(artifact_dir)
+        await _emit(on_event, status='completed', scope='deck', message='视觉模型看图能力校验通过', covered=0, total=len(metadata))
+        payload = {
+            'scope': 'deck',
+            'usage': usage,
+            'scenario': scenario,
+            'document': state['document'],
+            'pages': metadata,
+            'instructions': '检查整稿风格、叙事节奏和页面关系；每张总览图片标注页码。',
+            'sourceHints': [
+                {'pagePath': page['pagePath'], 'elementId': element.get('elementId'), 'kind': 'small-font',
+                 'fontSize': element['content']['fontSize']}
+                for page in metadata for element in page['elements']
+                if isinstance(element.get('content'), dict) and type(element['content'].get('fontSize')) in (int, float)
+                and element['content']['fontSize'] < 12
+            ],
+            'hintPolicy': '源数据提示不是错误；必须结合实际图片、页面用途与设计意图确认问题后才可列入 issues。'
+                          '不要将脚注或装饰误报为正文缺陷。装饰性分隔线、并列元素字体或字号不一致、文字拥挤、'
+                          '以及页面脱离整套模板风格，都属于需要报告的问题。',
+        }
+        raw = await client.ask(_review_system(scenario), json.dumps(payload, ensure_ascii=False), sheets)
+        report = _validate_verdict(raw, metadata, metadata)
+        report.update(model=config.model, provider=config.provider, capability=capability, images=images)
+        return report
+
+
 async def review_deck(state, artifact_dir: Path, *, scenario='auto', usage='reading', on_event=None, previous_review=None):
+    """Full review: one whole-deck pass plus a high-resolution pass per page."""
     artifact_dir = Path(artifact_dir)
     metadata, images = _inspect_source(state, artifact_dir)
     config = vision_configuration()
