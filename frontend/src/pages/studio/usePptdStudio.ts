@@ -303,7 +303,7 @@ export function usePptdStudio() {
 					: current.messages,
 			};
 			const nextJob = await studioApi.start({
-				kind: importTemplate ? 'outline' : kind,
+				kind,
 				project: snapshot,
 				expectedRevision: snapshot.pptd?.revision,
 				...options,

@@ -421,7 +421,8 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.getByLabel('视觉设计').selectOption('template');
 		await page.locator('.pptd-template select').selectOption('corporate');
 		await page.getByLabel('演示主题或内容').fill('使用上传模板生成产品介绍');
-		await page.getByRole('button', { name: '生成演示', exact: true }).click();
+		await page.getByLabel('Kimi 专家（原生工作流）').check();
+		await page.getByRole('button', { name: '生成演示（Kimi）', exact: true }).click();
 		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		const imported = requests.find((item) => item.path.endsWith('/pptd/import-template'));
 		assert.equal(imported.body.templateId, 'corporate');
@@ -432,6 +433,7 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		// generated pages are the user's own.
 		assert.equal(templateRequest.body.project.templateReference.pageCount, 12);
 		assert.equal(templateRequest.body.project.pptd, undefined);
+		assert.equal(templateRequest.body.kind, 'kimi-slides');
 		assert.equal(templateRequest.body.attachments[0].name, 'reference.png');
 		assert.match(templateRequest.body.attachments[0].imageData, /^data:image\/png;base64,/);
 		assert.equal(templateRequest.body.expectedRevision, undefined);
