@@ -1042,7 +1042,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									disabled={busy}
 									onChange={(event) => setExpertMode(event.target.checked)}
 								/>
-								Kimi 专家（分批生成，可恢复）
+								Kimi 专家（原生工作流）
 							</label>
 							{project.pptd && preferences.workflow === 'edit' && (
 								<label className="pptd-field">
@@ -1072,7 +1072,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							>
 								<Sparkles size={17} />
 								{expertMode
-									? '生成演示（Kimi 分批）'
+									? '生成演示（Kimi）'
 									: project.pptd && preferences.workflow === 'edit'
 										? '应用修改'
 										: '生成演示'}

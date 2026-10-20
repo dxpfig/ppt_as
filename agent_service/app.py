@@ -770,6 +770,10 @@ def clean_error(exc):
 async def run_kimi_job(identifier, request):
     """Agentic kimi-slides route: the model owns the workflow; no export gate."""
     project_id = request.project.id
+    current = read(job_path(identifier))
+    kimi_agent.restore_workspace(
+        ROOT, project_id, identifier, current.get('parentJobId')
+    )
 
     def progress(stage, message):
         assert_current_job(identifier, project_id)
@@ -789,7 +793,7 @@ async def run_kimi_job(identifier, request):
             result = await asyncio.wait_for(
                 kimi_agent.run_kimi(request, data_root=ROOT, progress=progress,
                                     on_event=execution_event, project_id=project_id, job_id=identifier),
-                timeout=agents.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 1800),
+                timeout=agents.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 5400),
             )
         project = assert_current_job(identifier, project_id)
         project.update(workflow='pptd-v2', artifact=None,
@@ -827,8 +831,8 @@ async def run_kimi_job(identifier, request):
         TASKS.pop(identifier, None)
 
 
-def legacy_agentic_kimi_enabled():
-    return os.getenv('PPT_KIMI_AGENTIC', '0').strip().lower() in ('1', 'true', 'yes')
+def agentic_kimi_enabled():
+    return os.getenv('PPT_KIMI_AGENTIC', '1').strip().lower() not in ('0', 'false', 'no')
 
 
 EDITABLE_FALLBACK_ISSUES = {
@@ -905,12 +909,10 @@ def finish_editable_fallback(identifier, project_id, checkpoint, store):
 
 
 async def run_job(identifier, request):
-    # Kimi expert uses the same bounded per-page pipeline as the standard PPTD
-    # route by default. It keeps the complete Kimi rules and template shell, but
-    # saves every page and can resume without replaying the whole conversation.
-    # The previous monolithic ReAct route remains available for controlled
-    # experiments through PPT_KIMI_AGENTIC=1.
-    if request.kind == 'kimi-slides' and legacy_agentic_kimi_enabled():
+    # Kimi expert defaults to the complete original tool-driven workflow. The
+    # coordinated per-page pipeline remains available as an explicit fallback
+    # for providers that cannot sustain the agentic loop.
+    if request.kind == 'kimi-slides' and agentic_kimi_enabled():
         return await run_kimi_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
         return await run_legacy_job(identifier, request)

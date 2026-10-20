@@ -83,6 +83,42 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertEqual(payload["referenceCharacters"], len("附件事实：完成率 83%。"))
             self.assertIn("首要事实来源", payload["note"])
 
+    def test_long_reference_is_externalized_with_structure_for_the_agent(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            references = "\n\n".join(
+                f"## 第 {index} 章\n\n" + f"这是第 {index} 章的重要事实与数据。" * 80
+                for index in range(1, 30)
+            )
+            info = kimi_agent._prepare_reference_material(
+                root,
+                "project",
+                SimpleNamespace(references=references),
+                workspace,
+            )
+            self.assertGreater(len(references), 24000)
+            self.assertTrue((workspace / "sources" / "reference.md").is_file())
+            self.assertTrue((workspace / "sources" / "reference-outline.md").is_file())
+            self.assertIn("第 1 章", info["outline"])
+            payload = json.loads(kimi_agent._initial_message(
+                SimpleNamespace(
+                    prompt="p",
+                    audience="a",
+                    pageCount=None,
+                    references=references,
+                    attachments=[],
+                ),
+                None,
+                info,
+            ))
+            self.assertEqual(payload["references"], "")
+            self.assertEqual(payload["referenceFile"], "sources/reference.md")
+            self.assertIn("reference-outline.md", payload["note"])
+
     def test_find_entry_requires_new_deck(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -93,6 +129,35 @@ class KimiAgentUnitTests(unittest.TestCase):
             (root / "deck").mkdir()
             (root / "deck" / "deck.pptd").write_text("version: v2\n", encoding="utf-8")
             self.assertEqual(kimi_agent._find_entry(root).name, "deck.pptd")
+
+    def test_partial_deck_reports_missing_pages_without_loading_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "deck" / "deck.pptd"
+            (entry.parent / "pages").mkdir(parents=True)
+            entry.write_text(
+                "version: v2\nsize: [960, 540]\n"
+                "pages: [pages/one.page, pages/two.page]\n",
+                encoding="utf-8",
+            )
+            (entry.parent / "pages" / "one.page").write_text(
+                "elements: []\n", encoding="utf-8"
+            )
+            _, paths, existing, missing = kimi_agent._deck_progress(entry)
+        self.assertEqual(paths, ["pages/one.page", "pages/two.page"])
+        self.assertEqual(existing, ["pages/one.page"])
+        self.assertEqual(missing, ["pages/two.page"])
+
+    def test_workspace_can_restore_an_incomplete_agent_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = kimi_agent._workspace(root, "project", "parent")
+            child = kimi_agent._workspace(root, "project", "child")
+            (parent / "deck" / "pages").mkdir(parents=True)
+            (parent / "deck" / "pages" / "one.page").write_text(
+                "elements: []\n", encoding="utf-8"
+            )
+            kimi_agent.restore_workspace(root, "project", "child", "parent")
+            self.assertTrue((child / "deck" / "pages" / "one.page").is_file())
 
     def test_extract_and_apply_company_chrome(self):
         with tempfile.TemporaryDirectory() as tmp:

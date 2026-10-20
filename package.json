@@ -21,7 +21,7 @@
 	"lint-staged": {
 		"frontend/**/*.{ts,tsx}": [
 			"prettier --write",
-			"cd frontend && pnpm eslint --fix"
+			"node scripts/eslint-staged.cjs"
 		],
 		"backend/**/*.{ts,js}": [
 			"prettier --write"

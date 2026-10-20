@@ -30,6 +30,7 @@ from agentscope.state import AgentState
 from agentscope.tool import Bash, Edit, FunctionTool, Glob, Grep, Read, Toolkit, Write
 
 from .agents import make_model, timeout_setting
+from .docx_markdown import docx_to_markdown
 from .pptd_validation import normalize_table_tracks, validate_document
 
 
@@ -67,6 +68,75 @@ def _prepare_template(data_root: Path, template_id, workspace: Path) -> Path | N
 
 def _skill_text() -> str:
     return (ORIGINAL / "SKILL.md").read_text(encoding="utf-8")
+
+
+def _prepare_reference_material(data_root: Path, project_id: str, request, workspace: Path) -> dict:
+    """Copy originals into the agent workspace and build a structured reading copy."""
+    folder = data_root / "reference-files" / project_id
+    sources = workspace / "sources"
+    sources.mkdir(parents=True, exist_ok=True)
+    files, sections = [], []
+    if folder.is_dir():
+        metadata_paths = sorted(folder.glob("*/metadata.json"))
+        for index, metadata_path in enumerate(metadata_paths, 1):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            extension = str(metadata.get("extension") or "").lower()
+            original = metadata_path.parent / ("original" + extension)
+            if not original.is_file():
+                continue
+            name = str(metadata.get("name") or f"source-{index}{extension}")
+            safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(name).stem).strip("-") or f"source-{index}"
+            original_copy = sources / f"{safe_stem}{extension}"
+            if original_copy.exists():
+                original_copy = sources / f"{safe_stem}-{index}{extension}"
+            original_copy.write_bytes(original.read_bytes())
+            if extension == ".docx":
+                text = docx_to_markdown(original_copy)
+                reading = sources / f"{original_copy.stem}.md"
+                reading.write_text(text, encoding="utf-8")
+            else:
+                reading = sources / f"{original_copy.stem}{extension}"
+                text = original.read_text(encoding="utf-8", errors="replace")
+                reading.write_text(text, encoding="utf-8")
+            files.append({
+                "name": name,
+                "original": str(original_copy.relative_to(workspace)),
+                "readingCopy": str(reading.relative_to(workspace)),
+                "characters": len(text),
+            })
+            sections.append(f"# {name}\n\n{text}".strip())
+    references = getattr(request, "references", "") or ""
+    if not files and references:
+        reading = sources / "reference.md"
+        reading.write_text(references, encoding="utf-8")
+        files.append({
+            "name": "参考资料",
+            "original": None,
+            "readingCopy": str(reading.relative_to(workspace)),
+            "characters": len(references),
+        })
+        sections.append(references)
+    if not sections:
+        return {"files": [], "outline": "", "characters": 0}
+    combined = "\n\n".join(sections)
+    reference_md = sources / "reference.md"
+    reference_md.write_text(combined, encoding="utf-8")
+    outline_lines = [
+        line.strip() for line in combined.splitlines()
+        if re.match(r"^#{1,4}\s+", line.strip())
+    ]
+    outline = "\n".join(outline_lines[:500])
+    (sources / "reference-outline.md").write_text(outline + "\n", encoding="utf-8")
+    return {
+        "files": files,
+        "outline": outline[:20000],
+        "characters": len(combined),
+        "referenceFile": str(reference_md.relative_to(workspace)),
+        "outlineFile": "sources/reference-outline.md",
+    }
 
 
 def kimi_system_prompt(workspace: Path) -> str:
@@ -126,6 +196,35 @@ You are an agentic PPT expert in a local application. The archived Kimi
 - Use one size for body-level text across a page, tables included: a list body
   at 12px next to a table body at 11px is an inconsistency, not a hierarchy.
   Headings may be larger; body copy should match.
+- For a complete report or a long source document, preserve its major argument,
+  not merely its topic. A professional deck normally needs a real cover, an agenda
+  that matches the later sections, a progression through evidence and decisions,
+  and a formal closing. Do not compress several major chapters into one generic
+  summary page.
+- Choose page count from the source hierarchy and reader workload. For structured
+  long reports, a practical default is roughly 14–20 substantive pages; use more
+  only when the source genuinely requires it. Do not compress principal sections
+  merely to reduce pages, and do not inflate the deck with a standalone section
+  divider for every chapter. The explicit user page count always wins.
+- Before writing pages, turn the source outline into an argument map: what the
+  reader must understand first, which facts/numbers/tables support each claim,
+  and what decision or next action follows. Preserve concrete entities, dates,
+  metrics, comparisons and source tables when they materially support a claim.
+- Vary page structure according to the content: comparison matrix for alternatives,
+  timeline for phases, process/diagram for architecture, table for structured data,
+  numbered cards for parallel requirements, and lede plus evidence for arguments.
+  Do not repeat one card/list layout for more than two consecutive pages.
+- When the source contains a comparison, responsibility matrix, phased plan or
+  structured project/accountability table, preserve its relationships as an
+  editable table or matrix when that communicates the argument better than prose.
+  Give the most decision-relevant metrics a clear visual anchor; never fabricate
+  a number or turn a qualitative statement into measured data.
+- Every page carries one controlling judgement. If a page needs more than one
+  competing headline, split it or move secondary material to another page.
+- Reference files may be long. Read `sources/reference-outline.md` first, then
+  inspect relevant sections of `sources/reference.md` and the original file as
+  needed. Never ignore a principal section because it is later in the document.
+  The original file is authoritative if Markdown conversion appears incomplete.
 - Output exactly the deck files; the final assistant message should be a brief
   natural-language summary. No shell/code output is required in the reply.
 """
@@ -221,8 +320,11 @@ def _prepare_template_analysis(workspace: Path, template_pptx: Path) -> dict:
     """Convert and screenshot the company template so the agent can analyze it."""
     pptd_dir = workspace / "template-pptd"
     shots_dir = workspace / "template-screenshots"
-    _run_cli("convert", [str(template_pptx), "-o", str(pptd_dir)], workspace)
-    _run_cli("screenshot", [str(pptd_dir), "-o", str(shots_dir)], workspace)
+    entry = pptd_dir / f"{template_pptx.stem}.pptd"
+    if not entry.is_file():
+        _run_cli("convert", [str(template_pptx), "-o", str(pptd_dir)], workspace)
+    if not any((shots_dir / "pages").glob("*.png")):
+        _run_cli("screenshot", [str(pptd_dir), "-o", str(shots_dir)], workspace)
     return {
         "pptx": str(template_pptx),
         "pptd": str(pptd_dir),
@@ -231,23 +333,32 @@ def _prepare_template_analysis(workspace: Path, template_pptx: Path) -> dict:
     }
 
 
-def _initial_message(request, template_info: dict | None = None) -> str:
+def _initial_message(request, template_info: dict | None = None, reference_info: dict | None = None,
+                     continuation: dict | None = None) -> str:
     attachments = []
     for item in getattr(request, "attachments", []) or []:
         if isinstance(item, dict):
             attachments.append({"name": item.get("name"), "visualAnalysis": item.get("visualAnalysis")})
     references = getattr(request, "references", "") or ""
+    reference_info = reference_info or {}
+    use_external_reference = bool(reference_info.get("files")) and len(references) > 24000
     payload = {
         "prompt": getattr(request, "prompt", "") or "",
         "audience": getattr(request, "audience", "") or "通用汇报",
         "pageCount": getattr(request, "pageCount", None),
-        "references": references,
+        "references": "" if use_external_reference else references,
         "referenceCharacters": len(references),
+        "referenceFiles": reference_info.get("files", []),
+        "referenceOutline": reference_info.get("outline", ""),
+        "referenceFile": reference_info.get("referenceFile"),
         "attachments": attachments,
         "template": template_info,
+        "continuation": continuation,
         "note": (
             "交付物必须在 deck/ 目录写出全新的 .pptd（建议 deck/deck.pptd + deck/pages/*.page + deck/media/*）；"
             "不在 deck/ 下的产物不会被视为交付物。页数以用户指定为准。"
+            "在写页前创建 deck/plan.json，记录与 deck.pptd 页码顺序一致的 title、readerTask、content 和 visualPlan；"
+            "它用于失败后续写，不是替代 PPTD 的交付格式。"
             "附件仅提供名称与已有视觉分析；未提供的二进制内容不要假设。按 SKILL.md 判定任务与设计方式。"
             "references 非空时，它是用户上传的正文资料，也是内容、数据、结构与术语的首要事实来源。"
             "必须先提炼其中关键事实、章节顺序、指标、结论和专有名词，并在页面中实质使用；"
@@ -263,7 +374,53 @@ def _initial_message(request, template_info: dict | None = None) -> str:
             "封面与致谢页会由宿主统一套用模板设计：首页给出标题/副标题/日期即可，末页只写一句收尾语（如「感谢观看」），"
             "正文内容放在中间页。"
         )
+    if use_external_reference:
+        payload["note"] += (
+            " Long reference material is stored inside the workspace. Read "
+            "sources/reference-outline.md first, then read the relevant sections "
+            "of sources/reference.md. If structure appears lost, inspect the "
+            "original file path supplied in referenceFiles. Do not substitute a "
+            "generic topic deck for the supplied document."
+        )
+    if continuation:
+        payload["note"] += (
+            " This is a continuation batch. Read deck/deck.pptd and any deck/plan.json; "
+            "write only the listed batchPages in parallel calls, then stop. The host will "
+            "start another fresh agent for the remaining missing pages. Do not rewrite or "
+            "reorder existingPages unless a referenced page is structurally invalid. "
+            "Skip full template re-analysis and do not read the entire source or every "
+            "existing page. Use deck/deck.pptd, deck/plan.json, the source outline, and at "
+            "most two representative existing pages to keep the existing visual system and "
+            "finish the original narrative."
+        )
+    else:
+        payload["note"] += (
+            " This is the first host batch. Create deck/deck.pptd and deck/plan.json, then "
+            "write at most the first five planned pages and stop so the host can continue "
+            "the same plan in a fresh context. Do not expand this batch to the full deck."
+        )
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _deck_progress(entry: Path):
+    """Read the declared deck without assuming every planned page exists yet."""
+    from pptd_engine.document import load_yaml
+
+    document = load_yaml(entry)
+    paths = [path for path in document.get("pages", []) if isinstance(path, str)]
+    existing = [path for path in paths if (entry.parent / path).is_file()]
+    missing = [path for path in paths if path not in existing]
+    return document, paths, existing, missing
+
+
+def restore_workspace(data_root: Path, project_id: str, job_id: str, parent_job_id: str | None):
+    """Resume a failed agent run from its last written deck files."""
+    if not parent_job_id:
+        return
+    source = _workspace(data_root, project_id, parent_job_id)
+    destination = _workspace(data_root, project_id, job_id)
+    if source.is_dir() and not destination.exists():
+        shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
 def _reply_text(reply_msg) -> str:
@@ -1178,12 +1335,18 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     workspace = _workspace(data_root, project_id, job_id)
     workspace.mkdir(parents=True, exist_ok=True)
     max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "40"))
+    batch_iters = min(max_iters, max(8, int(os.getenv("PPT_KIMI_BATCH_ITERS", "18"))))
+    batch_limit = max(1, int(os.getenv("PPT_KIMI_BATCHES", "8")))
+    batch_page_size = max(1, int(os.getenv("PPT_KIMI_BATCH_PAGES", "2")))
     repair_rounds = int(os.getenv("PPT_KIMI_REPAIR_ROUNDS", "2"))
     template_path = _prepare_template(data_root, getattr(request, "templateId", None), workspace)
     template_info = None
     if template_path:
         template_info = await asyncio.to_thread(_prepare_template_analysis, workspace, template_path)
-    model = make_model()
+    model = make_model(output_mode="adaptive")
+    # The agentic loop performs many independent model calls. Give transient
+    # overloads a bounded retry window without changing prompt/context behavior.
+    model.max_retries = max(int(getattr(model, 'max_retries', 0) or 0), 3)
     # The agentic ReAct loop makes many short model calls. Per-call remote token
     # counting is both slow and rate-limit-prone, and AgentScope's own context
     # compression already bounds the loop. Disable the deterministic-pipeline
@@ -1197,7 +1360,10 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 await result
 
     try:
-        reference_characters = len(getattr(request, "references", "") or "")
+        reference_info = await asyncio.to_thread(
+            _prepare_reference_material, data_root, project_id, request, workspace
+        )
+        reference_characters = reference_info.get("characters") or len(getattr(request, "references", "") or "")
         reference_summary = (
             f"，已加入 {reference_characters:,} 字参考资料。"
             if reference_characters
@@ -1206,18 +1372,67 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         await emit("context", "started", "Kimi PPT 专家正在读取上下文并规划" + reference_summary)
         if progress:
             progress(5, "Kimi PPT 专家正在按 kimi-slides 流程工作")
-        agent = _make_agent(model, workspace, project_id, max_iters)
         await emit("pages", "started", "模型正在自由编排：判定任务、写页并自查。")
-        message = Msg(name="user", role="user", content=[{"type": "text", "text": _initial_message(request, template_info)}])
         reply = ""
         document: dict = {}
         pages: list[dict] = []
         final_dir = workspace / "final"
         entry: Path | None = None
         outstanding: list[dict] = []
-        for attempt in range(repair_rounds + 1):
+        existing_entries = sorted((workspace / "deck").glob("*.pptd")) if (workspace / "deck").is_dir() else []
+        source_entry: Path | None = existing_entries[0] if existing_entries else None
+        for batch_index in range(batch_limit):
+            continuation = None
+            if source_entry is not None:
+                _, paths, existing, missing = _deck_progress(source_entry)
+                if not missing:
+                    break
+                continuation = {
+                    "batch": batch_index + 1,
+                    "totalPages": len(paths),
+                    "existingPages": existing,
+                    "missingPages": missing,
+                    "batchPages": missing[:batch_page_size],
+                    "planFile": "deck/plan.json" if (source_entry.parent / "plan.json").is_file() else None,
+                }
+                await emit(
+                    "pages",
+                    "started",
+                    f"继续原生 Kimi 编排：已完成 {len(existing)}/{len(paths)} 页，"
+                    f"正在补写 {len(missing)} 页。",
+                    covered=len(existing),
+                    total=len(paths),
+                )
+            agent = _make_agent(model, workspace, project_id, batch_iters)
+            message = Msg(
+                name="user",
+                role="user",
+                content=[{
+                    "type": "text",
+                    "text": _initial_message(request, template_info, reference_info, continuation),
+                }],
+            )
             reply = _reply_text(await agent.reply(message))
             source_entry = _find_entry(workspace)
+            _, paths, existing, missing = _deck_progress(source_entry)
+            await emit(
+                "pages",
+                "started",
+                f"Kimi 本段完成：{len(existing)}/{len(paths)} 页已写入。",
+                covered=len(existing),
+                total=len(paths),
+            )
+            if not missing:
+                break
+        if source_entry is None:
+            raise ValueError("Kimi 专家没有在 deck/ 目录产出新的 .pptd 交付物。")
+        _, planned_paths, existing_paths, missing_paths = _deck_progress(source_entry)
+        if missing_paths:
+            raise ValueError(
+                f"Kimi 专家连续 {batch_limit} 段仍未写完全部页面："
+                f"{len(existing_paths)}/{len(planned_paths)} 页，缺少 {missing_paths[:6]}"
+            )
+        for attempt in range(repair_rounds + 1):
             document, pages = _load_deck(source_entry)
             _apply_host_transforms(source_entry, document, pages, template_info)
             shutil.rmtree(final_dir, ignore_errors=True)
@@ -1258,6 +1473,10 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 + "\n请只修改对应的 .page 文件解决这些问题，保持文字与数据完整，然后重新运行 "
                   "`kimi_slides check deck --level auto`。不要改动 template-pptd/ 下的分析素材。"
             )}])
+            repair_agent = _make_agent(
+                model, workspace, project_id, min(batch_iters, 14)
+            )
+            reply = _reply_text(await repair_agent.reply(message))
         from .pptd_store import DocumentStore
 
         store = DocumentStore(data_root)
