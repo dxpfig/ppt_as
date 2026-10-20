@@ -4,11 +4,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 from uuid import uuid4
 import time
 import logging
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, Request, Body
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
 from . import agents, images as image_service, telemetry, template_reference, kimi_agent
@@ -20,7 +21,7 @@ from pptd_engine import workbench
 from .rendering import MAX_UPLOAD, create_deck, render_pdf, renderer_available, template_info, validate_package, audit_rendered_pdf
 
 ROOT = Path(os.getenv("STUDIO_DATA_DIR", Path(__file__).resolve().parents[1] / "runtime" / "studio")).resolve()
-for directory in ("projects", "templates", "jobs", "artifacts", "trash", "images", "requests", "checkpoints"):
+for directory in ("projects", "templates", "jobs", "artifacts", "trash", "images", "requests", "checkpoints", "reference-files"):
     (ROOT / directory).mkdir(parents=True, exist_ok=True)
 TASKS: dict[str, asyncio.Task] = {}
 LLM_LIMIT = asyncio.Semaphore(2)
@@ -150,6 +151,16 @@ async def image_status():
     return state
 
 
+@app.get(PREFIX + "/reference-budget")
+async def reference_budget():
+    try:
+        return await agents.reference_budget()
+    except ValueError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(503, "读取模型上下文预算超时，请稍后重试。") from exc
+
+
 @app.post(PREFIX + "/images/search")
 async def search_slide_images(request: ImageSearchRequest):
     try:
@@ -175,8 +186,10 @@ def ensure_not_deleted(identifier):
         raise HTTPException(410, "该工作记录已删除，请新建演示或撤销删除。")
 
 
-def project_summary(project):
-    return {"id": project["id"], "title": project["title"], "slideCount": len(document_store().read(project["id"])["pages"]) if document_store().exists(project["id"]) else len(project.get("slides", [])),
+def project_summary(project, store=None):
+    store = store or document_store()
+    slide_count = store.summary(project["id"])["pageCount"] if store.exists(project["id"]) else len(project.get("slides", []))
+    return {"id": project["id"], "title": project["title"], "slideCount": slide_count,
             "updatedAt": project.get("updatedAt"), "templateId": project.get("templateId"),
             "phase": project.get("phase", "outline")}
 
@@ -225,10 +238,103 @@ async def get_project(identifier: str):
     return hydrate_project(read(project_path(identifier)))
 
 
+def reference_file_directory(identifier, attachment_id):
+    return ROOT / "reference-files" / key(identifier) / key(attachment_id)
+
+
+def reference_file_metadata(identifier, attachment_id):
+    folder = reference_file_directory(identifier, attachment_id)
+    metadata_path = folder / "metadata.json"
+    if not metadata_path.is_file():
+        raise HTTPException(404, "未找到参考资料。")
+    return folder, read(metadata_path)
+
+
+@app.get(PREFIX + "/projects/{identifier}/reference-files")
+async def list_reference_files(identifier: str):
+    ensure_not_deleted(identifier)
+    folder = ROOT / "reference-files" / key(identifier)
+    if not folder.is_dir():
+        return []
+    records = [read(path) for path in folder.glob("*/metadata.json")]
+    return sorted(records, key=lambda item: item.get("createdAt", 0), reverse=True)
+
+
+@app.post(PREFIX + "/projects/{identifier}/reference-files", status_code=201)
+async def upload_reference_file(
+    identifier: str,
+    file: UploadFile = File(...),
+    text: str = Form(...),
+):
+    ensure_not_deleted(identifier)
+    name = Path(file.filename or "参考资料").name[:200]
+    suffix = Path(name).suffix.lower()
+    if suffix not in (".docx", ".txt", ".md", ".markdown", ".csv", ".json"):
+        raise HTTPException(400, "参考资料支持 TXT、Markdown、CSV、JSON 和 DOCX 文件。")
+    limit = int(os.getenv("PPT_REFERENCE_FILE_MAX_BYTES") or 50 * 1024 * 1024)
+    data = await file.read(limit + 1)
+    await file.close()
+    if len(data) > limit:
+        raise HTTPException(413, f"参考资料请控制在 {limit // 1024 // 1024} MB 以内。")
+    extracted = text.replace("\x00", "").strip()
+    if not extracted:
+        raise HTTPException(400, "文件中没有可读取的文本内容。")
+    attachment_id = uuid4().hex
+    folder = reference_file_directory(identifier, attachment_id)
+    folder.mkdir(parents=True)
+    original = folder / ("original" + suffix)
+    original.write_bytes(data)
+    (folder / "extracted.txt").write_text(extracted, encoding="utf-8")
+    base = f"{PREFIX}/projects/{key(identifier)}/reference-files/{attachment_id}"
+    metadata = {
+        "id": attachment_id,
+        "name": name,
+        "size": len(data),
+        "extension": suffix,
+        "characters": len(extracted),
+        "createdAt": time.time(),
+        "downloadUrl": base + "/download",
+        "textUrl": base + "/text",
+    }
+    save(folder / "metadata.json", metadata)
+    return metadata
+
+
+@app.get(PREFIX + "/projects/{identifier}/reference-files/{attachment_id}/text")
+async def reference_file_text(identifier: str, attachment_id: str):
+    folder, metadata = reference_file_metadata(identifier, attachment_id)
+    path = folder / "extracted.txt"
+    if not path.is_file():
+        raise HTTPException(404, "未找到参考资料正文。")
+    return {**metadata, "text": path.read_text(encoding="utf-8")}
+
+
+@app.get(PREFIX + "/projects/{identifier}/reference-files/{attachment_id}/download")
+async def download_reference_file(identifier: str, attachment_id: str):
+    folder, metadata = reference_file_metadata(identifier, attachment_id)
+    path = folder / ("original" + metadata["extension"])
+    if not path.is_file():
+        raise HTTPException(404, "未找到参考资料原文件。")
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if metadata["extension"] == ".docx"
+        else "text/plain; charset=utf-8"
+    )
+    return FileResponse(path, media_type=media_type, filename=metadata["name"])
+
+
+@app.delete(PREFIX + "/projects/{identifier}/reference-files/{attachment_id}")
+async def delete_reference_file(identifier: str, attachment_id: str):
+    folder, metadata = reference_file_metadata(identifier, attachment_id)
+    shutil.rmtree(folder)
+    return {"id": attachment_id, "deleted": True}
+
+
 @app.get(PREFIX + "/projects")
 async def list_projects():
     projects = [read(path) for path in (ROOT / "projects").glob("*.json")]
-    return [project_summary(p) for p in sorted(projects, key=lambda p: p.get("updatedAt", 0), reverse=True)]
+    store = document_store()
+    return [project_summary(p, store) for p in sorted(projects, key=lambda p: p.get("updatedAt", 0), reverse=True)]
 
 
 @app.post(PREFIX + "/templates")
@@ -721,8 +827,90 @@ async def run_kimi_job(identifier, request):
         TASKS.pop(identifier, None)
 
 
+def legacy_agentic_kimi_enabled():
+    return os.getenv('PPT_KIMI_AGENTIC', '0').strip().lower() in ('1', 'true', 'yes')
+
+
+EDITABLE_FALLBACK_ISSUES = {
+    'text-overflow', 'text-overlap', 'text-clipped', 'text-contrast',
+    'font-unresolved', 'native-unsupported',
+}
+
+
+def editable_fallback_ready(checkpoint):
+    """Whether a complete deck may be published without the export repair pass."""
+    checkpoint = checkpoint or {}
+    plan = checkpoint.get('plan') or {}
+    paths = (plan.get('document') or {}).get('pages') or []
+    completed = {item.get('path') for item in checkpoint.get('pages') or [] if isinstance(item, dict)}
+    issues = checkpoint.get('externalIssues') or []
+    return (
+        bool(paths)
+        and set(paths) <= completed
+        and bool(issues)
+        and all(isinstance(item, dict) and item.get('code') in EDITABLE_FALLBACK_ISSUES for item in issues)
+    )
+
+
+def finish_editable_fallback(identifier, project_id, checkpoint, store):
+    """Publish the already committed PPTD when only export repair is blocked."""
+    project = assert_current_job(identifier, project_id)
+    state = store.read(project_id)
+    issues = checkpoint.get('externalIssues') or []
+    message = (
+        f'可编辑稿已生成，共 {len(state["pages"])} 页；'
+        f'导出前仍有 {len(issues)} 项排版或兼容性问题，自动修复所需模型暂不可用。'
+        '内容与检查点均已保留。'
+    )
+    meta = project.get('generationMeta') or {}
+    meta['validation'] = {
+        'status': 'editable-with-export-issues',
+        'renderRequired': True,
+        'issueCount': len(issues),
+        'issues': issues[:50],
+        'summary': '可编辑 PPTD 已保存；导出验收未完成',
+    }
+    project.update(
+        workflow='pptd-v2',
+        phase='ready',
+        activeJobId=None,
+        contentGenerated=True,
+        generationMeta=meta,
+        updatedAt=time.time(),
+    )
+    project['messages'] = [
+        *project.get('messages', []),
+        {'id': uuid4().hex, 'role': 'assistant', 'text': message},
+    ][-1000:]
+    save(project_path(project_id), project)
+    execution = record_event(
+        read(job_path(identifier)).get('execution'),
+        {'phase': 'done', 'status': 'completed', 'message': message},
+    )
+    update_job(
+        identifier,
+        status='completed',
+        stage=100,
+        message=message,
+        recoverable=False,
+        execution=execution,
+        result={
+            'reply': message,
+            'revision': state['revision'],
+            'pageCount': len(state['pages']),
+            'warnings': issues[:50],
+            'project': hydrate_project(project),
+        },
+    )
+
+
 async def run_job(identifier, request):
-    if request.kind == 'kimi-slides':
+    # Kimi expert uses the same bounded per-page pipeline as the standard PPTD
+    # route by default. It keeps the complete Kimi rules and template shell, but
+    # saves every page and can resume without replaying the whole conversation.
+    # The previous monolithic ReAct route remains available for controlled
+    # experiments through PPT_KIMI_AGENTIC=1.
+    if request.kind == 'kimi-slides' and legacy_agentic_kimi_enabled():
         return await run_kimi_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
         return await run_legacy_job(identifier, request)
@@ -808,8 +996,20 @@ async def run_job(identifier, request):
                     if not existing:
                         raise ValueError('请先生成或迁移一份 PPTD 文档。')
                 else:
-                    async with LLM_LIMIT:
-                        result = await asyncio.wait_for(pptd_generation.generate_pptd(request, generation_progress, existing=source_existing, checkpoint=checkpoint, save_checkpoint=checkpoint_save, data_root=ROOT, on_event=execution_event), timeout=agents.timeout_setting('PPTD_GENERATION_TIMEOUT_SECONDS', 1800))
+                    try:
+                        async with LLM_LIMIT:
+                            result = await asyncio.wait_for(pptd_generation.generate_pptd(request, generation_progress, existing=source_existing, checkpoint=checkpoint, save_checkpoint=checkpoint_save, data_root=ROOT, on_event=execution_event), timeout=agents.timeout_setting('PPTD_GENERATION_TIMEOUT_SECONDS', 1800))
+                    except Exception as exc:
+                        _, diagnostic, _ = diagnose_error(
+                            exc, 'validate', resumable=cp_path.is_file()
+                        )
+                        if (
+                            diagnostic.get('code') in ('model_unavailable', 'model_timeout')
+                            and editable_fallback_ready(checkpoint)
+                        ):
+                            finish_editable_fallback(identifier, project_id, checkpoint, store)
+                            return
+                        raise
                     assert_current_job(identifier, project_id)
                     assets = {item['path']: Path(item['sourcePath']) for item in result.get('assets', [])}
                     state = store.commit(project_id, result['document'], result['pages'], 'AI 生成' if request.kind == 'outline' else 'AI 修改', current_revision, assets=assets)

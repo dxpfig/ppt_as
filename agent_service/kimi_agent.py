@@ -30,7 +30,7 @@ from agentscope.state import AgentState
 from agentscope.tool import Bash, Edit, FunctionTool, Glob, Grep, Read, Toolkit, Write
 
 from .agents import make_model, timeout_setting
-from .pptd_validation import validate_document
+from .pptd_validation import normalize_table_tracks, validate_document
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -236,17 +236,22 @@ def _initial_message(request, template_info: dict | None = None) -> str:
     for item in getattr(request, "attachments", []) or []:
         if isinstance(item, dict):
             attachments.append({"name": item.get("name"), "visualAnalysis": item.get("visualAnalysis")})
+    references = getattr(request, "references", "") or ""
     payload = {
         "prompt": getattr(request, "prompt", "") or "",
         "audience": getattr(request, "audience", "") or "通用汇报",
         "pageCount": getattr(request, "pageCount", None),
-        "references": getattr(request, "references", "") or "",
+        "references": references,
+        "referenceCharacters": len(references),
         "attachments": attachments,
         "template": template_info,
         "note": (
             "交付物必须在 deck/ 目录写出全新的 .pptd（建议 deck/deck.pptd + deck/pages/*.page + deck/media/*）；"
             "不在 deck/ 下的产物不会被视为交付物。页数以用户指定为准。"
             "附件仅提供名称与已有视觉分析；未提供的二进制内容不要假设。按 SKILL.md 判定任务与设计方式。"
+            "references 非空时，它是用户上传的正文资料，也是内容、数据、结构与术语的首要事实来源。"
+            "必须先提炼其中关键事实、章节顺序、指标、结论和专有名词，并在页面中实质使用；"
+            "不得忽略参考资料后改成通用行业模板稿。资料未覆盖的部分须明确为假设或补充，不能伪装成附件事实。"
         ),
     }
     if template_info:
@@ -864,6 +869,8 @@ def _apply_template_cover_closing(template_dir: Path, deck_dir: Path, document: 
 
 def _apply_host_transforms(entry: Path, document: dict, pages: list[dict], template_info: dict | None) -> None:
     """Layer the company template onto the model's deck, in one place."""
+    for page in pages:
+        normalize_table_tracks(page.get("data") or {})
     if not template_info:
         return
     template_dir = Path(template_info["pptd"])
@@ -1190,7 +1197,13 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 await result
 
     try:
-        await emit("context", "started", "Kimi PPT 专家正在读取上下文并规划。")
+        reference_characters = len(getattr(request, "references", "") or "")
+        reference_summary = (
+            f"，已加入 {reference_characters:,} 字参考资料。"
+            if reference_characters
+            else "，未提供文本参考资料。"
+        )
+        await emit("context", "started", "Kimi PPT 专家正在读取上下文并规划" + reference_summary)
         if progress:
             progress(5, "Kimi PPT 专家正在按 kimi-slides 流程工作")
         agent = _make_agent(model, workspace, project_id, max_iters)

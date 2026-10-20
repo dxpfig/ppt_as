@@ -178,3 +178,58 @@ def _table(element, loc, fail):
             if cells & occupied: fail("InvalidTable",loc,"Merged cells overlap")
             occupied.update(cells); x+=cs
     if occupied != {(r,c) for r in range(len(rows)) for c in range(count)}: fail("InvalidTable",loc,"Rows do not cover the complete table grid")
+
+
+def _ratio_list(values, count):
+    """Normalize positive track sizes, or distribute evenly when count drifted."""
+    if (isinstance(values, list) and len(values) == count and count > 0
+            and all(number(value) and value > 0 for value in values)):
+        total = sum(values)
+        return [value / total for value in values]
+    return [1 / count for _ in range(count)] if count > 0 else values
+
+
+def normalize_table_tracks(page_data):
+    """Repair generated table track ratios before structural validation.
+
+    Models occasionally count merged rows in ``rowHeights`` or emit ratios that
+    sum to 0.96 instead of 1. Preserve intended proportions when the track count
+    matches; otherwise rebuild the tracks from the real row count. This changes
+    deterministic geometry only and never rewrites table content.
+    """
+    changed = False
+    elements = page_data.get("elements", []) if isinstance(page_data, dict) else []
+    for element in elements:
+        if not isinstance(element, dict) or element.get("elementType") != "table":
+            continue
+        rows = element.get("rows")
+        if not isinstance(rows, list):
+            continue
+        normalized_rows = []
+        for row in rows:
+            if not isinstance(row, list):
+                normalized_rows.append(row)
+                continue
+            cells = []
+            for cell in row:
+                if isinstance(cell, (str, int, float)) and not isinstance(cell, bool):
+                    cells.append({"text": str(cell)})
+                    changed = True
+                else:
+                    cells.append(cell)
+            normalized_rows.append(cells)
+        if normalized_rows != rows:
+            element["rows"] = normalized_rows
+            rows = normalized_rows
+        heights = element.get("rowHeights")
+        normalized_heights = _ratio_list(heights, len(rows))
+        if normalized_heights != heights:
+            element["rowHeights"] = normalized_heights
+            changed = True
+        widths = element.get("columnWidths")
+        if isinstance(widths, list) and widths:
+            normalized_widths = _ratio_list(widths, len(widths))
+            if normalized_widths != widths:
+                element["columnWidths"] = normalized_widths
+                changed = True
+    return changed

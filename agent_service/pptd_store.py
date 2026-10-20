@@ -144,6 +144,17 @@ class DocumentStore:
         metadata = json.loads((source.parent / 'metadata.json').read_text(encoding='utf-8'))
         return {**state, 'revision': metadata['revision'], 'versions': metadata['versions']}
 
+    def summary(self, project_id):
+        """Read list-view metadata without parsing or validating the full deck."""
+        source = self._current(project_id)
+        metadata = json.loads((source.parent / 'metadata.json').read_text(encoding='utf-8'))
+        latest = metadata['versions'][-1]
+        return {
+            'revision': metadata['revision'],
+            'pageCount': latest['pageCount'],
+            'versions': metadata['versions'],
+        }
+
     def resource_path(self, project_id, reference):
         return safe_path(self._current(project_id), reference)
 

@@ -135,6 +135,7 @@ export const isEmptyProject = (project: Project) =>
 	!project.pptd &&
 	!project.slides.length &&
 	!project.messages.length &&
+	!project.references?.trim() &&
 	!project.templateId &&
 	!project.versions.length &&
 	project.title === '未命名演示';

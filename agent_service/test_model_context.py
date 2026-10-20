@@ -14,6 +14,63 @@ from agent_service.job_execution import diagnose_error
 
 
 class ModelContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_reference_budget_uses_model_input_room_and_hard_cap(self):
+        from agent_service.model_context import reference_budget_from_context
+
+        budget = reference_budget_from_context(
+            {'contextTokens': 128000, 'outputTokens': 32000, 'safetyTokens': 8192,
+             'source': 'model-api', 'counting': 'provider-tokenizer', 'model': 'local'},
+            max_file_bytes=50 * 1024 * 1024,
+            max_characters=2_000_000,
+            characters_per_token=2,
+        )
+        self.assertEqual(budget['inputTokens'], 87808)
+        self.assertEqual(budget['maxCharacters'], 175616)
+        self.assertEqual(budget['maxFileBytes'], 50 * 1024 * 1024)
+        self.assertEqual(budget['contextTokens'], 128000)
+
+        capped = reference_budget_from_context(
+            {'contextTokens': 262144, 'outputTokens': 32000, 'safetyTokens': 8192},
+            max_characters=400000,
+            characters_per_token=4,
+        )
+        self.assertEqual(capped['inputTokens'], 221952)
+        self.assertEqual(capped['maxCharacters'], 400000)
+
+    def test_reference_budget_rejects_incomplete_context(self):
+        from agent_service.model_context import reference_budget_from_context
+
+        with self.assertRaises(ValueError):
+            reference_budget_from_context({'contextTokens': 128000})
+
+    async def test_agents_reference_budget_uses_discovery_and_closes_model(self):
+        from unittest.mock import AsyncMock
+        from agent_service import agents
+
+        model = type('BudgetModel', (), {})()
+        model.discover_context = AsyncMock(return_value={
+            'contextTokens': 262144,
+            'outputTokens': 32000,
+            'safetyTokens': 8192,
+            'source': 'model-api',
+            'counting': 'provider-tokenizer',
+            'model': 'local',
+        })
+        model.client = type('Client', (), {})()
+        model.client.close = AsyncMock()
+        with patch.dict(os.environ, {
+            'PPT_LLM_PROVIDER': 'openai',
+            'PPT_LLM_MODEL': 'local',
+            'OPENAI_API_KEY': 'test',
+            'PPT_REFERENCE_MAX_CHARACTERS': '400000',
+            'PPT_REFERENCE_CHARS_PER_TOKEN': '2',
+        }), patch.object(agents, 'make_model', return_value=model):
+            budget = await agents.reference_budget()
+        self.assertEqual(budget['contextTokens'], 262144)
+        self.assertEqual(budget['maxCharacters'], 400000)
+        self.assertEqual(budget['source'], 'model-api')
+        model.client.close.assert_awaited_once()
+
     async def response_counter_model(self, *, count=34388, available=True, context=None):
         model, _ = await self.model(PPT_LLM_CONTEXT_MODE='auto', PPT_LLM_CONTEXT_TOKENS='',
             PPT_LLM_TOKENIZER_URL='', PPT_LLM_EXTRA_BODY='{}', PPT_LLM_MAX_TOKENS='32000',

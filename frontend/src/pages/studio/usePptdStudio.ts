@@ -71,19 +71,26 @@ export function usePptdStudio() {
 	}, [adopt, refreshProjects]);
 	const reconnect = useCallback(async () => {
 		setError('');
+		// Model readiness should not wait for large work-history or template
+		// collections. A slow list request must not present the service as down.
+		const healthRequest = studioApi.health().then(
+			(value) => {
+				setHealth(value);
+				setConnected(true);
+				return value;
+			},
+			(cause: unknown) => {
+				setConnected(false);
+				setError(errorText(cause));
+				throw cause;
+			},
+		);
 		const results = await Promise.allSettled([
-			studioApi.health(),
+			healthRequest,
 			studioApi.projects(),
 			studioApi.templates(),
 		]);
-		const [healthResult, recordsResult, templatesResult] = results;
-		if (healthResult.status === 'fulfilled') {
-			setHealth(healthResult.value);
-			setConnected(true);
-		} else {
-			setConnected(false);
-			setError(errorText(healthResult.reason));
-		}
+		const [, recordsResult, templatesResult] = results;
 		if (recordsResult.status === 'fulfilled') setProjects(recordsResult.value);
 		else setError(errorText(recordsResult.reason));
 		if (templatesResult.status === 'fulfilled') setTemplates(templatesResult.value);
@@ -276,7 +283,6 @@ export function usePptdStudio() {
 			let current = projectRef.current;
 			const importTemplate =
 				kind !== 'render' &&
-				kind !== 'kimi-slides' &&
 				options.designMode === 'template' &&
 				options.templateId &&
 				(!current.pptd || current.templateId !== options.templateId);
@@ -398,6 +404,10 @@ export function usePptdStudio() {
 		});
 		return uploaded;
 	}
+	async function saveReferences(references: string) {
+		const saved = await studioApi.save({ ...projectRef.current, references });
+		return adopt(saved);
+	}
 	return {
 		project,
 		projects,
@@ -427,5 +437,6 @@ export function usePptdStudio() {
 		refreshProject,
 		reconnect,
 		uploadTemplate,
+		saveReferences,
 	};
 }

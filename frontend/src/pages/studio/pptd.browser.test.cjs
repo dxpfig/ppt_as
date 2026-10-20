@@ -1,6 +1,27 @@
 const assert = require('node:assert/strict');
+const { createRequire } = require('node:module');
 const { test } = require('node:test');
 const { chromium } = require('playwright');
+
+const mammothRequire = createRequire(require.resolve('mammoth'));
+const JSZip = mammothRequire('jszip');
+
+async function referenceDocx(text) {
+	const zip = new JSZip();
+	zip.file(
+		'[Content_Types].xml',
+		'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+	);
+	zip.file(
+		'_rels/.rels',
+		'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+	);
+	zip.file(
+		'word/document.xml',
+		`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`,
+	);
+	return zip.generateAsync({ type: 'nodebuffer' });
+}
 
 // Run with the frontend dev server at PPTD_UI_URL (default http://127.0.0.1:5178).
 // Service responses are controlled here; real renderer/export acceptance is separate.
@@ -14,9 +35,11 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.message));
 	const projects = new Map();
+	const referenceFiles = new Map();
 	const requests = [];
 	const jobs = new Map();
 	let jobNumber = 0;
+	let referenceNumber = 0;
 	const version = (revision) => ({
 		id: 'v' + revision,
 		revision,
@@ -67,7 +90,12 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		const request = route.request();
 		const path = new URL(request.url()).pathname.replace('/api/studio', '');
 		const method = request.method();
-		const body = request.postDataJSON();
+		let body = null;
+		try {
+			body = request.postDataJSON();
+		} catch {
+			/* Multipart requests have no JSON body. */
+		}
 		requests.push({ path, method, body });
 		const json = (value, status = 200) =>
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -82,6 +110,64 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 			return json([
 				{ id: 'corporate', name: '公司模板', slideCount: 2, layouts: [], warnings: [] },
 			]);
+		if (path === '/reference-budget')
+			return json({
+				available: true,
+				provider: 'openai',
+				model: 'Configured live model',
+				contextTokens: 128000,
+				outputTokens: 32000,
+				safetyTokens: 4000,
+				inputTokens: 92000,
+				charactersPerToken: 2,
+				maxCharacters: 184000,
+				maxFileBytes: 50 * 1024 * 1024,
+				source: 'model-api',
+				counting: 'responses-input-tokens',
+			});
+		const referenceMatch = path.match(
+			/^\/projects\/([^/]+)\/reference-files(?:\/([^/]+)(?:\/(text|download))?)?$/,
+		);
+		if (referenceMatch) {
+			const [, projectId, attachmentId, action] = referenceMatch;
+			const records = referenceFiles.get(projectId) ?? [];
+			if (method === 'POST') {
+				referenceNumber += 1;
+				const id = 'reference-' + referenceNumber;
+				const base = '/api/studio/projects/' + projectId + '/reference-files/' + id;
+				const attachment = {
+					id,
+					name: '三季度复盘.docx',
+					size: 1024,
+					extension: '.docx',
+					characters: 31,
+					createdAt: Date.now(),
+					downloadUrl: base + '/download',
+					textUrl: base + '/text',
+				};
+				referenceFiles.set(projectId, [attachment, ...records]);
+				return json(attachment, 201);
+			}
+			if (method === 'DELETE') {
+				referenceFiles.set(
+					projectId,
+					records.filter((item) => item.id !== attachmentId),
+				);
+				return json({ id: attachmentId, deleted: true });
+			}
+			if (action === 'text')
+				return json({
+					...records.find((item) => item.id === attachmentId),
+					text: '附件关键数据：项目完成率 83%。下一步重点是续约与交付风险。',
+				});
+			if (action === 'download')
+				return route.fulfill({
+					contentType:
+						'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+					body: 'WORD',
+				});
+			return json(records);
+		}
 		if (path === '/projects' && method === 'GET')
 			return json(
 				[...projects.values()].map((item) => ({
@@ -186,7 +272,11 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 				project = {
 					...project,
 					templateId: body.templateId,
-					templateReference: { kind: 'company-template-reference', pageCount: 12, pages: [] },
+					templateReference: {
+						kind: 'company-template-reference',
+						pageCount: 12,
+						pages: [],
+					},
 				};
 				projects.set(id, project);
 				return json(project);
@@ -197,12 +287,41 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 	try {
 		await page.goto(process.env.PPTD_UI_URL || 'http://127.0.0.1:5178');
 		await page.getByText('Configured live model', { exact: true }).waitFor();
+		await page.getByText('参考材料与内容选项', { exact: true }).click();
+		await page.locator('input[aria-label^="参考文本文件"]').setInputFiles({
+			name: '三季度复盘.docx',
+			mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+			buffer: await referenceDocx(
+				'附件关键数据：项目完成率 83%。下一步重点是续约与交付风险。',
+			),
+		});
+		await page.getByText('三季度复盘.docx', { exact: true }).waitFor();
+		await page.getByText(/已添加 ·/).waitFor();
+		await page.getByRole('button', { name: '查看参考资料 三季度复盘.docx' }).click();
+		await page.getByText('已解析正文预览', { exact: true }).waitFor();
+		const download = page.getByRole('link', { name: '下载原文件' });
+		assert.match(
+			await download.getAttribute('href'),
+			/\/reference-files\/reference-1\/download$/,
+		);
+		await page.getByRole('button', { name: '关闭参考资料预览' }).click();
 		await page.getByLabel('演示主题或内容').fill('给团队讲解季度业务结果');
 		await page.getByRole('button', { name: '生成演示', exact: true }).click();
-		await page.locator('iframe').waitFor();
+		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		await page.getByRole('button', { name: /02\s*核心结果/ }).waitFor();
 		const generated = requests.find((item) => item.path === '/jobs' && item.method === 'POST');
 		assert.equal(generated.body.pageCount, null);
+		assert.match(generated.body.references, /项目完成率 83%/);
+		assert.match(generated.body.references, /续约与交付风险/);
+		assert.ok(
+			requests.some(
+				(item) =>
+					item.path === `/projects/${generated.body.project.id}` &&
+					item.method === 'PUT' &&
+					/项目完成率 83%/.test(item.body.references),
+			),
+			'Parsed attachment text is persisted before generation',
+		);
 		assert.equal(generated.body.project.workflow, 'pptd-v2');
 		assert.equal(generated.body.workflow, 'new');
 		assert.equal(generated.body.speakerNotes, false);
@@ -211,25 +330,32 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 			'Generation receives server-sent job events',
 		);
 		assert.equal(await page.locator('.slide-draft').count(), 0);
+		await page
+			.frameLocator('iframe[title="演示文稿预览与编辑器"]')
+			.getByRole('button', { name: '保存元素修改' })
+			.waitFor();
 		await page.getByRole('button', { name: /02\s*核心结果/ }).click();
 		await page.waitForFunction(
 			() =>
-				document.querySelector('iframe').contentDocument.body.dataset.page ===
-				'pages/results.pptd',
+				document.querySelector('iframe[title="演示文稿预览与编辑器"]').contentDocument.body
+					.dataset.page === 'pages/results.pptd',
 		);
 		await page.getByRole('button', { name: '导出 PPTX / PDF', exact: true }).click();
 		await page.getByRole('link', { name: 'PPTX', exact: true }).waitFor();
-		await page.frameLocator('iframe').getByRole('button', { name: '保存元素修改' }).click();
+		await page
+			.frameLocator('iframe[title="演示文稿预览与编辑器"]')
+			.getByRole('button', { name: '保存元素修改' })
+			.click();
 		await page.getByRole('button', { name: '导出 PPTX / PDF', exact: true }).waitFor();
 		assert.equal(await page.getByRole('link', { name: 'PPTX', exact: true }).count(), 0);
 		await page.waitForFunction(
 			() =>
-				document.querySelector('iframe').contentDocument.body.dataset.page ===
-				'pages/results.pptd',
+				document.querySelector('iframe[title="演示文稿预览与编辑器"]').contentDocument.body
+					.dataset.page === 'pages/results.pptd',
 		);
 		await page.getByRole('button', { name: '版本记录', exact: true }).click();
 		await page.getByRole('button', { name: '恢复', exact: true }).first().click();
-		await page.getByText('已保存 · 版本 3', { exact: true }).waitFor();
+		await page.getByText(/已保存 · 版本 \d+/).waitFor();
 		assert.equal(
 			requests.find((item) => item.path.includes('/versions/') && item.method === 'POST').body
 				.expectedRevision,
@@ -279,7 +405,7 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.getByRole('button', { name: '刷新工作记录' }).click();
 		await page.getByRole('button', { name: '打开工作记录：旧版演示' }).click();
 		await page.getByRole('button', { name: '迁移为可编辑演示' }).click();
-		await page.locator('iframe').waitFor();
+		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		assert.ok(requests.some((item) => item.path === '/projects/legacy/pptd/migrate'));
 		await page.getByRole('button', { name: '新建', exact: true }).click();
 		await page.getByLabel('视觉设计').selectOption('style-reference');
@@ -296,7 +422,7 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.locator('.pptd-template select').selectOption('corporate');
 		await page.getByLabel('演示主题或内容').fill('使用上传模板生成产品介绍');
 		await page.getByRole('button', { name: '生成演示', exact: true }).click();
-		await page.locator('iframe').waitFor();
+		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		const imported = requests.find((item) => item.path.endsWith('/pptd/import-template'));
 		assert.equal(imported.body.templateId, 'corporate');
 		const templateRequest = requests
@@ -316,15 +442,18 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 			localStorage.setItem('ppt-as-studio-v3', JSON.stringify(cached));
 		});
 		await page.reload();
-		await page.locator('iframe').waitFor();
+		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		assert.equal(
 			await page.getByLabel('创作方式').inputValue(),
 			'edit',
 			'Hydrated documents default to editing',
 		);
 		await page.getByLabel('创作方式').selectOption('new');
-		await page.frameLocator('iframe').getByRole('button', { name: '保存元素修改' }).click();
-		await page.getByText('已保存 · 版本 3', { exact: true }).waitFor();
+		await page
+			.frameLocator('iframe[title="演示文稿预览与编辑器"]')
+			.getByRole('button', { name: '保存元素修改' })
+			.click();
+		await page.getByText(/已保存 · 版本 \d+/).waitFor();
 		assert.equal(
 			await page.getByLabel('创作方式').inputValue(),
 			'new',

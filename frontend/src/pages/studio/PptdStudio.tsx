@@ -4,6 +4,7 @@ import {
 	Check,
 	ChevronRight,
 	Download,
+	Eye,
 	FileArchive,
 	FileText,
 	History,
@@ -26,7 +27,8 @@ import { useTheme } from 'next-themes';
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 
-import type { DesignMode, Scenario, Workflow } from './api';
+import { studioApi, StudioError } from './api';
+import type { DesignMode, ReferenceBudget, ReferenceFile, Scenario, Workflow } from './api';
 import { PptdJobStatus } from './PptdJobStatus';
 import {
 	defaultPreferences,
@@ -37,6 +39,11 @@ import {
 } from './pptdState';
 import type { GenerationPreferences } from './pptdState';
 import { PptdThumbnail } from './PptdThumbnail';
+import {
+	readReferenceDocument,
+	REFERENCE_FILE_ACCEPT,
+	REFERENCE_FILE_MAX_BYTES,
+} from './referenceDocument';
 import { SlideDraft } from './SlideDraft';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { usePptdStudio } from './usePptdStudio';
@@ -64,6 +71,32 @@ const statusLabels = {
 	cancelled: '已停止',
 	interrupted: '任务中断',
 };
+function formatCharacters(value: number) {
+	if (value >= 10000) return `${(value / 10000).toFixed(value >= 100000 ? 0 : 1)} 万字`;
+	return `${value.toLocaleString('zh-CN')} 字`;
+}
+function formatBudgetSource(source: string) {
+	if (source.includes('model-api')) return '服务端发现';
+	if (source.includes('fallback')) return '配置回退预算，未获服务端确认';
+	return '配置预算';
+}
+type ReferenceAttachment = ReferenceFile & { text?: string };
+function composeReferenceText(manual: string, attachments: { name: string; text?: string }[]) {
+	let result = manual.trim();
+	for (const attachment of attachments) {
+		if (!attachment.text) continue;
+		const section = `【${attachment.name}】\n${attachment.text}`.trim();
+		if (!result.includes(section)) result = [result, section].filter(Boolean).join('\n\n');
+	}
+	return result;
+}
+function removeReferenceSection(manual: string, name: string, text: string) {
+	const section = `【${name}】\n${text}`.trim();
+	return manual
+		.replace(section, '')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
 
 export function PptdStudio() {
 	const studio = usePptdStudio();
@@ -71,7 +104,7 @@ export function PptdStudio() {
 }
 function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> }) {
 	const { resolvedTheme } = useTheme();
-	const { project, document, health, job, busy, connected } = studio;
+	const { project, document, health, job, busy, connected, setError } = studio;
 	const [prompt, setPrompt] = useState('');
 	const [preferences, setPreferences] = useState<GenerationPreferences>({
 		...defaultPreferences,
@@ -91,6 +124,16 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	}, [hasDocument]);
 	const [images, setImages] = useState<{ name: string; imageData: string; size: number }[]>([]);
 	const [readingImages, setReadingImages] = useState(false);
+	const [readingReference, setReadingReference] = useState(false);
+	const [referenceBudget, setReferenceBudget] = useState<ReferenceBudget | null>(null);
+	const [referenceBudgetLoading, setReferenceBudgetLoading] = useState(false);
+	const [referenceAttachments, setReferenceAttachments] = useState<ReferenceAttachment[]>([]);
+	const [referencePreview, setReferencePreview] = useState<{
+		name: string;
+		text: string;
+		downloadUrl: string;
+	} | null>(null);
+	const [previewingReference, setPreviewingReference] = useState(false);
 	const [selectedPage, setSelectedPage] = useState('');
 	const [legacyIndex, setLegacyIndex] = useState(0);
 	const [mode, setMode] = useState<'preview' | 'edit'>('preview');
@@ -104,6 +147,50 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 			window.document.querySelector('.pptd-live-status')?.scrollIntoView({ block: 'start' });
 		}
 	}, [job?.id]);
+	useEffect(() => {
+		let disposed = false;
+		if (!connected || !health?.llmConfigured) {
+			setReferenceBudget(null);
+			setReferenceBudgetLoading(false);
+			return;
+		}
+		setReferenceBudgetLoading(true);
+		void studioApi
+			.referenceBudget()
+			.then((budget) => {
+				if (!disposed) setReferenceBudget(budget);
+			})
+			.catch(() => {
+				if (!disposed) setReferenceBudget(null);
+			})
+			.finally(() => {
+				if (!disposed) setReferenceBudgetLoading(false);
+			});
+		return () => {
+			disposed = true;
+		};
+	}, [connected, health?.llmConfigured, health?.model]);
+	useEffect(() => {
+		let disposed = false;
+		void studioApi
+			.referenceFiles(project.id)
+			.then((files) => {
+				if (!disposed) setReferenceAttachments(files);
+			})
+			.catch((cause: unknown) => {
+				if (!disposed)
+					setError(
+						cause instanceof StudioError && cause.status === 404
+							? '参考资料服务尚未加载，请重启智能体服务后刷新页面。'
+							: cause instanceof Error
+								? cause.message
+								: '无法读取参考资料列表。',
+					);
+			});
+		return () => {
+			disposed = true;
+		};
+	}, [project.id, setError]);
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const workbenchRef = useRef<HTMLElement>(null);
 	const pageListRef = useRef<HTMLElement>(null);
@@ -122,7 +209,14 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const pageIndex = currentPage ? pages.indexOf(currentPage) : 0;
 	const versions = document?.versions ?? project.pptd?.versions ?? [];
 	const template = studio.templates.find((item) => item.id === templateId);
-	const canGenerate = !busy && !readingImages && connected && !!health?.llmConfigured && !legacy;
+	const referenceText = composeReferenceText(preferences.references, referenceAttachments);
+	const canGenerate =
+		!busy &&
+		!readingImages &&
+		!readingReference &&
+		connected &&
+		!!health?.llmConfigured &&
+		!legacy;
 	const terminal = job && ['failed', 'cancelled', 'interrupted'].includes(job.status);
 	const checkpoint =
 		typeof job?.checkpoint === 'string' ? job.checkpoint : job?.checkpoint?.summary;
@@ -252,13 +346,23 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		event.preventDefault();
 		if (!prompt.trim() || !canGenerate) return;
 		try {
+			const references = composeReferenceText(preferences.references, referenceAttachments);
+			if (references.length > 0) {
+				const budget = referenceBudget ?? (await studioApi.referenceBudget());
+				if (!referenceBudget) setReferenceBudget(budget);
+				if (references.length > budget.maxCharacters)
+					throw new Error(
+						`当前模型参考资料上限为 ${formatCharacters(budget.maxCharacters)}；` +
+							`当前为 ${formatCharacters(references.length)}，请精简后重试。`,
+					);
+			}
 			const kind = expertMode
 				? 'kimi-slides'
 				: project.pptd && preferences.workflow === 'edit'
 					? 'revise'
 					: 'outline';
 			const started = await studio.start(kind, {
-				...generationOptions(preferences),
+				...generationOptions({ ...preferences, references }),
 				prompt: prompt.trim(),
 				attachments: images.map(({ name, imageData }) => ({ name, imageData })),
 				templateId: preferences.designMode === 'template' ? templateId : undefined,
@@ -276,15 +380,107 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	async function readReference(event: ChangeEvent<HTMLInputElement>) {
 		const file = event.target.files?.[0];
 		if (!file) return;
+		setReadingReference(true);
 		try {
-			if (file.size > 2 * 1024 * 1024) throw new Error('参考文本请控制在 2 MB 以内。');
-			const text = await file.text();
-			update('references', `${preferences.references}\n\n【${file.name}】\n${text}`.trim());
-			setNotice(`已添加参考资料：${file.name}`);
+			const budget = referenceBudget ?? (await studioApi.referenceBudget());
+			if (!referenceBudget) setReferenceBudget(budget);
+			const document = await readReferenceDocument(file, budget.maxFileBytes);
+			const existing = referenceAttachments.find((item) => item.name === file.name);
+			if (referenceAttachments.length >= 5 && !existing)
+				throw new Error('单个演示最多添加 5 份文本参考资料。');
+			let baseReferences = preferences.references;
+			if (existing) {
+				const oldText =
+					existing.text ??
+					(await studioApi.referenceFileText(project.id, existing.id)).text;
+				baseReferences = removeReferenceSection(baseReferences, existing.name, oldText);
+			}
+			const staged = {
+				name: file.name,
+				text: document.text,
+				characters: document.text.length,
+			};
+			const nextWithStaged = [
+				...referenceAttachments.filter((item) => item.name !== file.name),
+				staged,
+			];
+			const references = composeReferenceText(baseReferences, nextWithStaged);
+			if (references.length > budget.maxCharacters)
+				throw new Error(
+					`当前模型上下文为 ${budget.contextTokens.toLocaleString('zh-CN')} tokens，` +
+						`参考资料上限为 ${formatCharacters(budget.maxCharacters)}；` +
+						`本次合并后为 ${formatCharacters(references.length)}，请精简后重试。`,
+				);
+			const uploaded = await studioApi.uploadReferenceFile(project.id, file, document.text);
+			try {
+				await studio.saveReferences(references);
+			} catch (cause) {
+				await studioApi.deleteReferenceFile(project.id, uploaded.id).catch(() => undefined);
+				throw cause;
+			}
+			if (existing) {
+				await studioApi.deleteReferenceFile(project.id, existing.id).catch(() => undefined);
+			}
+			const attachment = { ...uploaded, text: document.text };
+			setReferenceAttachments([
+				...referenceAttachments.filter((item) => item.name !== file.name),
+				attachment,
+			]);
+			update('references', references);
+			setNotice(
+				`已添加参考资料：${file.name}（${formatCharacters(document.text.length)}）${
+					document.warnings.length
+						? `（DOCX 解析完成，Mammoth 返回 ${document.warnings.length} 条格式提示）`
+						: ''
+				}`,
+			);
 		} catch (cause) {
 			studio.setError(cause instanceof Error ? cause.message : '无法读取资料。');
+		} finally {
+			setReadingReference(false);
+			event.target.value = '';
 		}
-		event.target.value = '';
+	}
+	async function removeReferenceAttachment(name: string) {
+		const attachment = referenceAttachments.find((item) => item.name === name);
+		if (!attachment) return;
+		const nextAttachments = referenceAttachments.filter((item) => item.name !== name);
+		setReadingReference(true);
+		try {
+			const text =
+				attachment.text ??
+				(await studioApi.referenceFileText(project.id, attachment.id)).text;
+			const references = removeReferenceSection(
+				preferences.references,
+				attachment.name,
+				text,
+			);
+			await studio.saveReferences(references);
+			await studioApi.deleteReferenceFile(project.id, attachment.id);
+			update('references', references);
+			setReferenceAttachments(nextAttachments);
+		} catch (cause) {
+			studio.setError(cause instanceof Error ? cause.message : '无法更新参考资料。');
+		} finally {
+			setReadingReference(false);
+		}
+	}
+	async function previewReference(attachment: ReferenceAttachment) {
+		setPreviewingReference(true);
+		try {
+			const text =
+				attachment.text ??
+				(await studioApi.referenceFileText(project.id, attachment.id)).text;
+			setReferencePreview({
+				name: attachment.name,
+				text,
+				downloadUrl: attachment.downloadUrl,
+			});
+		} catch (cause) {
+			studio.setError(cause instanceof Error ? cause.message : '无法读取参考资料正文。');
+		} finally {
+			setPreviewingReference(false);
+		}
 	}
 	async function uploadTemplate(event: ChangeEvent<HTMLInputElement>) {
 		const file = event.target.files?.[0];
@@ -694,11 +890,16 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									参考材料与内容选项
 								</summary>
 								<label className="pptd-field">
-									<span>参考资料</span>
+									<span>
+										参考资料
+										{referenceBudget
+											? ` · ${formatCharacters(referenceText.length)} / ${formatCharacters(referenceBudget.maxCharacters)}`
+											: ''}
+									</span>
 									<textarea
 										rows={5}
 										value={preferences.references}
-										disabled={busy}
+										disabled={busy || readingReference}
 										onChange={(event) =>
 											update('references', event.target.value)
 										}
@@ -708,19 +909,98 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 								<button
 									type="button"
 									className="pptd-secondary"
-									disabled={busy}
+									disabled={busy || readingReference || referenceBudgetLoading}
 									onClick={() => referenceInput.current?.click()}
 								>
 									<Upload size={14} />
-									添加文本资料
+									{readingReference ? '正在解析资料…' : '添加文本资料'}
 								</button>
 								<input
 									ref={referenceInput}
 									type="file"
-									accept=".txt,.md,.csv,.json"
+									aria-label="参考文本文件，支持 TXT、Markdown、CSV、JSON 和 DOCX"
+									accept={REFERENCE_FILE_ACCEPT}
 									hidden
 									onChange={(event) => void readReference(event)}
 								/>
+								{referenceAttachments.length > 0 && (
+									<div className="pptd-reference-files">
+										{referenceAttachments.map((attachment) => (
+											<article key={attachment.id}>
+												<div
+													className={`pptd-reference-file-icon ${
+														attachment.extension === '.docx'
+															? 'is-word'
+															: ''
+													}`}
+													aria-hidden="true"
+												>
+													<FileText size={18} />
+													<small>
+														{attachment.extension === '.docx'
+															? 'DOCX'
+															: 'TEXT'}
+													</small>
+												</div>
+												<div className="pptd-reference-file-copy">
+													<strong>{attachment.name}</strong>
+													<small>
+														<Check size={11} />
+														已添加 ·{' '}
+														{formatCharacters(attachment.characters)}
+													</small>
+												</div>
+												<div className="pptd-reference-file-actions">
+													<button
+														type="button"
+														className="studio-icon"
+														aria-label={`查看参考资料 ${attachment.name}`}
+														title="查看解析内容"
+														disabled={previewingReference}
+														onClick={() =>
+															void previewReference(attachment)
+														}
+													>
+														<Eye size={14} />
+													</button>
+													<a
+														className="studio-icon"
+														href={attachment.downloadUrl}
+														download={attachment.name}
+														aria-label={`下载参考资料 ${attachment.name}`}
+														title="下载原文件"
+													>
+														<Download size={14} />
+													</a>
+													<button
+														type="button"
+														className="studio-icon"
+														aria-label={`移除参考资料 ${attachment.name}`}
+														title="移除"
+														disabled={busy || readingReference}
+														onClick={() =>
+															void removeReferenceAttachment(
+																attachment.name,
+															)
+														}
+													>
+														<X size={12} />
+													</button>
+												</div>
+											</article>
+										))}
+									</div>
+								)}
+								<p className="pptd-hint">
+									{referenceBudget
+										? `当前模型上下文 ${referenceBudget.contextTokens.toLocaleString('zh-CN')} tokens（${formatBudgetSource(referenceBudget.source)}），` +
+											`参考资料上限 ${formatCharacters(referenceBudget.maxCharacters)}，` +
+											`单文件上限 ${Math.round(referenceBudget.maxFileBytes / 1024 / 1024)} MB。`
+										: referenceBudgetLoading
+											? '正在读取当前模型的上下文预算…'
+											: `暂时无法读取模型预算，请稍后重试。原始文件上限仍为 ${Math.round(REFERENCE_FILE_MAX_BYTES / 1024 / 1024)} MB。`}
+									DOCX 会读取标题、段落、列表和表格中的正文。
+								</p>
 								<label className="pptd-check">
 									<input
 										type="checkbox"
@@ -762,7 +1042,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									disabled={busy}
 									onChange={(event) => setExpertMode(event.target.checked)}
 								/>
-								Kimi 专家（agentic，1:1 复刻）
+								Kimi 专家（分批生成，可恢复）
 							</label>
 							{project.pptd && preferences.workflow === 'edit' && (
 								<label className="pptd-field">
@@ -785,15 +1065,17 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 								disabled={
 									!canGenerate ||
 									!prompt.trim() ||
-									(!expertMode && preferences.designMode === 'template' && !templateId)
+									(!expertMode &&
+										preferences.designMode === 'template' &&
+										!templateId)
 								}
 							>
 								<Sparkles size={17} />
 								{expertMode
-									? '生成演示（Kimi）'
+									? '生成演示（Kimi 分批）'
 									: project.pptd && preferences.workflow === 'edit'
-									? '应用修改'
-									: '生成演示'}
+										? '应用修改'
+										: '生成演示'}
 								<ArrowUpRight size={16} />
 							</button>
 						</form>
@@ -1230,6 +1512,48 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 					)}
 				</section>
 			</div>
+			{referencePreview && (
+				<div className="pptd-modal-backdrop">
+					<div
+						className="pptd-modal pptd-reference-preview"
+						role="dialog"
+						aria-modal="true"
+						aria-label={`查看参考资料 ${referencePreview.name}`}
+					>
+						<header>
+							<div>
+								<strong>{referencePreview.name}</strong>
+								<small>已解析正文预览</small>
+							</div>
+							<button
+								type="button"
+								className="studio-icon"
+								aria-label="关闭参考资料预览"
+								onClick={() => setReferencePreview(null)}
+							>
+								<X size={15} />
+							</button>
+						</header>
+						<pre>{referencePreview.text}</pre>
+						<div>
+							<a
+								className="pptd-secondary"
+								href={referencePreview.downloadUrl}
+								download={referencePreview.name}
+							>
+								<Download size={14} />
+								下载原文件
+							</a>
+							<button
+								className="pptd-primary"
+								onClick={() => setReferencePreview(null)}
+							>
+								关闭
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
 			{deleteId && (
 				<div className="pptd-modal-backdrop">
 					<div

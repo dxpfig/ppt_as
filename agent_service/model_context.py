@@ -141,6 +141,53 @@ def context_settings(base_url):
     return enabled, window, margin, endpoint, mode, bool(os.getenv('PPT_LLM_CONTEXT_TOKENS'))
 
 
+def reference_budget_from_context(
+    info,
+    *,
+    max_file_bytes=50 * 1024 * 1024,
+    max_characters=2_000_000,
+    characters_per_token=2.0,
+):
+    """Translate a discovered model budget into the reference textarea cap.
+
+    Long references are separately chunked by ``prepare_materials``; this cap
+    protects project storage and bounds how much source text one job can queue.
+    Two source characters per available input token is conservative for CJK
+    while allowing substantially more source material than a single request.
+    """
+    context_tokens = info.get('contextTokens')
+    output_tokens = info.get('outputTokens')
+    safety_tokens = info.get('safetyTokens')
+    if not all(type(value) is int and value > 0 for value in (context_tokens, output_tokens, safety_tokens)):
+        raise ValueError('模型上下文信息不完整，无法计算参考资料预算。')
+    if not isinstance(max_file_bytes, int) or max_file_bytes < 1:
+        raise ValueError('参考资料文件上限无效。')
+    if not isinstance(max_characters, int) or max_characters < 1:
+        raise ValueError('参考资料文本上限无效。')
+    if not isinstance(characters_per_token, (int, float)) or characters_per_token <= 0:
+        raise ValueError('参考资料字符预算系数无效。')
+    input_tokens = min(
+        context_tokens - output_tokens - safety_tokens,
+        int(context_tokens * .9) - 1,
+    )
+    if input_tokens < 1:
+        raise ValueError('模型上下文扣除输出与安全余量后没有可用输入预算。')
+    dynamic_characters = max(1, int(input_tokens * characters_per_token))
+    return {
+        'contextTokens': context_tokens,
+        'outputTokens': output_tokens,
+        'safetyTokens': safety_tokens,
+        'inputTokens': input_tokens,
+        'charactersPerToken': float(characters_per_token),
+        'maxCharacters': min(max_characters, dynamic_characters),
+        'maxFileBytes': max_file_bytes,
+        'source': info.get('source', 'unknown'),
+        'counting': info.get('counting', 'unknown'),
+        'model': info.get('model', ''),
+        **({'warning': info['discoveryWarning']} if info.get('discoveryWarning') else {}),
+    }
+
+
 class ContextBudgetMixin:
     """Keep AgentScope's tracing/streaming while guarding every actual call.
 
@@ -164,7 +211,9 @@ class ContextBudgetMixin:
         self.context_mode = context_mode
         self.explicit_window = explicit_window
         self.context_info = {'source': 'configured' if explicit_window else 'fallback',
-                             'contextTokens': self.context_size, 'model': self.model}
+                             'contextTokens': self.context_size,
+                             'outputTokens': self.parameters.max_tokens or self._requested_output,
+                             'safetyTokens': self.safety_tokens, 'model': self.model}
         self._discovered = False
         self._discovery_lock = asyncio.Lock()
         self._token_counts = OrderedDict()

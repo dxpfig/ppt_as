@@ -39,6 +39,14 @@ class DocumentStoreTests(unittest.TestCase):
         self.assertEqual(result['pages'], expected)
         self.assertEqual(result['versions'][0]['label'], '初稿')
         self.assertEqual(self.store.read('project-a'), result)
+    def test_summary_uses_version_metadata_without_reading_pages(self):
+        self.create()
+        self.store.edit('project-a', {'pageIndex': 0, 'elementId': 'title', 'text': '新标题'}, 1)
+        with patch.object(self.store, '_read_source', side_effect=AssertionError('pages must not be parsed')):
+            summary = self.store.summary('project-a')
+        self.assertEqual(summary['revision'], 2)
+        self.assertEqual(summary['pageCount'], 1)
+        self.assertEqual(len(summary['versions']), 2)
     def test_stale_browser_cannot_overwrite_new_edit(self):
         self.create()
         self.store.edit('project-a', {'pageIndex': 0, 'elementId': 'title', 'text': '新值'}, 1)

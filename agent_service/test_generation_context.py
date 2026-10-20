@@ -1,11 +1,18 @@
 import copy
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from agentscope.message import Msg
 
-from agent_service.generation_context import page_context, read_context, prepare_materials, split_text
+from agent_service.generation_context import (
+    exact_material_excerpts,
+    page_context,
+    read_context,
+    prepare_materials,
+    split_text,
+)
 
 
 class GenerationContextTests(unittest.IsolatedAsyncioTestCase):
@@ -43,7 +50,9 @@ class GenerationContextTests(unittest.IsolatedAsyncioTestCase):
             if role == 'plan': return plan
             return {'data':source['pages'][0]['data']}
         async def close(): pass
-        with patch.object(g,'make_model',return_value=SimpleNamespace(client=SimpleNamespace(close=close))), patch.object(g,'_ask',side_effect=ask):
+        with patch.dict(os.environ, {'PPT_MATERIAL_LLM_EXCERPTS': '1'}), \
+             patch.object(g,'make_model',return_value=SimpleNamespace(client=SimpleNamespace(close=close))), \
+             patch.object(g,'_ask',side_effect=ask):
             await g.generate_pptd(request(references=original),lambda *a:None,save_checkpoint=states.append)
         self.assertEqual(roles[0],'source')
         self.assertEqual(next(iter(states[-1]['materialSources'].values())),original)
@@ -125,14 +134,15 @@ class GenerationContextTests(unittest.IsolatedAsyncioTestCase):
             seen.append(data['source']['id'])
             if len(seen) == 2: raise TimeoutError()
             return {'excerpts': [data['source']['text'][:100]]}
-        with self.assertRaises(TimeoutError):
+        with patch.dict(os.environ, {'PPT_MATERIAL_LLM_EXCERPTS': '1'}), self.assertRaises(TimeoutError):
             await prepare_materials(context, state, interrupted, save)
         self.assertEqual(len(state['materialDigests']), 1)
         processed = seen[0]; resumed = []
         async def finish(role, data, **kwargs):
             resumed.append(data['source']['id'])
             return {'excerpts': [data['source']['text'][:100]]}
-        result = await prepare_materials(context, state, finish, save)
+        with patch.dict(os.environ, {'PPT_MATERIAL_LLM_EXCERPTS': '1'}):
+            result = await prepare_materials(context, state, finish, save)
         self.assertNotIn(processed, resumed)
         self.assertEqual(context, before)
         self.assertEqual(result['request'], context['request'])
@@ -147,9 +157,41 @@ class GenerationContextTests(unittest.IsolatedAsyncioTestCase):
         state = {}
         async def ask(*a, **k): return {'excerpts': ['确切收入 999 万。']}
         async def save(): pass
-        with self.assertRaises(ValueError):
+        with patch.dict(os.environ, {'PPT_MATERIAL_LLM_EXCERPTS': '1'}), self.assertRaises(ValueError):
             await prepare_materials(context, state, ask, save)
         self.assertEqual(state.get('materialDigests'), {})
+
+    async def test_default_material_digest_uses_exact_local_paragraphs(self):
+        original = ''.join(
+            f'第{i}节\n\n战略目标{i}：完成率达到 {i}%，预算投入 {i + 1} 亿元。\n\n'
+            for i in range(1, 1000)
+        )
+        state = {}
+        async def ask(*a, **k): self.fail('local digest must not call the model')
+        async def save(): pass
+        with patch.dict(os.environ, {'PPT_MATERIAL_LLM_EXCERPTS': '0'}):
+            result = await prepare_materials({'request': '生成汇报', 'references': original}, state, ask, save)
+        material = result['materials'][0]
+        excerpts = [text for chunk in material['chunks'] for text in chunk['excerpts']]
+        self.assertTrue(excerpts)
+        self.assertTrue(all(text in original for text in excerpts))
+        self.assertTrue(all(sum(map(len, chunk['excerpts'])) <= 6000 for chunk in material['chunks']))
+        self.assertTrue(all(item.get('mode') == 'local-exact' for item in state['materialDigests'].values()))
+
+    def test_exact_excerpts_span_the_material_and_respect_limits(self):
+        text = ''.join(
+            f'章节{i}\n\n这是第{i}部分的正文，包含战略、产品、市场、技术、保障与目标。\n\n'
+            for i in range(40)
+        )
+        excerpts = exact_material_excerpts(text)
+        self.assertTrue(excerpts)
+        self.assertLessEqual(len(excerpts), 12)
+        self.assertLessEqual(sum(map(len, excerpts)), 6000)
+        self.assertTrue(all(value in text for value in excerpts))
+        joined = ' '.join(excerpts)
+        self.assertIn('第0部分', joined)
+        self.assertIn('第36部分', joined)
+        self.assertIn('章节0', joined)
 
     async def test_authoritative_document_is_not_replaced_with_excerpt_references(self):
         context = {'request':'修改颜色','existingDocument':{'pages':[{'text':'原文' * 13000}]}}

@@ -265,6 +265,39 @@ class GenerationContract(unittest.IsolatedAsyncioTestCase):
         page["elements"][0]["content"]["text"]='<p><span style="font-family:微软雅黑;font-size:30.0px;color:#E50011">新标题</span></p>'
         self.assertEqual(self.generation.template_binding_issues(page,shell,"pages/one.page",540),[])
 
+    def test_narrow_body_slot_accepts_a_modest_wrap_safe_expansion(self):
+        original = "模" * 44
+        shell = {"elements": [{
+            "elementId": "body",
+            "elementType": "text",
+            "bounds": [52, 268, 139, 156],
+            "content": {
+                "text": f'<p><span style="font-family:微软雅黑;font-size:13.0px;color:#000000">{original}</span></p>'
+            },
+        }]}
+        page = copy.deepcopy(shell)
+        page["elements"][0]["content"]["text"] = (
+            '<p><span style="font-family:微软雅黑;font-size:13.0px;color:#000000">'
+            + "新" * 54
+            + "</span></p>"
+        )
+        self.assertEqual(
+            self.generation.template_binding_issues(page, shell, "pages/one.page", 540),
+            [],
+        )
+        page["elements"][0]["content"]["text"] = (
+            '<p><span style="font-family:微软雅黑;font-size:13.0px;color:#000000">'
+            + "新" * 60
+            + "</span></p>"
+        )
+        self.assertIn(
+            "TemplateTextTooLong",
+            {
+                issue["code"]
+                for issue in self.generation.template_binding_issues(page, shell, "pages/one.page", 540)
+            },
+        )
+
     def test_template_badges_and_band_text_may_stay_verbatim(self):
         shell={"elements":[{"elementId":"badge","elementType":"text","bounds":[288,161,62,34],
                             "content":{"text":'<p><span style="font-size:26.0px;color:#FFFFFF">01</span></p>'}},

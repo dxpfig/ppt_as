@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import re
 from typing import Annotated
 
@@ -28,6 +29,116 @@ def split_text(text, size=12000):
     # Character offsets (not bytes) never split a Unicode code point. Every
     # character, including whitespace, belongs to exactly one recoverable chunk.
     return [text[start:start + size] for start in range(0, len(text), size)]
+
+
+def exact_material_excerpts(text, *, limit=6000, max_items=12):
+    """Select exact source paragraphs spread across one material chunk.
+
+    This is the deterministic default for long references. It avoids asking an
+    OpenAI-compatible model to re-emit thousands of Chinese characters inside a
+    JSON string, which is prone to unescaped quotes, newlines and truncated
+    output. The planner still receives representative facts from every region
+    of the supplied source, and the complete original remains readable on demand.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    paragraphs = []
+    for value in re.split(r'\n\s*\n', text):
+        value = value.strip()
+        if not value:
+            continue
+        if len(value) <= 2000:
+            paragraphs.append(value)
+            continue
+        # Some DOCX exports return one very long paragraph. Split it at nearby
+        # punctuation so later regions can still be represented.
+        cursor = 0
+        while cursor < len(value):
+            end = min(len(value), cursor + 1800)
+            if end < len(value):
+                boundary = max(value.rfind(mark, cursor + 900, end)
+                               for mark in ('。', '；', '！', '？', '\n'))
+                if boundary >= 0:
+                    end = boundary + 1
+            piece = value[cursor:end].strip()
+            if piece:
+                paragraphs.append(piece)
+            cursor = end
+    if not paragraphs:
+        paragraphs = [text.strip()]
+    located, cursor = [], 0
+    for paragraph in paragraphs:
+        start = text.find(paragraph, cursor)
+        if start < 0:
+            continue
+        end = start + len(paragraph)
+        located.append((start, end))
+        cursor = end
+    units, headings = [], []
+    for start, end in located:
+        paragraph = text[start:end]
+        heading = (
+            len(paragraph) <= 120
+            and not re.search(r'[。！？]', paragraph)
+            and (
+                bool(re.match(r'^(?:[一二三四五六七八九十]+、|\d+(?:\.\d+)*\s*)', paragraph))
+                or len(paragraph) <= 48
+            )
+        )
+        if heading:
+            headings.append((start, end))
+            if len(headings) >= 3:
+                units.append((headings[0][0], headings[-1][1]))
+                headings = []
+            continue
+        units.append((headings[0][0] if headings else start, end))
+        headings = []
+    if headings:
+        units.append((headings[0][0], headings[-1][1]))
+    if not units:
+        units = [(0, len(text))]
+    # Keep a stable one-to-one distribution across the chunk instead of taking
+    # only its opening pages. Short headings are useful, but full body paragraphs
+    # that contain dates, metrics and strategy terms receive a higher score.
+    count = min(max_items, len(units))
+    buckets = [units[index * len(units) // count:(index + 1) * len(units) // count]
+               for index in range(count)]
+
+    def score(unit):
+        start, end = unit
+        paragraph = text[start:end]
+        value = 15 if len(paragraph) >= 80 else 0
+        value += 12 if re.search(r'\d|%|％|亿元|万元|万片|TOPS|POPS', paragraph) else 0
+        value += sum(6 for term in (
+            '战略', '需求', '目标', '规划', '产品', '能力', '市场', '技术', '保障', '建议', '风险'
+        ) if term in paragraph)
+        value += 10 if re.match(r'^(?:[一二三四五六七八九十]+、|\d+(?:\.\d+)*\s*)', paragraph) else 0
+        return value
+
+    per_item = max(1, min(2000, limit // max(1, count)))
+    selected = []
+    for bucket in buckets:
+        if not bucket:
+            continue
+        start, _ = max(bucket, key=score)
+        excerpt = text[start:min(len(text), start + per_item)].strip()
+        if excerpt and excerpt not in selected:
+            selected.append(excerpt)
+    remaining = limit - sum(map(len, selected))
+    if remaining > 0:
+        ranked = sorted(units, key=score, reverse=True)
+        for start, _ in ranked:
+            excerpt = text[start:min(len(text), start + min(per_item, remaining))].strip()
+            if excerpt and excerpt not in selected:
+                selected.append(excerpt)
+                remaining -= len(excerpt)
+            if remaining <= 0 or len(selected) >= max_items:
+                break
+    return selected[:max_items]
+
+
+def material_llm_excerpts_enabled():
+    return os.getenv('PPT_MATERIAL_LLM_EXCERPTS', '0').strip().lower() in ('1', 'true', 'yes')
 
 
 def read_context(sources, query):
@@ -131,19 +242,31 @@ async def prepare_materials(context, state, ask, save):
             cached = digests.get(key)
             if cached and cached.get('sha256') == _hash(chunk):
                 answer = MaterialDigest.model_validate(cached['digest'], strict=True).model_dump()
+                digest_mode = cached.get('mode', 'model')
+            elif not material_llm_excerpts_enabled():
+                answer = {'excerpts': exact_material_excerpts(chunk)}
+                digests[key] = {'sha256': _hash(chunk), 'digest': answer, 'mode': 'local-exact'}
+                await save()
             else:
+                digest_mode = 'model'
                 payload = {'request': context.get('request', ''),
                            'source': {'id': key, 'offset': index * 12000, 'text': chunk}}
-                for attempt in range(2):
-                    answer = await ask('source', payload, scenario=context.get('scenario', 'auto'),
-                                       response_schema=MaterialDigest)
-                    answer = MaterialDigest.model_validate(answer, strict=True).model_dump()
-                    if all(text in chunk for text in answer['excerpts']) and sum(map(len, answer['excerpts'])) <= 6000:
-                        break
-                    payload['validationError'] = 'Return only verbatim excerpts from this chunk, at most 6000 characters in total. Never invent or rewrite facts.'
-                else:
-                    raise ValueError('长资料摘录未通过原文一致性检查；已保留原文与完成的分块，可继续恢复。')
-                digests[key] = {'sha256': _hash(chunk), 'digest': answer}
+                try:
+                    for attempt in range(2):
+                        answer = await ask('source', payload, scenario=context.get('scenario', 'auto'),
+                                           response_schema=MaterialDigest)
+                        answer = MaterialDigest.model_validate(answer, strict=True).model_dump()
+                        if all(text in chunk for text in answer['excerpts']) and sum(map(len, answer['excerpts'])) <= 6000:
+                            break
+                        payload['validationError'] = 'Return only verbatim excerpts from this chunk, at most 6000 characters in total. Never invent or rewrite facts.'
+                    else:
+                        raise ValueError('长资料摘录未通过原文一致性检查；已保留原文与完成的分块，可继续恢复。')
+                except Exception as exc:
+                    if getattr(exc, 'failure_kind', None) not in ('format', 'output-limit', 'timeout'):
+                        raise
+                    answer = {'excerpts': exact_material_excerpts(chunk)}
+                    digest_mode = 'local-exact'
+                digests[key] = {'sha256': _hash(chunk), 'digest': answer, 'mode': digest_mode}
                 await save()
             if not all(text in chunk for text in answer['excerpts']) or sum(map(len, answer['excerpts'])) > 6000:
                 raise ValueError('材料检查点摘录与原文不一致。')

@@ -4,7 +4,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from agentscope.message import Msg
 from agent_service import pptd_generation as g
 from agent_service.kimi_rules import KimiRules
@@ -51,6 +51,38 @@ class GenerationEvents(unittest.IsolatedAsyncioTestCase):
         with patch.object(g,'make_agent',return_value=Agent()),patch.object(g,'MODEL_WAIT_SECONDS',.002):
             await g._ask(SimpleNamespace(model='test'),'page',KimiRules(),{},on_event=event)
         self.assertTrue(any(e['status']=='waiting' for e in events))
+
+    async def test_transient_provider_status_is_retried_before_failing_the_job(self):
+        events = []
+        calls = []
+
+        class Error429(Exception):
+            status_code = 529
+
+        class Agent:
+            async def reply(self, msg):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise Error429('overloaded')
+                return Msg(
+                    name='agent',
+                    role='assistant',
+                    content=[{'type': 'text', 'text': '{"data":{"elements":[]}}'}],
+                )
+
+        with patch.object(g, 'make_agent', side_effect=lambda *args: Agent()), \
+             patch.object(g.asyncio, 'sleep', new=AsyncMock()) as sleep:
+            result = await g._ask(
+                SimpleNamespace(model='MiniMax-M3'),
+                'page',
+                KimiRules(),
+                {},
+                on_event=events.append,
+            )
+        self.assertEqual(result, {'data': {'elements': []}})
+        self.assertEqual(len(calls), 2)
+        sleep.assert_awaited_once_with(1)
+        self.assertTrue(any(event.get('status') == 'retrying' and '529' in event['message'] for event in events))
 
     async def test_page_complete_only_after_structure_and_checkpoint(self):
         events=[];states=[]

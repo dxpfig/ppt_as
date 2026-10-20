@@ -1,6 +1,7 @@
 """Unit and gated integration coverage for the agentic kimi-slides expert."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -70,6 +71,17 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertIn("template-pptd", message)
             self.assertIn("严禁", message)
             self.assertIn("Using a template", message)
+            with_references = kimi_agent._initial_message(
+                SimpleNamespace(
+                    prompt="p", audience="a", pageCount=None,
+                    references="附件事实：完成率 83%。", attachments=[],
+                ),
+                info,
+            )
+            payload = json.loads(with_references)
+            self.assertEqual(payload["references"], "附件事实：完成率 83%。")
+            self.assertEqual(payload["referenceCharacters"], len("附件事实：完成率 83%。"))
+            self.assertIn("首要事实来源", payload["note"])
 
     def test_find_entry_requires_new_deck(self):
         with tempfile.TemporaryDirectory() as tmp:

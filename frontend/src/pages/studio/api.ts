@@ -25,6 +25,31 @@ export type Health = {
 	modelError?: string;
 	rendererAvailable: boolean;
 };
+export type ReferenceBudget = {
+	available: boolean;
+	provider: string;
+	model: string;
+	contextTokens: number;
+	outputTokens: number;
+	safetyTokens: number;
+	inputTokens: number;
+	charactersPerToken: number;
+	maxCharacters: number;
+	maxFileBytes: number;
+	source: string;
+	counting: string;
+	warning?: string;
+};
+export type ReferenceFile = {
+	id: string;
+	name: string;
+	size: number;
+	extension: string;
+	characters: number;
+	createdAt: number;
+	downloadUrl: string;
+	textUrl: string;
+};
 export type ProjectSummary = {
 	id: string;
 	title: string;
@@ -213,6 +238,28 @@ export const studioApi = {
 			100000,
 		),
 	health: () => request<Health>('/health'),
+	referenceBudget: () => request<ReferenceBudget>('/reference-budget', {}, 35000),
+	referenceFiles: (projectId: string) =>
+		request<ReferenceFile[]>(`/projects/${encodeURIComponent(projectId)}/reference-files`),
+	uploadReferenceFile: (projectId: string, file: File, text: string) => {
+		const form = new FormData();
+		form.append('file', file);
+		form.append('text', text);
+		return request<ReferenceFile>(
+			`/projects/${encodeURIComponent(projectId)}/reference-files`,
+			{ method: 'POST', body: form },
+			120000,
+		);
+	},
+	referenceFileText: (projectId: string, attachmentId: string) =>
+		request<ReferenceFile & { text: string }>(
+			`/projects/${encodeURIComponent(projectId)}/reference-files/${encodeURIComponent(attachmentId)}/text`,
+		),
+	deleteReferenceFile: (projectId: string, attachmentId: string) =>
+		request<{ id: string; deleted: boolean }>(
+			`/projects/${encodeURIComponent(projectId)}/reference-files/${encodeURIComponent(attachmentId)}`,
+			{ method: 'DELETE' },
+		),
 	project: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}`),
 	projects: () => request<ProjectSummary[]>('/projects'),
 	deleteProject: (id: string) =>

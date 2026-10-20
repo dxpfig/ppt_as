@@ -1,4 +1,5 @@
 """Real AgentScope planning and writing; configuration errors never simulate AI."""
+import asyncio
 import json
 import math
 import os
@@ -16,7 +17,13 @@ from agentscope.state import AgentState
 
 from .models import DeckContent, JobRequest, Plan
 from .prompt_library import PromptLibrary, SCENARIOS
-from .model_context import BudgetedOpenAIChatModel, BudgetedAnthropicChatModel, context_settings, PROTECTED_REQUEST_FIELDS
+from .model_context import (
+    BudgetedOpenAIChatModel,
+    BudgetedAnthropicChatModel,
+    context_settings,
+    PROTECTED_REQUEST_FIELDS,
+    reference_budget_from_context,
+)
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
@@ -35,6 +42,44 @@ def configuration():
 def health():
     provider, token, model = configuration()
     return {"llmConfigured": bool(token and model), "model": model or "未配置", "provider": provider}
+
+
+async def reference_budget():
+    provider, token, model = configuration()
+    if not token or not model:
+        raise ValueError("尚未配置大模型，无法计算参考资料预算。")
+    instance = make_model()
+    try:
+        info = await asyncio.wait_for(instance.discover_context(), timeout=30)
+    finally:
+        await instance.client.close()
+    try:
+        file_bytes = int(os.getenv('PPT_REFERENCE_FILE_MAX_BYTES') or 50 * 1024 * 1024)
+        max_characters = int(os.getenv('PPT_REFERENCE_MAX_CHARACTERS') or 2_000_000)
+        characters_per_token = float(os.getenv('PPT_REFERENCE_CHARS_PER_TOKEN') or 2)
+        if not 1 <= file_bytes <= 50 * 1024 * 1024:
+            raise ValueError()
+        if not 1 <= max_characters <= 2_000_000:
+            raise ValueError()
+        if not 0 < characters_per_token <= 8:
+            raise ValueError()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "PPT_REFERENCE_FILE_MAX_BYTES 须为 1–52428800，"
+            "PPT_REFERENCE_MAX_CHARACTERS 须为 1–2000000，"
+            "PPT_REFERENCE_CHARS_PER_TOKEN 须大于 0 且不超过 8。"
+        ) from exc
+    return {
+        "available": True,
+        "provider": provider,
+        "model": info.get("model", model),
+        **reference_budget_from_context(
+            info,
+            max_file_bytes=file_bytes,
+            max_characters=max_characters,
+            characters_per_token=characters_per_token,
+        ),
+    }
 
 
 def timeout_setting(name, default):

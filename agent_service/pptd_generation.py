@@ -23,7 +23,7 @@ from .agents import make_agent, make_model
 from . import template_reference
 from .kimi_rules import KimiRules, SCENARIOS
 from .models import JobRequest
-from .pptd_validation import safe_relative, validate_document
+from .pptd_validation import normalize_table_tracks, safe_relative, validate_document
 from .planned_content import planned_content_issues, recover_planned_content
 from .generation_context import page_context as build_page_context, prepare_materials, read_context, ContextRead
 
@@ -117,6 +117,27 @@ def _context_failure(error):
         if kind in ('context-limit', 'context-count'): return kind
         pending.extend(child for key in ('__cause__', '__context__', 'original_error')
                        if isinstance(child := getattr(value, key, None), BaseException))
+    return None
+
+
+TRANSIENT_PROVIDER_STATUS = {429, 500, 502, 503, 504, 529}
+
+
+def _transient_provider_status(error):
+    pending = [error]
+    seen = set()
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        status = getattr(value, 'status_code', None)
+        if type(status) is int and status in TRANSIENT_PROVIDER_STATUS:
+            return status
+        pending.extend(
+            child for key in ('__cause__', '__context__', 'original_error')
+            if isinstance(child := getattr(value, key, None), BaseException)
+        )
     return None
 
 
@@ -256,7 +277,14 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
         payload = {**request_data}
         if reads: payload['contextReads'] = reads
         if correction: payload['formatCorrection'] = correction
-        for transport_attempt in range(2):
+        try:
+            transient_retries = int(os.getenv('PPT_LLM_TRANSIENT_RETRIES', '5'))
+            if not 1 <= transient_retries <= 10:
+                raise ValueError()
+        except ValueError as exc:
+            raise ValueError('PPT_LLM_TRANSIENT_RETRIES 必须是 1–10 的整数。') from exc
+        transport_attempts = transient_retries + 1
+        for transport_attempt in range(transport_attempts):
             # Fresh state avoids accumulating invalid or partial responses.
             # Always replay complete requirements, rules and original reads.
             agent = make_agent("PPTD" + role.replace("-", "_").title(), role_rules + contract, model, session_id)
@@ -273,8 +301,19 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
             except Exception as exc:
                 context_kind = _context_failure(exc)
                 timeout = not context_kind and _timeout_error(exc)
-                if timeout and transport_attempt==0:
+                transient_status = None if context_kind else _transient_provider_status(exc)
+                if timeout and transport_attempt == 0:
                     await _emit(on_event,{**position,"attempt":request_attempt+1,"status":"retrying","message":f"{location}：模型请求超时，正在重试；已完成页面保持不变。"})
+                    continue
+                if transient_status is not None and transport_attempt + 1 < transport_attempts:
+                    delay = min(20, 2 ** transport_attempt)
+                    await _emit(on_event, {
+                        **position,
+                        'attempt': request_attempt + 1,
+                        'status': 'retrying',
+                        'message': f"{location}：上游模型返回 HTTP {transient_status}，{delay} 秒后重试；已完成页面保持不变。",
+                    })
+                    await asyncio.sleep(delay)
                     continue
                 kind=context_kind or ("timeout" if timeout else "provider")
                 message_text=f"{location}：模型连续两次请求超时，已保存检查点。" if timeout else f"{location}：模型服务调用失败，已保存检查点。"
@@ -324,6 +363,7 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
 
 def _context(request):
     project = request.project
+    references = request.references or getattr(project, "references", "")
     return {
         "request": request.prompt,
         "audience": request.audience,
@@ -336,7 +376,9 @@ def _context(request):
         "animationRequested": getattr(request, "animationRequested", False),
         "designSystem": getattr(request, "designSystem", ""),
         "scenario": getattr(request, "scenario", "auto"),
-        "references": request.references or getattr(project, "references", ""),
+        "references": references,
+        "referenceCharacters": len(references),
+        "hasReferences": bool(references.strip()),
         "attachments": _dump(getattr(request, "attachments", []) or getattr(project, "attachments", [])),
         "conversation": _dump(getattr(project, "messages", [])),
         "imageSource": getattr(project, "imageSource", "none"),
@@ -611,9 +653,11 @@ def template_binding_issues(page, template, path, page_height=None, planned_titl
                 written = len(HTML_TAG.sub("", str(_text_of(current) or "")).strip())
                 bounds = source.get("bounds")
                 narrow = isinstance(bounds, list) and len(bounds) == 4 and isinstance(bounds[2], (int, float)) and bounds[2] < 300
-                # Tight labels get two characters of slack; a wide body slot that
-                # already held a full sentence scales with its own length.
-                allowance = 2 if limit <= 12 else 2 + round(limit * 0.15)
+                # Tight labels get two characters of slack. Multi-line body slots
+                # get 25%: their capacity depends on paragraph count and wrapping,
+                # not character count alone, and the real browser layout pass is
+                # responsible for rejecting actual overflow.
+                allowance = 2 if limit <= 12 else max(3, round(limit * 0.25))
                 if narrow and limit >= 2 and written > limit + allowance:
                     fail("TemplateTextTooLong", f"{path}.{identity}",
                          f"该模板槽位原文为 {limit} 个字，新文字 {written} 个字会溢出画框；请压缩到模板长度左右。")
@@ -823,7 +867,13 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
     state["outputMode"]={"requested":getattr(request,"outputMode","auto"),"effective":getattr(model,"pptd_output_mode","provider-default"),"stream":bool(getattr(model,"stream",False))}
     repair_limit=max(2,int(os.getenv("PPTD_REPAIR_BUDGET","8")))
     try:
-        await event("context","started","正在读取完整上下文与参考资料。")
+        reference_characters = context.get("referenceCharacters", 0)
+        reference_summary = (
+            f"正在读取完整上下文与 {reference_characters:,} 字参考资料。"
+            if reference_characters
+            else "正在读取完整上下文；本次未提供文本参考资料。"
+        )
+        await event("context","started",reference_summary)
         if "research" not in state:
             progress(0,"正在读取完整上下文、参考素材与研究能力")
             from .research import research_context
@@ -853,6 +903,8 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
                 answer=await ask("edit",{**context,"selectedSlideId":request.selectedSlideId,"previousDraft":draft,"issues":state.get("issues",[])+state.get("externalIssues",[])},scenario)
                 try:
                     draft=apply_edit_operations(existing,answer["operations"],selected=request.selectedSlideId)
+                    for page in draft.get("pages", []):
+                        normalize_table_tracks(page.get("data") or {})
                     issues=validate(draft)
                 except (ValueError,KeyError,TypeError) as exc: issues=[{"code":"InvalidEdit","location":"operations","message":str(exc)}]
                 state.update(editDraft=draft,issues=issues)
@@ -927,7 +979,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         complete={p["path"]:p for p in state["pages"]}
         paths=plan["document"]["pages"]
         external=state.get("externalIssues",[])
-        semaphore=asyncio.Semaphore(max(1,min(4,int(os.getenv("PPTD_PAGE_CONCURRENCY","3")))))
+        semaphore=asyncio.Semaphore(max(1,min(4,int(os.getenv("PPTD_PAGE_CONCURRENCY","2")))))
         state.setdefault("drafts",{})
         async def produce(index,path):
             async with semaphore:
@@ -957,6 +1009,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
                     if shell:
                         # The template owns the shell; the model owns the words.
                         draft=apply_template_shell(draft,shell)
+                    normalize_table_tracks(draft)
                     single={"document":{**plan["document"],"pages":[path]},"pages":[{"path":path,"data":draft}]}
                     coverage_errors=planned_content_issues(single,plan)
                     issues=validate(single)+coverage_errors+template_binding_issues(
@@ -1016,6 +1069,8 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         await event("pages","completed",f"全部 {len(paths)} 页已保存。")
         await event("validate","started","正在检查整份 PPTD 文档结构。")
         result={"document":plan["document"],"pages":[complete[path] for path in paths]}
+        for page in result["pages"]:
+            normalize_table_tracks(page.get("data") or {})
         issues=validate(result)+planned_content_issues(result,plan)
         for index, path in enumerate(paths):
             issues=issues+template_binding_issues(complete[path]["data"],_template_page(context,plan,index),path,

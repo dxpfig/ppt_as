@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 Layout = Literal["auto", "cover", "editorial", "image", "comparison", "process", "closing"]
 ImageIntent = Literal["auto", "photo", "diagram", "none"]
 Scenario = Literal["general", "management-report", "analysis-decision", "business-plan", "tech-engineering", "academic-research", "education-training", "brand-creative"]
+MAX_REFERENCES_CHARACTERS = 2_000_000
 
 
 class SlideImage(BaseModel):
@@ -52,7 +53,7 @@ class Project(BaseModel):
     versions: list[dict] = Field(default_factory=list, max_length=100)
     pageCount: int | None = Field(default=None, ge=1, le=60)
     audience: str = Field(default="团队分享", max_length=1000)
-    references: str = Field(default="", max_length=100000)
+    references: str = Field(default="", max_length=MAX_REFERENCES_CHARACTERS)
     imageSource: Literal["auto", "knowledge", "web", "none"] = "auto"
     activeJobId: str | None = None
     templateId: str | None = None
@@ -68,7 +69,7 @@ class JobRequest(BaseModel):
     pageCount: int | None = Field(default=None, ge=1, le=60)
     audience: str = Field(default="通用汇报", max_length=1000)
     selectedSlideId: str | None = None
-    references: str = Field(default="", max_length=100000)
+    references: str = Field(default="", max_length=MAX_REFERENCES_CHARACTERS)
     templateId: str | None = None
     workflow: Literal["new", "edit", "recreate"] = "new"
     designMode: Literal["autonomous", "design-system", "template", "style-reference"] = "autonomous"
