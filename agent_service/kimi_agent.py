@@ -32,6 +32,7 @@ from agentscope.tool import Bash, Edit, FunctionTool, Glob, Grep, Read, Toolkit,
 
 from .agents import make_model, timeout_setting
 from .docx_markdown import docx_to_markdown
+from .execution_policy import expert_policy
 from .pptd_compat import normalize_pages
 from .pptd_validation import normalize_table_tracks, validate_document
 
@@ -1829,18 +1830,16 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     """Run the agentic loop, validate, and commit the produced deck."""
     workspace = _workspace(data_root, project_id, job_id)
     workspace.mkdir(parents=True, exist_ok=True)
-    max_iters = int(os.getenv("PPT_KIMI_MAX_ITERS", "40"))
+    policy = expert_policy()
+    max_iters = policy.max_iterations
     batch_iters = min(max_iters, max(8, int(os.getenv("PPT_KIMI_BATCH_ITERS", "18"))))
-    plan_iters = min(max_iters, max(12, int(os.getenv("PPT_KIMI_PLAN_ITERS", "24"))))
-    plan_attempts = max(1, int(os.getenv("PPT_KIMI_PLAN_ATTEMPTS", "3")))
+    plan_iters = min(max_iters, max(12, policy.planning_iterations))
+    plan_attempts = policy.planning_attempts
     batch_limit = max(1, int(os.getenv("PPT_KIMI_BATCHES", "8")))
-    batch_page_size = max(1, int(os.getenv("PPT_KIMI_BATCH_PAGES", "2")))
-    repair_rounds = int(os.getenv("PPT_KIMI_REPAIR_ROUNDS", "2"))
-    layout_page_attempts = max(1, int(os.getenv(
-        "PPT_KIMI_LAYOUT_PAGE_ATTEMPTS",
-        os.getenv("PPT_KIMI_LAYOUT_REPAIR_ROUNDS", "3"),
-    )))
-    layout_page_batch = max(1, int(os.getenv("PPT_KIMI_LAYOUT_PAGE_BATCH", "4")))
+    batch_page_size = policy.page_batch_size
+    repair_rounds = policy.repair_rounds
+    layout_page_attempts = policy.layout_page_attempts
+    layout_page_batch = policy.layout_page_batch
     template_path = _prepare_template(data_root, getattr(request, "templateId", None), workspace)
     template_info = None
     if template_path:

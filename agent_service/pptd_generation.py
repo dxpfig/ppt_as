@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .agents import make_agent, make_model
 from . import template_reference
 from .kimi_rules import KimiRules, SCENARIOS
+from .execution_policy import quick_policy
 from .models import JobRequest
 from .pptd_validation import normalize_table_tracks, safe_relative, validate_document
 from .planned_content import planned_content_issues, recover_planned_content
@@ -979,7 +980,8 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         complete={p["path"]:p for p in state["pages"]}
         paths=plan["document"]["pages"]
         external=state.get("externalIssues",[])
-        semaphore=asyncio.Semaphore(max(1,min(4,int(os.getenv("PPTD_PAGE_CONCURRENCY","2")))))
+        policy = quick_policy()
+        semaphore=asyncio.Semaphore(policy.page_concurrency)
         state.setdefault("drafts",{})
         async def produce(index,path):
             async with semaphore:
