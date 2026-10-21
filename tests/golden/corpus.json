@@ -1,0 +1,132 @@
+{
+	"version": 1,
+	"updatedAt": "2026-10-21",
+	"scenarios": [
+		{
+			"id": "short-basic",
+			"mode": "quick",
+			"pages": 4,
+			"template": false,
+			"inputs": ["prompt"],
+			"assertions": ["pptd-v2", "one-control-judgement-per-page", "export-openable"]
+		},
+		{
+			"id": "presentation-five-pages",
+			"mode": "quick",
+			"pages": 5,
+			"template": false,
+			"inputs": ["prompt", "audience", "scenario"],
+			"assertions": ["planned-page-count", "speaker-notes-opt-in", "export-openable"]
+		},
+		{
+			"id": "management-report-20",
+			"mode": "quick",
+			"pages": 20,
+			"template": false,
+			"inputs": ["prompt", "management-report"],
+			"assertions": ["narrative-coverage", "chart-table-preservation", "visual-review"]
+		},
+		{
+			"id": "long-report-32",
+			"mode": "expert",
+			"pages": 32,
+			"template": false,
+			"inputs": ["prompt", "long-reference"],
+			"assertions": [
+				"complete-plan",
+				"all-pages-written",
+				"checkpoint-resume",
+				"visual-review"
+			]
+		},
+		{
+			"id": "company-template",
+			"mode": "expert",
+			"pages": 12,
+			"template": true,
+			"inputs": ["prompt", "company-pptx"],
+			"assertions": [
+				"cover-reuse",
+				"closing-reuse",
+				"body-chrome",
+				"template-text-not-copied"
+			]
+		},
+		{
+			"id": "chart-table-formula",
+			"mode": "quick",
+			"pages": 6,
+			"template": false,
+			"inputs": ["structured-data", "formula-reference"],
+			"assertions": ["chart-values-immutable", "table-relationships", "formula-export"]
+		},
+		{
+			"id": "knowledge-base-only",
+			"mode": "quick",
+			"pages": 8,
+			"template": false,
+			"inputs": ["company-knowledge-base"],
+			"assertions": ["citation-provenance", "no-public-search", "tenant-isolation"]
+		},
+		{
+			"id": "long-context-chunking",
+			"mode": "quick",
+			"pages": 15,
+			"template": false,
+			"inputs": ["reference-over-context-budget"],
+			"assertions": ["lossless-chunking", "context-request-budget", "checkpoint-complete"]
+		},
+		{
+			"id": "interrupt-and-resume",
+			"mode": "expert",
+			"pages": 20,
+			"template": false,
+			"inputs": ["prompt"],
+			"fault": "cancel-mid-pages",
+			"assertions": [
+				"completed-pages-preserved",
+				"resume-from-checkpoint",
+				"stale-revision-protected"
+			]
+		},
+		{
+			"id": "model-timeout",
+			"mode": "quick",
+			"pages": 5,
+			"template": false,
+			"inputs": ["prompt"],
+			"fault": "model-timeout",
+			"assertions": ["actionable-error", "no-artifact", "checkpoint-preserved"]
+		},
+		{
+			"id": "vision-unavailable",
+			"mode": "quick",
+			"pages": 5,
+			"template": false,
+			"inputs": ["prompt"],
+			"fault": "vision-unavailable",
+			"assertions": ["no-unreviewed-publication", "explicit-diagnostic"]
+		},
+		{
+			"id": "offline-text-only",
+			"mode": "expert",
+			"pages": 8,
+			"template": true,
+			"inputs": ["prompt", "local-assets"],
+			"offline": true,
+			"assertions": ["no-public-network", "local-fonts", "export-openable"]
+		},
+		{
+			"id": "page-actions",
+			"mode": "quick",
+			"pages": 3,
+			"template": true,
+			"inputs": ["prompt", "page-design-request"],
+			"assertions": [
+				"repair-current-page-only",
+				"review-current-page-only",
+				"design-candidate-apply-discard"
+			]
+		}
+	]
+}
