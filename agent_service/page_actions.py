@@ -10,13 +10,14 @@ import tempfile
 import time
 from uuid import uuid4
 
-from . import pptd_exports, template_reference, visual_repair, visual_review
-from .agents import make_model
+from . import context_service, pptd_exports, repair_coordinator
 from .kimi_rules import KimiRules, SCENARIOS
 from .orchestrator import PAGE_ACTION_KINDS
+from .model_gateway import make_model
 from .pptd_generation import PageResult, _ask
 from .pptd_validation import validate_document
 from .render_service import RenderedPage, page_issues, render_page
+from .review_service import review_page as visual_review_page
 from .visual_pipeline import CandidateSource
 
 
@@ -38,16 +39,22 @@ def _report(page_path: str, action: str, *, revision: int, status: str,
     }
 
 
-async def _review_rendered(rendered: RenderedPage, request, page_path: str) -> dict:
+async def _review_rendered(
+    rendered: RenderedPage,
+    request,
+    page_path: str,
+    cache_dir: Path | None = None,
+) -> dict:
     scenario = getattr(request, "scenario", "auto")
     if scenario not in SCENARIOS:
         scenario = "management-report"
-    report = await visual_review.review_page(
+    report = await visual_review_page(
         rendered.state,
         Path(rendered.source_root).parent,
         page_path,
         scenario=scenario,
         usage=getattr(request, "usage", "presentation"),
+        cache_dir=cache_dir,
     )
     issues = [*rendered.issues, *report.get("issues", [])]
     unique = {}
@@ -73,14 +80,14 @@ async def _review_rendered(rendered: RenderedPage, request, page_path: str) -> d
 async def review_page(store, project_id: str, page_path: str, request) -> dict:
     with tempfile.TemporaryDirectory(prefix=".page-review-", dir=store.root) as temporary:
         rendered = await _render_page(store, project_id, Path(temporary), page_path)
-        return await _review_rendered(rendered, request, page_path)
+        return await _review_rendered(rendered, request, page_path, store.root / "review-cache")
 
 
 async def repair_page(store, project_id: str, page_path: str, request) -> dict:
     with tempfile.TemporaryDirectory(prefix=".page-repair-", dir=store.root) as temporary:
         root = Path(temporary)
         rendered = await _render_page(store, project_id, root / "initial", page_path)
-        review = await _review_rendered(rendered, request, page_path)
+        review = await _review_rendered(rendered, request, page_path, store.root / "review-cache")
         issues = review["issues"]
         if not issues:
             return _report(
@@ -108,7 +115,7 @@ async def repair_page(store, project_id: str, page_path: str, request) -> dict:
                     layouts={page_path: checked.layout},
                 )
 
-        candidate = await visual_repair.repair_deck(
+        candidate = await repair_coordinator.repair_deck(
             request,
             rendered.state,
             issues,
@@ -125,7 +132,7 @@ async def repair_page(store, project_id: str, page_path: str, request) -> dict:
         )
         if checked.issues:
             raise ValueError("页面修复后仍有排版问题，原稿未被覆盖。")
-        final_review = await _review_rendered(checked, request, page_path)
+        final_review = await _review_rendered(checked, request, page_path, store.root / "review-cache")
         committed = store.commit(
             project_id,
             candidate["document"],
@@ -152,7 +159,7 @@ async def _design_candidate(rendered: RenderedPage, page_path: str, request, dat
     if scenario not in SCENARIOS:
         scenario = "management-report"
     page = next(item for item in rendered.state["pages"] if item["path"] == page_path)
-    reference = template_reference.load(
+    reference = context_service.load_template(
         data_root,
         getattr(request, "templateId", None) or getattr(request.project, "templateId", None),
     )
@@ -224,7 +231,7 @@ async def design_page(store, project_id: str, page_path: str, request, data_root
                         layouts={page_path: checked.layout},
                     )
 
-            candidate = await visual_repair.repair_deck(
+            candidate = await repair_coordinator.repair_deck(
                 request,
                 candidate,
                 rendered.issues,
@@ -241,7 +248,7 @@ async def design_page(store, project_id: str, page_path: str, request, data_root
             )
             if rendered.issues:
                 raise ValueError("页面设计稿仍有排版问题，原稿未被覆盖。")
-        review = await _review_rendered(rendered, request, page_path)
+        review = await _review_rendered(rendered, request, page_path, store.root / "review-cache")
         candidate_id = uuid4().hex
         candidate_dir = design_candidate_dir(store.root, project_id, candidate_id)
         candidate_dir.mkdir(parents=True)

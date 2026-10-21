@@ -19,10 +19,11 @@ from PIL import Image
 from pptx.util import Inches, Pt
 
 from .design import compose_slide, FONT_DIR
+from .resource_manager import RENDER_LIMIT
 
 MAX_UPLOAD = 30 * 1024 * 1024
 DOCKER_IMAGE = os.getenv("PPT_RENDERER_IMAGE", "wechatopenai/weknora-docreader:latest")
-RENDER_LOCK = asyncio.Semaphore(1)
+RENDER_LOCK = RENDER_LIMIT
 
 
 def renderer_available():

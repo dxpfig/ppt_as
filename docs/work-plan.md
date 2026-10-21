@@ -753,6 +753,12 @@ planned
 - 新增架构基线与迁移不变量文档 `docs/architecture-refactor.md`。
 - 新增 `agent_service/orchestrator.py`，统一判断页面操作、专家、旧版和快速路线。
 - 新增 `agent_service/render_service.py`，页面操作不再私有实现单页浏览器渲染。
+- 新增 `page_work_queue.py`，快速模式页面并发和生命周期统一由队列管理。
+- 新增 `review_service.py`、`repair_coordinator.py`、`export_service.py` 共享边界。
+- 新增 `model_gateway.py` 和 `context_service.py`，模型与上下文访问不再散落在各生成模块。
+- 新增 `resource_manager.py`，模型、渲染和导出使用独立资源池。
+- 单页渲染加入内容哈希缓存，只复用页面、主题、媒体和渲染器均未变化的图像。
+- 视觉审稿加入页面图像和模型/规则版本缓存，未变化页面不重复调用视觉模型。
 
 计划形成的模块边界：
 

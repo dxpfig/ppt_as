@@ -227,7 +227,7 @@ def apply_completion(state, plan, answer, issues):
 
 async def complete_content(request, state, issues, plan, *, on_event=None, on_audit=None,
                            rendered_pages=None):
-    from .agents import make_model
+    from .model_gateway import make_model
     from .kimi_rules import KimiRules, SCENARIOS
     from .pptd_generation import _ask, _emit
     from .job_execution import redact

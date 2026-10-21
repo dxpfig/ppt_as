@@ -24,7 +24,7 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from PIL import Image, ImageDraw, ImageFont
 
-from .agents import configuration
+from .model_gateway import configuration
 from .kimi_rules import KimiRules, SCENARIOS
 from .model_context import PROTECTED_REQUEST_FIELDS
 

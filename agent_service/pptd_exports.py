@@ -15,9 +15,10 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 import pymupdf
 from pptd_engine.workbench import ROOT as REPOSITORY_ROOT, WEB_DIR, RUNTIME_DIR, snapshot_server
+from .resource_manager import EXPORT_LIMIT
 
 
-EXPORT_LOCK = asyncio.Semaphore(1)
+EXPORT_LOCK = EXPORT_LIMIT
 
 
 def layout_only_issues(issues):

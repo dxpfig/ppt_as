@@ -14,50 +14,28 @@ from .pptd_store import DocumentStore, RevisionConflict, _serialize, safe_path
 from .kimi_rules import SCENARIOS
 from .visual_repair import semantic_payload
 from .visual_completion import apply_completion, complete_content, needs_completion
-
-
-async def review_deck(*args, **kwargs):
-    from .visual_review import review_deck as review
-    return await review(*args, **kwargs)
+from . import repair_coordinator
+from .review_service import review_deck
+from . import export_service as pptd_exports
 
 
 async def repair_deck(*args, **kwargs):
-    from .visual_repair import repair_deck as repair
-    return await repair(*args, **kwargs)
+    return await repair_coordinator.repair_deck(*args, **kwargs)
 
 
 async def repair_deck_batched(request, state, issues, *, on_event=None, rendered_pages=None,
                               layout_measurements=None, validate_candidate=None, on_audit=None):
-    """Keep each repair request within the provider context budget."""
-    issue_pages = {
-        issue.get('pagePath') or issue.get('page')
-        for issue in issues
-        if issue.get('pagePath') or issue.get('page')
-    }
-    ordered = [page['path'] for page in state['pages'] if page['path'] in issue_pages]
-    limit = max(1, int(os.getenv('PPTD_VISUAL_REPAIR_PAGE_BATCH', '4')))
-    if len(ordered) <= limit:
-        return await repair_deck(
-            request, state, issues, on_event=on_event,
-            rendered_pages=rendered_pages, layout_measurements=layout_measurements,
-            validate_candidate=validate_candidate, on_audit=on_audit,
-        )
-    repaired = deepcopy(state)
-    for start in range(0, len(ordered), limit):
-        paths = set(ordered[start:start + limit])
-        batch_issues = [
-            issue for issue in issues
-            if (issue.get('pagePath') or issue.get('page')) in paths
-        ]
-        repaired = await repair_deck(
-            request, repaired, batch_issues, on_event=on_event,
-            # The final export gate renders the combined candidate. Per-batch
-            # validation would reject correctly patched pages because the
-            # untouched batches still contain their original findings.
-            rendered_pages=rendered_pages, layout_measurements=layout_measurements,
-            validate_candidate=None, on_audit=on_audit,
-        )
-    return repaired
+    return await repair_coordinator.repair_deck_batched(
+        request,
+        state,
+        issues,
+        on_event=on_event,
+        rendered_pages=rendered_pages,
+        layout_measurements=layout_measurements,
+        validate_candidate=validate_candidate,
+        on_audit=on_audit,
+        repair_fn=repair_deck,
+    )
 
 
 class VisualReviewExhausted(ValueError):
@@ -150,11 +128,7 @@ class CandidateSource:
         return self.read(_project_id)
 
 
-def _fingerprint(issues):
-    # Stable issue identity excludes model wording, which changes between reviews.
-    values = sorted((str(i.get('pagePath') or i.get('page')), str(i.get('code')),
-                     ','.join(sorted(i.get('elementIds') or [i.get('elementId', '')]))) for i in issues)
-    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+_fingerprint = repair_coordinator.issue_fingerprint
 
 
 async def export_reviewed(store, project_id, folder, request, progress=None, *,
@@ -291,7 +265,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
                  covered=0, total=len(state['pages']))
             previous_review = next((r for r in reversed(visual['reports']) if r.get('source') != 'renderer'), None)
             report = await review_deck(deepcopy(state), candidate_folder, scenario=request.scenario,
-                                       usage=request.usage, on_event=review_event, previous_review=previous_review)
+                                       usage=request.usage, on_event=review_event, previous_review=previous_review,
+                                       cache_dir=store.root / 'review-cache')
             paths = state['document']['pages']
             if (report.get('status') not in ('passed', 'issues') or
                     report.get('coveredPages') != paths or not isinstance(report.get('issues'), list)):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,51 @@ class RenderedPage:
     image: bytes
     issues: list[dict]
     layout: dict
+
+
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def render_cache_key(state: dict, source_dir: Path, page_path: str) -> str:
+    page = next((item for item in state.get('pages', []) if item.get('path') == page_path), None)
+    media = []
+    media_dir = source_dir / 'media'
+    if media_dir.is_dir():
+        media = [
+            {
+                'path': path.relative_to(source_dir).as_posix(),
+                'sha256': _file_hash(path),
+            }
+            for path in sorted(media_dir.rglob('*'))
+            if path.is_file()
+        ]
+    payload = {
+        'version': os.getenv('PPT_RENDER_CACHE_VERSION', '1'),
+        'pagePath': page_path,
+        'page': page,
+        'document': {
+            'version': state.get('document', {}).get('version'),
+            'size': state.get('document', {}).get('size'),
+            'theme': state.get('document', {}).get('theme'),
+        },
+        'media': media,
+        'chromium': os.getenv('PPTD_CHROMIUM', ''),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+    ).hexdigest()
+
+
+def _cache_root(source) -> Path | None:
+    if os.getenv('PPT_RENDER_CACHE', '1').strip().lower() in ('0', 'false', 'no'):
+        return None
+    root = getattr(source, 'root', None)
+    return Path(root) / 'render-cache' if root is not None else None
 
 
 def issue_page(issue: dict) -> str:
@@ -56,6 +102,22 @@ async def render_page(source, project_id: str, folder: Path, page_path: str) -> 
     if page_path not in paths:
         raise ValueError("当前页面不属于这个演示。")
     page_index = paths.index(page_path)
+    cache_root = _cache_root(source)
+    cache_dir = cache_root / render_cache_key(state, source_dir, page_path) if cache_root else None
+    if cache_dir is not None:
+        metadata_path = cache_dir / 'metadata.json'
+        image_path = cache_dir / 'page.png'
+        if metadata_path.is_file() and image_path.is_file():
+            metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            image = image_path.read_bytes()
+            (folder / 'slide-1.png').write_bytes(image)
+            return RenderedPage(
+                state=state,
+                source_root=source_dir,
+                image=image,
+                issues=list(metadata.get('issues') or []),
+                layout=dict(metadata.get('layout') or {}),
+            )
     env = os.environ.copy()
     browser = pptd_exports.chromium_path()
     if browser:
@@ -97,10 +159,25 @@ async def render_page(source, project_id: str, folder: Path, page_path: str) -> 
         }
 
     (folder / "slide-1.png").write_bytes(image)
-    return RenderedPage(
+    result = RenderedPage(
         state=state,
         source_root=source_dir,
         image=image,
         issues=page_issues(issues, page_path),
         layout=layouts.get(page_path, {}),
     )
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        temporary = cache_dir / '.metadata.tmp'
+        temporary.write_text(
+            json.dumps(
+                {'issues': result.issues, 'layout': result.layout},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding='utf-8',
+        )
+        (cache_dir / 'page.png.tmp').write_bytes(image)
+        (cache_dir / 'page.png.tmp').replace(cache_dir / 'page.png')
+        temporary.replace(cache_dir / 'metadata.json')
+    return result

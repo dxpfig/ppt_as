@@ -30,7 +30,7 @@ from agentscope.permission import PermissionBehavior, PermissionDecision, Permis
 from agentscope.state import AgentState
 from agentscope.tool import Bash, Edit, FunctionTool, Glob, Grep, Read, Toolkit, Write
 
-from .agents import make_model, timeout_setting
+from .model_gateway import make_model, timeout_setting
 from .docx_markdown import docx_to_markdown
 from .execution_policy import expert_policy
 from .pptd_compat import normalize_pages
@@ -1763,7 +1763,7 @@ def _slide_artifact_dir(rendered: Path, artifact_dir: Path) -> Path:
 
 
 async def visual_overview_issues(document: dict, pages: list[dict], rendered: Path | None,
-                                 *, on_event=None, scenario="auto") -> list[dict]:
+                                 *, on_event=None, scenario="auto", cache_dir: Path | None = None) -> list[dict]:
     """Run the high-resolution deck and per-page visual review.
 
     Browser geometry catches measurable defects first. Once those are cleared,
@@ -1772,13 +1772,20 @@ async def visual_overview_issues(document: dict, pages: list[dict], rendered: Pa
     """
     if rendered is None or os.getenv("PPT_KIMI_VISUAL_REVIEW", "1") == "0":
         return []
-    from .visual_review import VisualReviewError, review_deck
+    from .visual_review import VisualReviewError
+    from .review_service import review_deck
 
     artifact_dir = rendered.parent / ".final-artifacts"
     _slide_artifact_dir(rendered, artifact_dir)
     state = {"document": document, "pages": pages}
     try:
-        report = await review_deck(state, artifact_dir, scenario=scenario, on_event=on_event)
+        report = await review_deck(
+            state,
+            artifact_dir,
+            scenario=scenario,
+            on_event=on_event,
+            cache_dir=cache_dir,
+        )
     except VisualReviewError as error:
         await _emit_note(on_event, f"AI 视觉审稿未执行：{error}")
         raise
@@ -2076,6 +2083,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                     visual = await visual_overview_issues(
                         document, pages, rendered, on_event=on_event,
                         scenario=getattr(request, "scenario", None) or "auto",
+                        cache_dir=data_root / "review-cache",
                     )
             finally:
                 if rendered is not None:
@@ -2175,6 +2183,6 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
 
 
 def kimi_health() -> dict:
-    from .agents import health
+    from .model_gateway import health
 
     return health()

@@ -129,7 +129,7 @@ class PageActionTests(unittest.IsolatedAsyncioTestCase):
                 },
             ]),
         ), patch.object(
-            page_actions.visual_repair,
+            page_actions.repair_coordinator,
             'repair_deck',
             AsyncMock(return_value=candidate),
         ):

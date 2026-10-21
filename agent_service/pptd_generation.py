@@ -19,10 +19,11 @@ from typing import Any, Literal
 from agentscope.message import Msg
 from pydantic import BaseModel, ConfigDict, Field
 
-from .agents import make_agent, make_model
-from . import template_reference
+from .model_gateway import make_agent, make_model
 from .kimi_rules import KimiRules, SCENARIOS
+from . import template_reference
 from .execution_policy import quick_policy
+from .page_work_queue import PageWorkQueue, PageWorkStatus
 from .models import JobRequest
 from .pptd_validation import normalize_table_tracks, safe_relative, validate_document
 from .planned_content import planned_content_issues, recover_planned_content
@@ -828,7 +829,8 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
     # A company template is reference material: only the bounded digest travels
     # with each request, and its individual pages stay readable on demand through
     # contextRequest. The template never becomes the deck and is never sent whole.
-    reference = template_reference.load(data_root, context.get("templateId"))
+    from .context_service import load_template
+    reference = load_template(data_root, context.get("templateId"))
     if reference:
         context["templateReference"] = reference["summary"]
         context["_contextSources"] = {**context.get("_contextSources", {}), **reference["sources"]}
@@ -877,10 +879,10 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         await event("context","started",reference_summary)
         if "research" not in state:
             progress(0,"正在读取完整上下文、参考素材与研究能力")
-            from .research import research_context
+            from .context_service import research
             # Expansion policy belongs to the research adapter. Even with expansion
             # disabled, explicit user URLs must be read as supplied context.
-            state["research"]=await research_context(request)
+            state["research"]=await research(request)
             await save()
         context["researchResults"]=state["research"]
         if existing: context["existingDocument"]=copy.deepcopy(existing)
@@ -981,10 +983,10 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         paths=plan["document"]["pages"]
         external=state.get("externalIssues",[])
         policy = quick_policy()
-        semaphore=asyncio.Semaphore(policy.page_concurrency)
+        queue = PageWorkQueue(paths, policy.page_concurrency)
         state.setdefault("drafts",{})
         async def produce(index,path):
-            async with semaphore:
+            async with queue.guard(path):
                 page_errors=[issue for issue in external if issue.get("pagePath")==path or str(issue.get("location","")).startswith(path) or issue.get("pageIndex")==index]
                 global_errors=[issue for issue in external if not issue.get("pagePath") and issue.get("pageIndex") is None and not any(str(issue.get("location","")).startswith(p) for p in paths)]
                 page_errors = [issue for issue in page_errors + global_errors if issue.get("code") != "PlannedContentMissing"]
@@ -1049,6 +1051,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
                     else:
                         draft=(await ask("repair",{**page_context,"draft":draft,"issues":issues},plan["scenario"]))["data"]
                 page={"path":path,"data":draft};complete[path]=page
+                queue.mark(path, PageWorkStatus.STRUCTURALLY_VALID)
                 state["pages"]=[complete[p] for p in paths if p in complete]
                 state["drafts"].pop(path,None)
                 if state.get("draftPath")==path:
@@ -1060,6 +1063,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         try:
             await asyncio.gather(*tasks)
         except BaseException as exc:
+            state["pageStates"]=queue.snapshot()
             for task in tasks:
                 if not task.done(): task.cancel()
             await asyncio.gather(*tasks,return_exceptions=True)
@@ -1067,6 +1071,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
             if isinstance(exc, GenerationIncomplete):
                 exc.checkpoint=copy.deepcopy(state)
             raise
+        state["pageStates"]=queue.snapshot()
         state.pop("externalIssues",None)
         await event("pages","completed",f"全部 {len(paths)} 页已保存。")
         await event("validate","started","正在检查整份 PPTD 文档结构。")

@@ -13,12 +13,13 @@ import logging
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator, model_gateway
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from .pptd_compat import normalize_pages
 from .layout_autofit import autofit_state
-from . import pptd_exports, pptd_generation, visual_pipeline
+from . import export_service as pptd_exports, pptd_generation, visual_pipeline
+from .resource_manager import MODEL_LIMIT
 from .job_execution import initial_execution, checkpoint_execution, record_event, terminal_execution, diagnose_error
 from pptd_engine import workbench
 from .rendering import MAX_UPLOAD, create_deck, render_pdf, renderer_available, template_info, validate_package, audit_rendered_pdf
@@ -27,7 +28,7 @@ ROOT = Path(os.getenv("STUDIO_DATA_DIR", Path(__file__).resolve().parents[1] / "
 for directory in ("projects", "templates", "jobs", "artifacts", "trash", "images", "requests", "checkpoints", "reference-files"):
     (ROOT / directory).mkdir(parents=True, exist_ok=True)
 TASKS: dict[str, asyncio.Task] = {}
-LLM_LIMIT = asyncio.Semaphore(2)
+LLM_LIMIT = MODEL_LIMIT
 
 
 def key(value: str):
@@ -157,7 +158,7 @@ PREFIX = "/api/studio"
 @app.get("/health")
 @app.get(PREFIX + "/health")
 async def health():
-    return {"status": "ok", **agents.health(), "rendererAvailable": await asyncio.to_thread(pptd_exports.renderer_available), "legacyRendererAvailable": await asyncio.to_thread(renderer_available), "workflow": "pptd-v2", "pptdAvailable": True, "images": image_service.capabilities(), "tracing": telemetry.health()}
+    return {"status": "ok", **model_gateway.health(), "rendererAvailable": await asyncio.to_thread(pptd_exports.renderer_available), "legacyRendererAvailable": await asyncio.to_thread(renderer_available), "workflow": "pptd-v2", "pptdAvailable": True, "images": image_service.capabilities(), "tracing": telemetry.health()}
 
 
 @app.get(PREFIX + "/images/status")
@@ -176,7 +177,7 @@ async def image_status():
 @app.get(PREFIX + "/reference-budget")
 async def reference_budget():
     try:
-        return await agents.reference_budget()
+        return await model_gateway.reference_budget()
     except ValueError as exc:
         raise HTTPException(503, str(exc)) from exc
     except asyncio.TimeoutError as exc:
@@ -502,7 +503,7 @@ def enqueue_job(request, *, parent=None, checkpoint=None):
         raise HTTPException(409, "该工作记录已有生成任务，请等待完成或先停止。")
     if len(TASKS) >= 12:
         raise HTTPException(429, "当前任务较多，请稍后重试。")
-    if request.kind != "render" and not agents.health()["llmConfigured"]:
+    if request.kind != "render" and not model_gateway.health()["llmConfigured"]:
         raise HTTPException(503, "大模型未配置，请先配置服务端 API Key 和模型。")
     store = document_store()
     actual = store.read(request.project.id)['revision'] if store.exists(request.project.id) else 0
@@ -913,7 +914,7 @@ async def run_kimi_job(identifier, request):
             result = await asyncio.wait_for(
                 kimi_agent.run_kimi(request, data_root=ROOT, progress=progress,
                                     on_event=execution_event, project_id=project_id, job_id=identifier),
-                timeout=agents.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 5400),
+                timeout=model_gateway.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 5400),
             )
         project = assert_current_job(identifier, project_id)
         project.update(workflow='pptd-v2', artifact=None,
@@ -995,7 +996,7 @@ async def run_page_action_job(identifier, request):
                     request,
                     ROOT,
                 ),
-                timeout=agents.timeout_setting('PPTD_PAGE_ACTION_TIMEOUT_SECONDS', 1800),
+                timeout=model_gateway.timeout_setting('PPTD_PAGE_ACTION_TIMEOUT_SECONDS', 1800),
             )
         project = assert_current_job(identifier, project_id)
         project.update(
@@ -1275,7 +1276,7 @@ async def run_pptd_job(identifier, request):
                 else:
                     try:
                         async with LLM_LIMIT:
-                            result = await asyncio.wait_for(pptd_generation.generate_pptd(request, generation_progress, existing=source_existing, checkpoint=checkpoint, save_checkpoint=checkpoint_save, data_root=ROOT, on_event=execution_event), timeout=agents.timeout_setting('PPTD_GENERATION_TIMEOUT_SECONDS', 1800))
+                            result = await asyncio.wait_for(pptd_generation.generate_pptd(request, generation_progress, existing=source_existing, checkpoint=checkpoint, save_checkpoint=checkpoint_save, data_root=ROOT, on_event=execution_event), timeout=model_gateway.timeout_setting('PPTD_GENERATION_TIMEOUT_SECONDS', 1800))
                     except Exception as exc:
                         _, diagnostic, _ = diagnose_error(
                             exc, 'validate', resumable=cp_path.is_file()

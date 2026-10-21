@@ -32,6 +32,19 @@
 
 `agent_service/render_service.py` 已承载共享单页渲染、页面问题过滤和浏览器证据输出。
 
+新增共享服务边界：
+
+- `page_work_queue.py`：页面生命周期和有界并发。
+- `review_service.py`：快速、专家和页面操作共用视觉审稿入口。
+- `repair_coordinator.py`：问题指纹、停滞判断和分批修复。
+- `export_service.py`：最终交付导出的统一边界。
+
+- `model_gateway.py`：文本/视觉模型、健康检查和超时配置的统一入口。
+- `context_service.py`：模板参考和研究资料的统一入口。
+- `resource_manager.py`：模型、渲染和导出三个独立并发池。
+- 渲染缓存键：页面内容、文档主题/尺寸、媒体哈希和渲染器版本。
+- 审稿缓存键：页面图像、文档/页面语义、视觉模型、场景、用途和规则版本。
+
 ## 目标阶段
 
 1. 统一任务状态机和阶段事件。

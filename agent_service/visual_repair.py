@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .agents import make_model
+from .model_gateway import make_model
 from .kimi_rules import KimiRules, SCENARIOS
 from .pptd_generation import _ask, _emit, _pointer
 from .pptd_validation import number, validate_document
