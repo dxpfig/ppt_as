@@ -1,7 +1,7 @@
 """Shared execution policies for quick and expert PPT generation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 
 
@@ -52,6 +52,23 @@ class ExecutionPolicy:
     render_repair_budget: int
     visual_review: str
     export_after_review: bool
+
+
+def adapt_to_model(policy: ExecutionPolicy, model_context: dict | None) -> ExecutionPolicy:
+    """Reduce concurrency for smaller context windows while respecting the user cap."""
+    try:
+        context_tokens = int((model_context or {}).get('contextTokens') or 0)
+    except (TypeError, ValueError):
+        context_tokens = 0
+    if context_tokens and context_tokens < 32_000:
+        limit = 1
+    elif context_tokens and context_tokens < 128_000:
+        limit = 2
+    elif context_tokens:
+        limit = 4
+    else:
+        return policy
+    return replace(policy, page_concurrency=min(policy.page_concurrency, limit))
 
 
 def quick_policy() -> ExecutionPolicy:

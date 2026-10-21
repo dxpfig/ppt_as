@@ -1,7 +1,9 @@
 """Single routing point for quick, expert, page, and legacy jobs."""
 from __future__ import annotations
 
+import inspect
 from enum import StrEnum
+from typing import Awaitable, Callable, Mapping
 
 
 class JobStatus(StrEnum):
@@ -65,3 +67,25 @@ def resolve_route(
     if workflow != 'pptd-v2' and not has_document:
         return ExecutionRoute.LEGACY
     return ExecutionRoute.PPTD
+
+
+async def dispatch(
+    identifier: str,
+    request,
+    *,
+    handlers: Mapping[ExecutionRoute, Callable[[str, object], object | Awaitable[object]]],
+    has_document: bool,
+    expert_enabled: bool,
+):
+    """Resolve and execute exactly one route handler."""
+    route = resolve_route(
+        kind=request.kind,
+        workflow=request.project.workflow,
+        has_document=has_document,
+        expert_enabled=expert_enabled,
+    )
+    handler = handlers.get(route)
+    if handler is None:
+        raise RuntimeError(f'No handler registered for execution route {route.value}')
+    result = handler(identifier, request)
+    return await result if inspect.isawaitable(result) else result

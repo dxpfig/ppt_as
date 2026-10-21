@@ -14,7 +14,6 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 	Pencil,
-	Plus,
 	RefreshCw,
 	RotateCcw,
 	Sparkles,
@@ -45,9 +44,10 @@ import {
 	REFERENCE_FILE_ACCEPT,
 	REFERENCE_FILE_MAX_BYTES,
 } from './referenceDocument';
-import { SlideDraft } from './SlideDraft';
+import { StudioDialogs } from './StudioDialogs';
 import { StudioExportBar } from './StudioExportBar';
-import { ThemeSwitcher } from './ThemeSwitcher';
+import { StudioHeader } from './StudioHeader';
+import { StudioEmptyState, StudioLegacyPreview, StudioVersionHistory } from './StudioPreviewStates';
 import { usePptdStudio } from './usePptdStudio';
 import { useMediaQuery, usePageWheel, usePresentation } from './usePreviewNavigation';
 import { WorkHistory } from './WorkHistory';
@@ -571,39 +571,12 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	}
 	return (
 		<div className="studio-app pptd-app">
-			<header className="studio-header">
-				<a className="studio-brand" href="/" aria-label="演示助手首页">
-					<span className="brand-symbol">
-						<Layers size={20} />
-					</span>
-					<strong>
-						演示助手<span>STUDIO</span>
-					</strong>
-				</a>
-				<span className="header-divider" />
-				<div className="project-breadcrumb">
-					<span>我的演示</span>
-					<ChevronRight size={14} />
-					<strong title={project.title}>{project.title}</strong>
-				</div>
-				<div className="header-actions">
-					<span className="saved-label">
-						<span />
-						{busy
-							? '正在处理'
-							: project.pptd
-								? `已保存 · 版本 ${project.pptd.revision}`
-								: legacy
-									? '旧版项目'
-									: '新建演示'}
-					</span>
-					<ThemeSwitcher />
-					<button className="new-chat" disabled={busy} onClick={studio.newProject}>
-						<Plus size={14} />
-						新建
-					</button>
-				</div>
-			</header>
+			<StudioHeader
+				project={project}
+				busy={busy}
+				legacy={legacy}
+				onNewProject={studio.newProject}
+			/>
 			<div
 				className={`pptd-layout ${job ? 'has-job' : ''} ${project.pptd ? 'has-document' : ''} ${briefOpen ? 'has-brief' : ''}`}
 			>
@@ -1431,201 +1404,43 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							/>
 						</>
 					) : legacy ? (
-						<div className="pptd-legacy">
-							<span className="pptd-eyebrow">旧版工作记录</span>
-							<h2>{project.title}</h2>
-							<p>
-								此记录保存了旧版页面草稿。迁移后即可使用新的预览、元素编辑和导出。
-							</p>
-							<button
-								className="pptd-primary"
-								disabled={busy || !connected}
-								onClick={() => void studio.migrate()}
-							>
-								<Layers size={16} />
-								迁移为可编辑演示
-							</button>
-							<label className="pptd-field">
-								<span>旧版页面</span>
-								<select
-									value={legacyIndex}
-									onChange={(event) => setLegacyIndex(Number(event.target.value))}
-								>
-									{project.slides.map((slide, index) => (
-										<option key={slide.id} value={index}>
-											{index + 1}. {slide.title}
-										</option>
-									))}
-								</select>
-							</label>
-							<div className="pptd-legacy-preview">
-								{project.artifact?.previewUrls[legacyIndex] ? (
-									<img
-										src={project.artifact.previewUrls[legacyIndex]}
-										alt={`旧版第 ${legacyIndex + 1} 页`}
-									/>
-								) : (
-									project.slides[legacyIndex] && (
-										<SlideDraft
-											slide={project.slides[legacyIndex]}
-											index={legacyIndex}
-											total={project.slides.length}
-											theme={project.theme}
-										/>
-									)
-								)}
-							</div>
-							<small>旧版预览 · 迁移前的内容</small>
-						</div>
+						<StudioLegacyPreview
+							project={project}
+							index={legacyIndex}
+							busy={busy}
+							connected={connected}
+							onSelect={setLegacyIndex}
+							onMigrate={() => void studio.migrate()}
+						/>
 					) : (
-						<div className="pptd-empty">
-							<div className="pptd-empty-pages">
-								<div />
-								<div />
-								<div>
-									<Layers size={46} strokeWidth={1} />
-									<span>YOUR NEXT IDEA</span>
-								</div>
-							</div>
-							<h2>
-								{studio.loading
-									? '正在打开工作台…'
-									: studio.canStop
-										? '正在构建你的演示'
-										: '每个好想法，都值得被看见'}
-							</h2>
-							<p>
-								{studio.canStop
-									? '页面生成后会在这里展示，保留文字、图形和图表的编辑能力。'
-									: '从左侧输入主题开始，或从工作记录中继续创作。'}
-							</p>
-							{!studio.canStop && !studio.loading && (
-								<button
-									className="pptd-secondary"
-									onClick={() => inputRef.current?.focus()}
-								>
-									写下第一个想法
-									<ArrowUpRight size={14} />
-								</button>
-							)}
-						</div>
+						<StudioEmptyState
+							loading={studio.loading}
+							canStop={studio.canStop}
+							onFocus={() => inputRef.current?.focus()}
+						/>
 					)}
 					{showVersions && (
-						<aside className="pptd-versions" aria-label="版本记录">
-							<div>
-								<strong>版本记录</strong>
-								<button
-									className="studio-icon"
-									aria-label="关闭版本记录"
-									onClick={() => setShowVersions(false)}
-								>
-									<X size={16} />
-								</button>
-							</div>
-							<p>恢复会创建新版本，保留现有历史。</p>
-							{[...versions].reverse().map((version) => (
-								<article key={version.id}>
-									<div>
-										<strong>
-											{version.label || `版本 ${version.revision}`}
-										</strong>
-										<small>
-											版本 {version.revision}
-											{version.createdAt
-												? ` · ${new Date(version.createdAt).toLocaleString('zh-CN')}`
-												: ''}
-										</small>
-									</div>
-									<button
-										className="pptd-secondary"
-										disabled={
-											busy || version.revision === project.pptd?.revision
-										}
-										onClick={() => void studio.restore(version.id)}
-									>
-										{version.revision === project.pptd?.revision
-											? '当前'
-											: '恢复'}
-									</button>
-								</article>
-							))}
-							{!versions.length && <p>版本记录正在加载。</p>}
-						</aside>
+						<StudioVersionHistory
+							versions={versions}
+							currentRevision={project.pptd?.revision}
+							busy={busy}
+							onClose={() => setShowVersions(false)}
+							onRestore={(versionId) => void studio.restore(versionId)}
+						/>
 					)}
 				</section>
 			</div>
-			{referencePreview && (
-				<div className="pptd-modal-backdrop">
-					<div
-						className="pptd-modal pptd-reference-preview"
-						role="dialog"
-						aria-modal="true"
-						aria-label={`查看参考资料 ${referencePreview.name}`}
-					>
-						<header>
-							<div>
-								<strong>{referencePreview.name}</strong>
-								<small>已解析正文预览</small>
-							</div>
-							<button
-								type="button"
-								className="studio-icon"
-								aria-label="关闭参考资料预览"
-								onClick={() => setReferencePreview(null)}
-							>
-								<X size={15} />
-							</button>
-						</header>
-						<pre>{referencePreview.text}</pre>
-						<div>
-							<a
-								className="pptd-secondary"
-								href={referencePreview.downloadUrl}
-								download={referencePreview.name}
-							>
-								<Download size={14} />
-								下载原文件
-							</a>
-							<button
-								className="pptd-primary"
-								onClick={() => setReferencePreview(null)}
-							>
-								关闭
-							</button>
-						</div>
-					</div>
-				</div>
-			)}
-			{deleteId && (
-				<div className="pptd-modal-backdrop">
-					<div
-						className="pptd-modal"
-						role="dialog"
-						aria-modal="true"
-						aria-label="删除工作记录"
-					>
-						<h2>删除这份工作记录？</h2>
-						<p>删除后可以在工作记录中撤销。</p>
-						<div>
-							<button className="pptd-secondary" onClick={() => setDeleteId(null)}>
-								取消
-							</button>
-							<button
-								className="pptd-primary"
-								onClick={() => {
-									const record = studio.projects.find(
-										(item) => item.id === deleteId,
-									);
-									if (record) void studio.deleteProject(record);
-									setDeleteId(null);
-								}}
-							>
-								删除记录
-							</button>
-						</div>
-					</div>
-				</div>
-			)}
+			<StudioDialogs
+				referencePreview={referencePreview}
+				deleteId={deleteId}
+				onCloseReference={() => setReferencePreview(null)}
+				onCloseDelete={() => setDeleteId(null)}
+				onConfirmDelete={() => {
+					const record = studio.projects.find((item) => item.id === deleteId);
+					if (record) void studio.deleteProject(record);
+					setDeleteId(null);
+				}}
+			/>
 		</div>
 	);
 }

@@ -1,16 +1,18 @@
 """Unified execution routing contracts."""
 import unittest
+from types import SimpleNamespace
 
 from agent_service.orchestrator import (
     ExecutionRoute,
     JobStatus,
     STAGES,
+    dispatch,
     resolve_route,
     transition_allowed,
 )
 
 
-class OrchestratorRoutingTests(unittest.TestCase):
+class OrchestratorRoutingTests(unittest.IsolatedAsyncioTestCase):
     def route(self, **overrides):
         values = {
             'kind': 'outline',
@@ -53,3 +55,32 @@ class OrchestratorRoutingTests(unittest.TestCase):
     def test_stage_sequence_has_single_visual_before_export(self):
         identifiers = [item[0] for item in STAGES]
         self.assertEqual(identifiers[-4:], ['validate', 'visual', 'export', 'done'])
+
+    async def test_dispatch_executes_only_the_resolved_route(self):
+        calls = []
+
+        async def handler(identifier, _request):
+            calls.append(identifier)
+            return 'ok'
+
+        request = SimpleNamespace(kind='outline', project=SimpleNamespace(workflow='pptd-v2'))
+        result = await dispatch(
+            'job',
+            request,
+            handlers={ExecutionRoute.PPTD: handler},
+            has_document=True,
+            expert_enabled=True,
+        )
+        self.assertEqual(result, 'ok')
+        self.assertEqual(calls, ['job'])
+
+    async def test_dispatch_requires_a_handler_for_the_resolved_route(self):
+        request = SimpleNamespace(kind='outline', project=SimpleNamespace(workflow='pptd-v2'))
+        with self.assertRaises(RuntimeError):
+            await dispatch(
+                'job',
+                request,
+                handlers={},
+                has_document=True,
+                expert_enabled=True,
+            )

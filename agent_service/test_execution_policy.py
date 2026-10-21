@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from agent_service.execution_policy import expert_policy, quick_policy
+from agent_service.execution_policy import adapt_to_model, expert_policy, quick_policy
 
 
 class ExecutionPolicyTests(unittest.TestCase):
@@ -39,3 +39,11 @@ class ExecutionPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {'PPT_KIMI_BATCH_PAGES': '99'}, clear=False):
             with self.assertRaises(ValueError):
                 expert_policy()
+
+    def test_model_context_reduces_page_concurrency_without_increasing_user_cap(self):
+        with patch.dict(os.environ, {'PPTD_PAGE_CONCURRENCY': '6'}, clear=False):
+            policy = quick_policy()
+        self.assertEqual(adapt_to_model(policy, {'contextTokens': 16_000}).page_concurrency, 1)
+        self.assertEqual(adapt_to_model(policy, {'contextTokens': 64_000}).page_concurrency, 2)
+        self.assertEqual(adapt_to_model(policy, {'contextTokens': 200_000}).page_concurrency, 4)
+        self.assertEqual(adapt_to_model(policy, None), policy)

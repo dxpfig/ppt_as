@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator, model_gateway
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator, model_gateway, provider_registry
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from .pptd_compat import normalize_pages
@@ -22,6 +22,8 @@ from . import export_service as pptd_exports, pptd_generation, visual_pipeline
 from .execution_policy import quick_policy
 from .resource_manager import MODEL_LIMIT
 from .job_execution import initial_execution, checkpoint_execution, record_event, terminal_execution, diagnose_error
+from .job_store import JobRuntime, JobStore
+from .job_stream import events as job_events_stream
 from pptd_engine import workbench
 from .rendering import MAX_UPLOAD, create_deck, render_pdf, renderer_available, template_info, validate_package, audit_rendered_pdf
 
@@ -51,7 +53,11 @@ def read(path):
 
 
 def job_path(identifier):
-    return ROOT / "jobs" / f"{key(identifier)}.json"
+    return job_store().path(key(identifier))
+
+
+def job_store():
+    return JobStore(ROOT)
 
 
 def document_store():
@@ -105,19 +111,7 @@ def metadata_from_client(project, previous=None):
 
 
 def update_job(identifier, **changes):
-    job = read(job_path(identifier))
-    if job["status"] == "cancelled":
-        return job
-    if "status" in changes and changes["status"] != job["status"]:
-        if not orchestrator.transition_allowed(job["status"], changes["status"]):
-            raise ValueError(
-                f"非法任务状态迁移：{job['status']} → {changes['status']}"
-            )
-    job.update(changes, updatedAt=time.time())
-    if 'message' in changes or 'stage' in changes or 'status' in changes:
-        job['events'] = [*job.get('events', []), {'timestamp': time.time(), 'stage': job.get('stage', 0), 'message': job.get('message', ''), 'status': job['status']}][-200:]
-    save(job_path(identifier), job)
-    return job
+    return job_store().update(key(identifier), **changes)
 
 
 def kimi_recovery_checkpoint(job):
@@ -164,7 +158,7 @@ PREFIX = "/api/studio"
 @app.get("/health")
 @app.get(PREFIX + "/health")
 async def health():
-    return {"status": "ok", **model_gateway.health(), "rendererAvailable": await asyncio.to_thread(pptd_exports.renderer_available), "legacyRendererAvailable": await asyncio.to_thread(renderer_available), "workflow": "pptd-v2", "pptdAvailable": True, "images": image_service.capabilities(), "tracing": telemetry.health()}
+    return {"status": "ok", **model_gateway.health(), "rendererAvailable": await asyncio.to_thread(pptd_exports.renderer_available), "legacyRendererAvailable": await asyncio.to_thread(renderer_available), "workflow": "pptd-v2", "pptdAvailable": True, "images": image_service.capabilities(), "tracing": telemetry.health(), **provider_registry.snapshot()}
 
 
 @app.get(PREFIX + "/images/status")
@@ -801,20 +795,15 @@ async def pptd_export(identifier: str):
 @app.get(PREFIX + '/jobs/{identifier}/events')
 async def job_events(identifier: str, request: Request):
     read(job_path(identifier))
-    async def events():
-        previous = None
-        while not await request.is_disconnected():
-            job = read(job_path(identifier))
-            encoded = json.dumps(job, ensure_ascii=False)
-            if encoded != previous:
-                yield 'data: ' + encoded + '\n\n'
-                previous = encoded
-            else:
-                yield ': heartbeat\n\n'
-            if job['status'] not in ('queued', 'running'):
-                break
-            await asyncio.sleep(.5)
-    return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'})
+    return StreamingResponse(
+        job_events_stream(
+            job_store(),
+            key(identifier),
+            request.is_disconnected,
+        ),
+        media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'},
+    )
 
 
 def restart_job(identifier, resume):
@@ -884,35 +873,15 @@ async def run_kimi_job(identifier, request):
     recovery = kimi_recovery_checkpoint(current)
     if recovery:
         update_job(identifier, checkpoint=recovery)
-
-    def progress(stage, message):
-        assert_current_job(identifier, project_id)
-        update_job(identifier, status='running', stage=stage, message=message)
-
-    def execution_event(event):
-        assert_current_job(identifier, project_id)
-        current = read(job_path(identifier))
-        execution = record_event(current.get('execution'), event)
-        stage = current.get('stage', 0)
-        changes = {
-            'stage': stage,
-            'execution': execution,
-            'message': execution['events'][-1]['message'] if execution['events'] else current['message'],
-        }
-        covered, total = event.get('covered'), event.get('total')
-        if (
-            event.get('phase') == 'pages'
-            and isinstance(covered, int)
-            and isinstance(total, int)
-            and total > 0
-        ):
-            changes['checkpoint'] = {
-                'stage': 'pages',
-                'completedPages': covered,
-                'totalPages': total,
-                'summary': f'已保留 {covered}/{total} 页',
-            }
-        update_job(identifier, **changes)
+    runtime = JobRuntime(
+        job_store(),
+        identifier,
+        project_id,
+        lambda: assert_current_job(identifier, project_id),
+        ROOT / 'checkpoints' / f'{identifier}.json',
+    )
+    progress = runtime.progress
+    execution_event = runtime.event
 
     try:
         progress(0, '准备 PPT 专家任务')
@@ -983,10 +952,14 @@ async def run_kimi_job(identifier, request):
 async def run_page_action_job(identifier, request):
     project_id = request.project.id
     page_path = request.selectedSlideId
-
-    def progress(stage, message):
-        assert_current_job(identifier, project_id)
-        update_job(identifier, status='running', stage=stage, message=message)
+    runtime = JobRuntime(
+        job_store(),
+        identifier,
+        project_id,
+        lambda: assert_current_job(identifier, project_id),
+        ROOT / 'checkpoints' / f'{identifier}.json',
+    )
+    progress = runtime.progress
 
     try:
         if not isinstance(page_path, str) or not page_path:
@@ -1174,19 +1147,18 @@ def finish_editable_fallback(identifier, project_id, checkpoint, store):
 
 
 async def run_job(identifier, request):
-    route = orchestrator.resolve_route(
-        kind=request.kind,
-        workflow=request.project.workflow,
+    return await orchestrator.dispatch(
+        identifier,
+        request,
+        handlers={
+            orchestrator.ExecutionRoute.PAGE_ACTION: run_page_action_job,
+            orchestrator.ExecutionRoute.EXPERT: run_kimi_job,
+            orchestrator.ExecutionRoute.LEGACY: run_legacy_job,
+            orchestrator.ExecutionRoute.PPTD: run_pptd_job,
+        },
         has_document=document_store().exists(request.project.id),
         expert_enabled=agentic_kimi_enabled(),
     )
-    if route == orchestrator.ExecutionRoute.PAGE_ACTION:
-        return await run_page_action_job(identifier, request)
-    if route == orchestrator.ExecutionRoute.EXPERT:
-        return await run_kimi_job(identifier, request)
-    if route == orchestrator.ExecutionRoute.LEGACY:
-        return await run_legacy_job(identifier, request)
-    return await run_pptd_job(identifier, request)
 
 
 async def run_pptd_job(identifier, request):
@@ -1197,31 +1169,16 @@ async def run_pptd_job(identifier, request):
     project_id = request.project.id
     cp_path = ROOT / 'checkpoints' / f'{identifier}.json'
     checkpoint = read(cp_path) if cp_path.is_file() else None
-    def progress(stage, message):
-        assert_current_job(identifier, project_id)
-        update_job(identifier, status='running', stage=stage, message=message)
-    def execution_event(event):
-        assert_current_job(identifier, project_id)
-        current = read(job_path(identifier))
-        execution = record_event(current.get('execution'), event)
-        stage = current.get('stage', 0)
-        if event.get('phase') == 'visual':
-            covered, total = event.get('covered', 0), event.get('total', 1)
-            if isinstance(covered, int) and isinstance(total, int) and total > 0:
-                stage = max(stage, 85 + min(12, int(12 * covered / total)))
-        update_job(identifier, stage=stage, execution=execution, message=execution['events'][-1]['message'] if execution['events'] else current['message'])
-    def checkpoint_save(value):
-        previous = read(cp_path) if cp_path.is_file() else {}
-        value = {**{k: v for k, v in previous.items() if k.startswith('_')}, **value}
-        save(cp_path, value)
-        completed = len(value.get('pages', []))
-        total = len(value.get('plan', {}).get('pages', []))
-        summary = f'已保存 {completed}/{total} 页' if total else '已保存生成检查点'
-        stage = value.get('stage')
-        position = {'context': 5, 'plan': 10, 'assets': 15, 'edit': 35, 'validated': 60, 'export': 65}.get(stage, 20 + int(40 * completed / max(1, total)))
-        current = read(job_path(identifier))
-        update_job(identifier, stage=max(current.get('stage', 0), position), checkpoint={'stage': stage, 'completedPages': completed, 'totalPages': total, 'summary': summary}, recoverable=True,
-                   execution=checkpoint_execution(current.get('execution'), value))
+    runtime = JobRuntime(
+        job_store(),
+        identifier,
+        project_id,
+        lambda: assert_current_job(identifier, project_id),
+        cp_path,
+    )
+    progress = runtime.progress
+    execution_event = runtime.event
+    checkpoint_save = runtime.save_checkpoint
     def generation_progress(stage, message):
         current = read(job_path(identifier))
         progress(max(current.get('stage', 0), {0: 10, 1: 20, 2: 40}.get(stage, stage)), message)

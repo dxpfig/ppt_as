@@ -50,8 +50,11 @@ def record_event(execution, event, now=None):
         state['visual']['status'] = node['status']
     if node['status'] in ('completed', 'failed', 'cancelled'):
         node['endedAt'] = now
+        if isinstance(node.get('startedAt'), (int, float)):
+            node['durationSeconds'] = round(max(0, now - node['startedAt']), 3)
     else:
         node.pop('endedAt', None)
+        node.pop('durationSeconds', None)
     if item.get('pagePath'):
         collection = state.setdefault('visualPages', []) if phase == 'visual' else state['pages']
         page = next((p for p in collection if p['path'] == item['pagePath']), None)
@@ -105,6 +108,21 @@ def terminal_execution(execution, status, message, context=None):
         if node['status'] == 'running':
             node['status'] = 'cancelled'
     return state
+
+
+def stage_metrics(execution):
+    """Return only measured stage durations; never invent missing timings."""
+    metrics = {}
+    for node in (execution or {}).get('nodes', []):
+        if not isinstance(node, dict):
+            continue
+        start, end = node.get('startedAt'), node.get('endedAt')
+        if type(start) in (int, float) and type(end) in (int, float) and end >= start:
+            metrics[node.get('id', '')] = {
+                'status': node.get('status', ''),
+                'seconds': round(end - start, 3),
+            }
+    return metrics
 
 
 def redact(text):

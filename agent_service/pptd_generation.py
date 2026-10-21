@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .model_gateway import make_agent, make_model
 from .kimi_rules import KimiRules, SCENARIOS
 from . import template_reference
-from .execution_policy import quick_policy
+from .execution_policy import adapt_to_model, quick_policy
 from .page_work_queue import PageWorkQueue, PageWorkStatus
 from .models import JobRequest
 from .pptd_validation import normalize_table_tracks, safe_relative, validate_document
@@ -892,6 +892,7 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         if callable(getattr(model, 'discover_context', None)):
             state['modelContext'] = await model.discover_context()
             info = state['modelContext']
+            policy = adapt_to_model(policy, info)
             await event('context', 'configured', f"模型上下文预算 {info['contextTokens']} tokens，来源：{info['source']}。" + info.get('discoveryWarning', ''))
             await save()
         context = await prepare_materials(context, state, ask, save)
