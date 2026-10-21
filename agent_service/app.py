@@ -855,7 +855,7 @@ async def run_kimi_job(identifier, request):
         update_job(identifier, **changes)
 
     try:
-        progress(0, '准备 Kimi PPT 专家任务')
+        progress(0, '准备 PPT 专家任务')
         async with LLM_LIMIT:
             result = await asyncio.wait_for(
                 kimi_agent.run_kimi(request, data_root=ROOT, progress=progress,

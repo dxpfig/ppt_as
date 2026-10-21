@@ -427,8 +427,8 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.getByLabel('视觉设计').selectOption('template');
 		await page.locator('.pptd-template select').selectOption('corporate');
 		await page.getByLabel('演示主题或内容').fill('使用上传模板生成产品介绍');
-		await page.getByLabel('Kimi 专家（原生工作流）').check();
-		await page.getByRole('button', { name: '生成演示（Kimi）', exact: true }).click();
+		await page.getByLabel('PPT 专家（原生工作流）').check();
+		await page.getByRole('button', { name: '生成演示（PPT 专家）', exact: true }).click();
 		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		const imported = requests.find((item) => item.path.endsWith('/pptd/import-template'));
 		assert.equal(imported.body.templateId, 'corporate');

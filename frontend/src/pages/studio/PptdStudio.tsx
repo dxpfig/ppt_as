@@ -1066,7 +1066,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									disabled={busy}
 									onChange={(event) => setExpertMode(event.target.checked)}
 								/>
-								Kimi 专家（原生工作流）
+								PPT 专家（原生工作流）
 							</label>
 							{project.pptd && preferences.workflow === 'edit' && (
 								<label className="pptd-field">
@@ -1096,7 +1096,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							>
 								<Sparkles size={17} />
 								{expertMode
-									? '生成演示（Kimi）'
+									? '生成演示（PPT 专家）'
 									: project.pptd && preferences.workflow === 'edit'
 										? '应用修改'
 										: '生成演示'}

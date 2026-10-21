@@ -766,7 +766,7 @@ def _find_entry(workspace: Path) -> Path:
     deck_dir = workspace / "deck"
     entries = sorted(deck_dir.glob("*.pptd")) if deck_dir.is_dir() else []
     if not entries:
-        raise ValueError("Kimi 专家没有在 deck/ 目录产出新的 .pptd 交付物（模板分析产物不会被当作答案）。")
+        raise ValueError("PPT 专家没有在 deck/ 目录产出新的 .pptd 交付物（模板分析产物不会被当作答案）。")
     return entries[0]
 
 
@@ -1871,9 +1871,9 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             if reference_characters
             else "，未提供文本参考资料。"
         )
-        await emit("context", "started", "Kimi PPT 专家正在读取上下文并规划" + reference_summary)
+        await emit("context", "started", "PPT 专家正在读取上下文并规划" + reference_summary)
         if progress:
-            progress(5, "Kimi PPT 专家正在按 kimi-slides 流程工作")
+            progress(5, "PPT 专家正在按原生工作流生成")
         reply = ""
         document: dict = {}
         pages: list[dict] = []
@@ -2005,7 +2005,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             if not pending:
                 break
         if source_entry is None:
-            raise ValueError("Kimi 专家没有在 deck/ 目录产出新的 .pptd 交付物。")
+            raise ValueError("PPT 专家没有在 deck/ 目录产出新的 .pptd 交付物。")
         _, planned_paths, existing_paths, _, invalid_paths = _deck_status(source_entry)
         pending_paths = [path for path in planned_paths if path not in existing_paths]
         if pending_paths:
@@ -2018,7 +2018,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                     issue["message"] for issue in invalid_paths[:6]
                 )
             raise ValueError(
-                f"Kimi 专家连续 {batch_limit} 段仍未写完全部页面："
+                f"PPT 专家连续 {batch_limit} 段仍未写完全部页面："
                 f"{len(existing_paths)}/{len(planned_paths)} 页可解析，"
                 f"待完成 {missing_detail}{invalid_detail}"
             )
@@ -2056,7 +2056,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             reply = _reply_text(await repair_agent.reply(message))
 
         if entry is None:
-            raise ValueError("Kimi 专家没有生成可检查的 PPTD 交付稿。")
+            raise ValueError("PPT 专家没有生成可检查的 PPTD 交付稿。")
         page_attempts: dict[str, int] = {}
         page_noops: dict[str, int] = {}
         while True:
@@ -2150,7 +2150,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
         store = DocumentStore(data_root)
         revision = store.read(project_id)["revision"] if store.exists(project_id) else 0
         committed = store.commit(
-            project_id, document, pages, "AI 生成（Kimi 专家）", revision,
+            project_id, document, pages, "AI 生成（PPT 专家）", revision,
             assets=_collect_assets(entry),
         )
         await emit("validate", "completed", "结构检查与真实排版检查通过，已提交可编辑文档。")
