@@ -1,0 +1,11 @@
+{
+	"title": "渠道经营分析",
+	"period": "2026 Q3",
+	"channels": [
+		{ "name": "直销", "revenue": 4200, "growth": 0.18, "margin": 0.31 },
+		{ "name": "伙伴", "revenue": 3100, "growth": 0.09, "margin": 0.24 },
+		{ "name": "线上", "revenue": 1450, "growth": 0.27, "margin": 0.38 }
+	],
+	"formula": "收入 = 客户数 × 客单价 × 复购率",
+	"notes": "金额单位为万元，数据均为脱敏样例。"
+}

@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -16,16 +15,30 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSO
 from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator, model_gateway, provider_registry
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
-from .pptd_compat import normalize_pages
-from .layout_autofit import autofit_state
 from . import export_service as pptd_exports, pptd_generation, visual_pipeline
-from .execution_policy import quick_policy
 from .resource_manager import MODEL_LIMIT
-from .job_execution import initial_execution, checkpoint_execution, record_event, terminal_execution, diagnose_error
-from .job_store import JobRuntime, JobStore
+from .job_execution import initial_execution, checkpoint_execution, terminal_execution
+from .job_store import JobStore
 from .job_stream import events as job_events_stream
+from .legacy_runner import run_legacy_job as run_legacy_job_impl
+from .page_action_runner import run_page_action_job as run_page_action_job_impl
+from .expert_runner import run_kimi_job as run_kimi_job_impl
+from .pptd_runner import (
+    autofit_document_for_export,
+    editable_fallback_ready,
+    normalize_document_for_export,
+    run_pptd_job as run_pptd_job_impl,
+)
 from pptd_engine import workbench
-from .rendering import MAX_UPLOAD, create_deck, render_pdf, renderer_available, template_info, validate_package, audit_rendered_pdf
+from .rendering import (
+    MAX_UPLOAD,
+    audit_rendered_pdf,
+    create_deck,
+    render_pdf,
+    renderer_available,
+    template_info,
+    validate_package,
+)
 
 ROOT = Path(os.getenv("STUDIO_DATA_DIR", Path(__file__).resolve().parents[1] / "runtime" / "studio")).resolve()
 for directory in ("projects", "templates", "jobs", "artifacts", "trash", "images", "requests", "checkpoints", "reference-files"):
@@ -429,65 +442,22 @@ def finish_project_job(identifier, result=None):
 
 
 async def run_legacy_job(identifier, request):
-    def progress(stage, message):
-        update_job(identifier, status="running", stage=stage, message=message)
-    try:
-        progress(0, "准备生成任务")
-        if request.kind == "render":
-            if not request.project.slides:
-                raise ValueError("请先创建至少一页幻灯片。")
-            template_id = request.templateId or request.project.templateId
-            template_path = ROOT / "templates" / key(template_id) / "template.pptx" if template_id else None
-            if template_path and not template_path.is_file():
-                raise ValueError("公司模板不存在，请重新上传或选择模板。")
-            folder = ROOT / "artifacts" / identifier
-            folder.mkdir(exist_ok=True)
-            illustrated, pictures, image_warnings = await image_service.illustrate_project(ROOT, request.project, progress)
-            progress(1, "正在套用公司模板" if template_path else "正在排版幻灯片")
-            warnings = await asyncio.to_thread(create_deck, illustrated, folder / "presentation.pptx", template_path, pictures)
-            warnings = list(dict.fromkeys(image_warnings + warnings))
-            progress(2, "LibreOffice 正在生成真实预览与 PDF")
-            images = await render_pdf(folder / "presentation.pptx")
-            warnings.extend(await asyncio.to_thread(audit_rendered_pdf, illustrated, folder / "presentation.pdf"))
-            warnings = list(dict.fromkeys(warnings))
-            base = f"{PREFIX}/artifacts/{identifier}"
-            artifact = {"id": identifier, "pptxUrl": base + "/presentation.pptx", "pdfUrl": base + "/presentation.pdf", "previewUrls": [base + "/" + image for image in images], "warnings": warnings}
-            save(folder / "metadata.json", artifact)
-            result = {"slides": [slide.model_dump() for slide in illustrated.slides], "artifact": artifact, "reply": f"演示文件已生成，共 {len(illustrated.slides)} 页，可预览、播放或下载。"}
-        else:
-            async with LLM_LIMIT:
-                try:
-                    with telemetry.generation(request, identifier) as span:
-                        context = span.get_span_context()
-                        if context.is_valid:
-                            update_job(identifier, traceId=f"{context.trace_id:032x}")
-                        result = await asyncio.wait_for(agents.generate(request, progress), timeout=600)
-                        if result.get("generationMeta"):
-                            span.set_attribute("ppt.prompt.version", result["generationMeta"]["promptVersion"])
-                            span.set_attribute("ppt.scenario", result["generationMeta"]["scenario"])
-                finally:
-                    await telemetry.flush()
-        if read(job_path(identifier))["status"] == "cancelled":
-            return
-        completed_project = finish_project_job(identifier, result)
-        if completed_project:
-            result["project"] = completed_project
-        update_job(identifier, status="completed", stage=3, message="生成完成", result=result)
-    except asyncio.CancelledError:
-        update_job(identifier, status="cancelled", message="任务已停止")
-        finish_project_job(identifier)
-        raise
-    except Exception as exc:
-        # Do not expose provider errors, request headers, tokens or filesystem paths.
-        message = str(exc) if isinstance(exc, ValueError) else "生成服务调用失败，请检查模型配置或渲染器后重试。"
-        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "WEKNORA_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY", "PPT_WEB_MCP_HEADERS"):
-            secret = os.getenv(name)
-            if secret:
-                message = message.replace(secret, "[redacted]")
-        update_job(identifier, status="failed", message=message[:500], error=message[:500])
-        finish_project_job(identifier)
-    finally:
-        TASKS.pop(identifier, None)
+    return await run_legacy_job_impl(
+        identifier,
+        request,
+        root=ROOT,
+        prefix=PREFIX,
+        llm_limit=LLM_LIMIT,
+        update_job=update_job,
+        read_job=lambda value: read(job_path(value)),
+        finish_job=finish_project_job,
+        save_json=save,
+        remove_task=TASKS.pop,
+        safe_id=key,
+        create_deck=create_deck,
+        render_pdf=render_pdf,
+        audit_rendered_pdf=audit_rendered_pdf,
+    )
 
 
 @app.post(PREFIX + "/jobs", status_code=202)
@@ -864,286 +834,45 @@ def clean_error(exc):
 
 
 async def run_kimi_job(identifier, request):
-    """Agentic kimi-slides route: the model owns the workflow; no export gate."""
-    project_id = request.project.id
-    current = read(job_path(identifier))
-    kimi_agent.restore_workspace(
-        ROOT, project_id, identifier, current.get('parentJobId')
-    )
-    recovery = kimi_recovery_checkpoint(current)
-    if recovery:
-        update_job(identifier, checkpoint=recovery)
-    runtime = JobRuntime(
-        job_store(),
+    return await run_kimi_job_impl(
         identifier,
-        project_id,
-        lambda: assert_current_job(identifier, project_id),
-        ROOT / 'checkpoints' / f'{identifier}.json',
+        request,
+        root=ROOT,
+        llm_limit=LLM_LIMIT,
+        job_store=job_store(),
+        update_job=update_job,
+        read_job=lambda value: read(job_path(value)),
+        finish_job=finish_project_job,
+        assert_current=assert_current_job,
+        project_path=project_path,
+        hydrate_project=hydrate_project,
+        save_json=save,
+        remove_task=TASKS.pop,
     )
-    progress = runtime.progress
-    execution_event = runtime.event
-
-    try:
-        progress(0, '准备 PPT 专家任务')
-        async with LLM_LIMIT:
-            result = await asyncio.wait_for(
-                kimi_agent.run_kimi(request, data_root=ROOT, progress=progress,
-                                    on_event=execution_event, project_id=project_id, job_id=identifier),
-                timeout=model_gateway.timeout_setting('PPT_KIMI_TIMEOUT_SECONDS', 5400),
-            )
-        project = assert_current_job(identifier, project_id)
-        project.update(workflow='pptd-v2', artifact=None,
-                       title=result['document'].get('title', project['title']),
-                       generationMeta=result.get('generationMeta', {}),
-                       phase='ready', activeJobId=None, contentGenerated=True, updatedAt=time.time())
-        reply = result.get('reply', '') or '演示文稿已生成，可编辑预览并手动导出。'
-        warnings = result.get('warnings') or []
-        project['messages'] = [*project.get('messages', []), {'id': uuid4().hex, 'role': 'assistant', 'text': reply}][-1000:]
-        save(project_path(project_id), project)
-        summary = f'共 {len(result["pages"])} 页，演示文件已就绪'
-        if warnings:
-            summary += f'；{len(warnings)} 项排版问题待确认'
-        execution = record_event(read(job_path(identifier)).get('execution'),
-                                 {'phase': 'done', 'status': 'completed', 'message': summary})
-        update_job(identifier, status='completed', stage=100, message=summary, recoverable=False,
-                   execution=execution,
-                   result={'reply': reply, 'revision': result['revision'],
-                           'pageCount': len(result['pages']), 'warnings': warnings,
-                           'project': hydrate_project(project)})
-    except asyncio.CancelledError:
-        current = read(job_path(identifier))
-        if current['status'] != 'cancelled':
-            recovery = kimi_recovery_checkpoint(current)
-            message = (
-                f"任务中断，已保留 {recovery['summary']}，可继续任务。"
-                if recovery
-                else '任务中断，未生成可用文档。'
-            )
-            update_job(
-                identifier,
-                status='interrupted',
-                message=message,
-                recoverable=bool(recovery),
-                checkpoint=recovery,
-                execution=terminal_execution(current.get('execution'), 'interrupted', message),
-            )
-        finish_project_job(identifier)
-        raise
-    except Exception as exc:
-        current = read(job_path(identifier))
-        recovery = kimi_recovery_checkpoint(current) or current.get('checkpoint')
-        resumable = bool(
-            isinstance(recovery, dict) and recovery.get('completedPages', 0) > 0
-        )
-        message, diagnostic, context = diagnose_error(
-            exc,
-            current.get('execution', {}).get('phase', 'context'),
-            resumable=resumable,
-        )
-        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic, recoverable=resumable,
-                   checkpoint=recovery,
-                   execution=terminal_execution(current.get('execution'), 'failed', message, context))
-        finish_project_job(identifier)
-    finally:
-        await telemetry.flush()
-        TASKS.pop(identifier, None)
 
 
 async def run_page_action_job(identifier, request):
-    project_id = request.project.id
-    page_path = request.selectedSlideId
-    runtime = JobRuntime(
-        job_store(),
+    return await run_page_action_job_impl(
         identifier,
-        project_id,
-        lambda: assert_current_job(identifier, project_id),
-        ROOT / 'checkpoints' / f'{identifier}.json',
+        request,
+        root=ROOT,
+        llm_limit=LLM_LIMIT,
+        job_store=job_store(),
+        update_job=update_job,
+        read_job=lambda value: read(job_path(value)),
+        finish_job=finish_project_job,
+        assert_current=assert_current_job,
+        store_factory=document_store,
+        project_path=project_path,
+        hydrate_project=hydrate_project,
+        save_json=save,
+        clean_error=clean_error,
+        remove_task=TASKS.pop,
     )
-    progress = runtime.progress
-
-    try:
-        if not isinstance(page_path, str) or not page_path:
-            raise ValueError('页面操作必须指定当前页面。')
-        progress(5, '正在准备当前页面')
-        async with LLM_LIMIT:
-            report = await asyncio.wait_for(
-                page_actions.run_page_action(
-                    request.kind,
-                    document_store(),
-                    project_id,
-                    page_path,
-                    request,
-                    ROOT,
-                ),
-                timeout=model_gateway.timeout_setting('PPTD_PAGE_ACTION_TIMEOUT_SECONDS', 1800),
-            )
-        project = assert_current_job(identifier, project_id)
-        project.update(
-            workflow='pptd-v2',
-            phase='ready',
-            activeJobId=None,
-            contentGenerated=True,
-            updatedAt=time.time(),
-        )
-        action = report['action']
-        issue_count = len(report.get('issues') or [])
-        if action == 'review':
-            message = '当前页面视觉检视完成' + (f'，发现 {issue_count} 项问题' if issue_count else '，未发现问题')
-        elif action == 'repair':
-            project['artifact'] = None
-            message = '当前页面修复完成' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
-        else:
-            message = '页面设计稿已生成，可预览后应用' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
-        project['messages'] = [
-            *project.get('messages', []),
-            {'id': uuid4().hex, 'role': 'assistant', 'text': message},
-        ][-1000:]
-        save(project_path(project_id), project)
-        update_job(
-            identifier,
-            status='completed',
-            stage=100,
-            message=message,
-            recoverable=False,
-            result={
-                'reply': message,
-                'revision': report['revision'],
-                'pageAction': report,
-                'project': hydrate_project(project),
-            },
-        )
-    except asyncio.CancelledError:
-        current = read(job_path(identifier))
-        if current['status'] != 'cancelled':
-            update_job(identifier, status='interrupted', message='页面操作已中断，原稿未覆盖。', recoverable=False)
-        finish_project_job(identifier)
-        raise
-    except Exception as exc:
-        message = clean_error(exc)
-        update_job(
-            identifier,
-            status='failed',
-            message=message,
-            error=message,
-            recoverable=False,
-        )
-        finish_project_job(identifier)
-    finally:
-        await telemetry.flush()
-        TASKS.pop(identifier, None)
 
 
 def agentic_kimi_enabled():
     return os.getenv('PPT_KIMI_AGENTIC', '1').strip().lower() not in ('0', 'false', 'no')
-
-
-EDITABLE_FALLBACK_ISSUES = {
-    'text-overflow', 'text-overlap', 'text-clipped', 'text-contrast',
-    'font-unresolved', 'native-unsupported',
-}
-
-
-def editable_fallback_ready(checkpoint):
-    """Whether a complete deck may be published without the export repair pass."""
-    checkpoint = checkpoint or {}
-    plan = checkpoint.get('plan') or {}
-    paths = (plan.get('document') or {}).get('pages') or []
-    completed = {item.get('path') for item in checkpoint.get('pages') or [] if isinstance(item, dict)}
-    issues = checkpoint.get('externalIssues') or []
-    return (
-        bool(paths)
-        and set(paths) <= completed
-        and bool(issues)
-        and all(isinstance(item, dict) and item.get('code') in EDITABLE_FALLBACK_ISSUES for item in issues)
-    )
-
-
-def normalize_document_for_export(store, project_id, expected_revision):
-    """Persist deterministic compatibility fixes before rendering an old deck.
-
-    Generation already normalizes new results, but export-only jobs may point at
-    documents created by an older host or by template import. Retrying those
-    jobs used to reproduce the same native-adapter findings forever because the
-    saved source never entered the new normalization path.
-    """
-    state = store.read(project_id)
-    if state['revision'] != expected_revision:
-        return None
-    pages = deepcopy(state['pages'])
-    changed = normalize_pages(pages)
-    if not any(changed.values()):
-        return None
-    return store.commit(project_id, deepcopy(state['document']), pages, '导出兼容性修复', expected_revision)
-
-
-def autofit_document_for_export(store, project_id, error, expected_revision):
-    """Scale only the measured overflow elements; never call the model for these."""
-    issues = getattr(error, 'issues', None)
-    if not isinstance(issues, list) or not issues or not pptd_exports.layout_only_issues(issues):
-        return None
-    layouts = getattr(error, 'layouts', None)
-    if not isinstance(layouts, dict):
-        layouts = {}
-    state = store.read(project_id)
-    if state['revision'] != expected_revision:
-        return None
-    pages = deepcopy(state['pages'])
-    changed = autofit_state({'pages': pages}, layouts, issues)
-    if not any(changed.values()):
-        return None
-    return store.commit(project_id, deepcopy(state['document']), pages, '导出排版自适应', expected_revision)
-
-
-def finish_editable_fallback(identifier, project_id, checkpoint, store):
-    """Publish the already committed PPTD when only export repair is blocked."""
-    project = assert_current_job(identifier, project_id)
-    state = store.read(project_id)
-    issues = checkpoint.get('externalIssues') or []
-    message = (
-        f'可编辑稿已生成，共 {len(state["pages"])} 页；'
-        f'导出前仍有 {len(issues)} 项排版或兼容性问题，自动修复所需模型暂不可用。'
-        '内容与检查点均已保留。'
-    )
-    meta = project.get('generationMeta') or {}
-    meta['validation'] = {
-        'status': 'editable-with-export-issues',
-        'renderRequired': True,
-        'issueCount': len(issues),
-        'issues': issues[:50],
-        'summary': '可编辑 PPTD 已保存；导出验收未完成',
-    }
-    project.update(
-        workflow='pptd-v2',
-        phase='ready',
-        activeJobId=None,
-        contentGenerated=True,
-        generationMeta=meta,
-        updatedAt=time.time(),
-    )
-    project['messages'] = [
-        *project.get('messages', []),
-        {'id': uuid4().hex, 'role': 'assistant', 'text': message},
-    ][-1000:]
-    save(project_path(project_id), project)
-    execution = record_event(
-        read(job_path(identifier)).get('execution'),
-        {'phase': 'done', 'status': 'completed', 'message': message},
-    )
-    update_job(
-        identifier,
-        status='completed',
-        stage=100,
-        message=message,
-        recoverable=False,
-        execution=execution,
-        result={
-            'reply': message,
-            'revision': state['revision'],
-            'pageCount': len(state['pages']),
-            'warnings': issues[:50],
-            'project': hydrate_project(project),
-        },
-    )
 
 
 async def run_job(identifier, request):
@@ -1161,247 +890,26 @@ async def run_job(identifier, request):
     )
 
 
+
 async def run_pptd_job(identifier, request):
-    # Deterministic coordinated pipeline shared by quick generation, editing
-    # and export-only requests.
-    policy = quick_policy()
-    store = document_store()
-    project_id = request.project.id
-    cp_path = ROOT / 'checkpoints' / f'{identifier}.json'
-    checkpoint = read(cp_path) if cp_path.is_file() else None
-    runtime = JobRuntime(
-        job_store(),
+    return await run_pptd_job_impl(
         identifier,
-        project_id,
-        lambda: assert_current_job(identifier, project_id),
-        cp_path,
+        request,
+        root=ROOT,
+        prefix=PREFIX,
+        llm_limit=LLM_LIMIT,
+        job_store=job_store(),
+        update_job=update_job,
+        read_job=lambda value: read(job_path(value)),
+        document_store=document_store,
+        project_path=project_path,
+        read_json=read,
+        save_json=save,
+        hydrate_project=hydrate_project,
+        assert_current=assert_current_job,
+        finish_job=finish_project_job,
+        remove_task=TASKS.pop,
     )
-    progress = runtime.progress
-    execution_event = runtime.event
-    checkpoint_save = runtime.save_checkpoint
-    def generation_progress(stage, message):
-        current = read(job_path(identifier))
-        progress(max(current.get('stage', 0), {0: 10, 1: 20, 2: 40}.get(stage, stage)), message)
-    async def export_progress(stage, message):
-        current = read(job_path(identifier))
-        progress(max(current.get('stage', 0), 65 + int(stage * .20)), message)
-        execution_event({'phase': 'export', 'status': 'started', 'message': message})
-    async def validation_progress(stage, message):
-        current = read(job_path(identifier))
-        progress(max(current.get('stage', 0), 55 + int(stage * .25)), message)
-        execution_event({'phase': 'validate', 'status': 'started', 'message': message})
-    try:
-        progress(0, '准备 PPTD 任务')
-        existing = store.read(project_id) if store.exists(project_id) else None
-        with telemetry.generation(request, identifier) as span:
-            context = span.get_span_context()
-            if context.is_valid:
-                update_job(identifier, traceId=f'{context.trace_id:032x}')
-            current_revision = existing['revision'] if existing else 0
-            source_existing = checkpoint.get('_sourceExisting') if checkpoint and '_sourceExisting' in checkpoint else existing
-            result = {'generationMeta': read(project_path(project_id)).get('generationMeta', {}), 'reply': ''}
-            folder = ROOT / 'artifacts' / identifier
-            render_attempts = 0
-            autofit_attempts = 0
-            seen_issues = set()
-            while True:
-                committed = checkpoint and checkpoint.get('_committedRevision')
-                external = checkpoint and checkpoint.get('externalIssues')
-                if committed and checkpoint.get('stage') == 'export' and pptd_exports.layout_only_issues(external):
-                    # Resume old renderer checkpoints through protected layout
-                    # patches; never rewrite saved text to fix its geometry.
-                    checkpoint = {**checkpoint}
-                    checkpoint.pop('externalIssues', None)
-                    checkpoint_save(checkpoint)
-                    external = None
-                if committed and checkpoint.get('stage') == 'export' and not external and request.kind == 'outline':
-                    # Older checkpoints could mark title-only pages complete.
-                    # Recover their saved planned content in the generation
-                    # stage; visual style repair must never invent body text.
-                    from .planned_content import planned_content_issues
-                    source = store.read(project_id)
-                    if source['revision'] != committed:
-                        raise RevisionConflict('待恢复正文的文档版本已变化，请重新发起任务。')
-                    missing = planned_content_issues(source, checkpoint.get('plan') or {})
-                    if missing:
-                        checkpoint = {**checkpoint, 'externalIssues': missing, '_visualReview': None,
-                            'pages': source['pages'], 'plan': {**checkpoint['plan'], 'document': source['document']}}
-                        checkpoint_save(checkpoint)
-                        external = missing
-                        execution_event({'phase': 'validate', 'status': 'retrying',
-                            'message': f'发现 {len(missing)} 页缺少计划正文，AI 正在按原大纲补回，保留其余页面。'})
-                if committed and checkpoint.get('stage') == 'export' and not external:
-                    if current_revision != committed:
-                        raise RevisionConflict('待导出的文档版本已变化，请重新发起任务。')
-                    result['generationMeta'] = checkpoint.get('_generationMeta', result['generationMeta'])
-                elif request.kind == 'render':
-                    if not existing:
-                        raise ValueError('请先生成或迁移一份 PPTD 文档。')
-                else:
-                    try:
-                        async with LLM_LIMIT:
-                            result = await asyncio.wait_for(pptd_generation.generate_pptd(request, generation_progress, existing=source_existing, checkpoint=checkpoint, save_checkpoint=checkpoint_save, data_root=ROOT, on_event=execution_event), timeout=model_gateway.timeout_setting('PPTD_GENERATION_TIMEOUT_SECONDS', 1800))
-                    except Exception as exc:
-                        _, diagnostic, _ = diagnose_error(
-                            exc, 'validate', resumable=cp_path.is_file()
-                        )
-                        if (
-                            diagnostic.get('code') in ('model_unavailable', 'model_timeout')
-                            and editable_fallback_ready(checkpoint)
-                        ):
-                            finish_editable_fallback(identifier, project_id, checkpoint, store)
-                            return
-                        raise
-                    assert_current_job(identifier, project_id)
-                    normalize_pages(result['pages'])
-                    assets = {item['path']: Path(item['sourcePath']) for item in result.get('assets', [])}
-                    state = store.commit(project_id, result['document'], result['pages'], 'AI 生成' if request.kind == 'outline' else 'AI 修改', current_revision, assets=assets)
-                    current_revision = state['revision']
-                    checkpoint = {**result.get('checkpoint', {}), 'stage': 'export', '_committedRevision': current_revision, '_generationMeta': result.get('generationMeta', {}), '_sourceExisting': source_existing}
-                    checkpoint.pop('externalIssues', None)
-                    checkpoint_save(checkpoint)
-                    project = read(project_path(project_id))
-                    project.update(workflow='pptd-v2', artifact=None, title=state['document'].get('title', project['title']), generationMeta=result.get('generationMeta', {}))
-                    save(project_path(project_id), project)
-                migrated = normalize_document_for_export(store, project_id, current_revision)
-                if migrated:
-                    current_revision = migrated['revision']
-                    if checkpoint:
-                        checkpoint = {**checkpoint, '_committedRevision': current_revision}
-                        if request.kind != 'render':
-                            # A compatibility edit changes the reviewed source.
-                            checkpoint['_visualReview'] = None
-                        checkpoint_save(checkpoint)
-                    execution_event({'phase': 'validate', 'status': 'retrying',
-                                     'message': '已自动转换旧文档中不兼容的换行、字体与透明样式，正在重新检查导出。'})
-                try:
-                    visual_state = (checkpoint or {}).get('_visualReview') or {}
-                    reviewed_revision = (checkpoint or {}).get('_committedRevision')
-                    if request.kind == 'render':
-                        # Export-only jobs never trigger visual review. A passed
-                        # review receipt from generation/validation is reused;
-                        # otherwise the export is explicitly unreviewed.
-                        visual_summary = (
-                            visual_state
-                            if visual_state.get('status') == 'passed'
-                            and visual_state.get('sourceRevision') == reviewed_revision
-                            else None
-                        )
-                        execution_event({'phase': 'export', 'status': 'started',
-                                         'message': '正在生成 PPTX/PDF 文件'})
-                    else:
-                        if not (visual_state.get('status') == 'passed'
-                                and visual_state.get('sourceRevision') == reviewed_revision):
-                            execution_event({'phase': 'validate', 'status': 'started',
-                                             'message': '正在渲染最终稿并进行 AI 视觉审稿'})
-                            async with LLM_LIMIT:
-                                reviewed = await visual_pipeline.export_reviewed(
-                                    store, project_id, folder, request, validation_progress,
-                                    checkpoint=checkpoint, save_checkpoint=checkpoint_save, on_event=execution_event,
-                                    assert_current=lambda: assert_current_job(identifier, project_id), publish=True,
-                                )
-                            reviewed_revision = reviewed['revision']
-                            checkpoint = read(cp_path) if cp_path.is_file() else (checkpoint or {})
-                            checkpoint = {**checkpoint, 'stage': 'export', '_committedRevision': reviewed_revision}
-                            checkpoint_save(checkpoint)
-                            visual_summary = reviewed['visualReview']
-                            metadata = reviewed
-                            execution_event({'phase': 'export', 'status': 'completed',
-                                             'message': f'已生成 {metadata["pageCount"]} 页 PPTX/PDF 文件'})
-                            break
-                        else:
-                            visual_summary = visual_state
-                        execution_event({'phase': 'export', 'status': 'started',
-                                         'message': '视觉审稿通过，正在生成 PPTX/PDF 文件'})
-                    # Export uses render/native workers, not a model connection.
-                    # Holding LLM_LIMIT here serialized unrelated generations.
-                    metadata = await pptd_exports.export_document(store, project_id, folder, export_progress)
-                    if visual_summary:
-                        metadata['visualReview'] = visual_summary
-                    execution_event({'phase': 'export', 'status': 'completed',
-                                     'message': f'已生成 {metadata["pageCount"]} 页 PPTX/PDF 文件'})
-                    break
-                except ValueError as exc:
-                    issues = getattr(exc, 'issues', None)
-                    if (issues and autofit_attempts < policy.layout_autofit_budget
-                            and getattr(exc, 'generation_context', {}).get('phase') != 'visual'):
-                        fitted = autofit_document_for_export(store, project_id, exc, current_revision)
-                    else:
-                        fitted = None
-                    if fitted:
-                        autofit_attempts += 1
-                        current_revision = fitted['revision']
-                        if checkpoint:
-                            checkpoint = {**checkpoint, '_committedRevision': current_revision}
-                            if request.kind != 'render':
-                                checkpoint['_visualReview'] = None
-                            checkpoint_save(checkpoint)
-                        progress(60, f'浏览器实测发现 {len(issues)} 项文字溢出，正在按实际尺寸自动适配')
-                        execution_event({'phase': 'validate', 'status': 'retrying', 'attempt': autofit_attempts,
-                                         'message': f'浏览器实测发现 {len(issues)} 项文字溢出，正在自动缩放对应文本框并重新检查。'})
-                        continue
-                    if not issues or request.kind == 'render' or getattr(exc, 'generation_context', {}).get('phase') == 'visual':
-                        raise
-                    render_attempts += 1
-                    mapped = [{**item, 'location': item.get('location') or item.get('page') or 'document'} for item in issues]
-                    fingerprint = json.dumps(mapped, sort_keys=True)
-                    checkpoint = {**(checkpoint or {}), 'externalIssues': mapped, '_sourceExisting': source_existing, '_visualReview': None}
-                    checkpoint_save(checkpoint)
-                    if fingerprint in seen_issues or render_attempts >= policy.render_repair_budget:
-                        raise ValueError('渲染检查仍未通过，已保留文档和检查点。' + str(exc)) from exc
-                    seen_issues.add(fingerprint)
-                    progress(60, f'浏览器/导出检查发现 {len(issues)} 项问题，正在第 {render_attempts} 轮修复')
-                    execution_event({'phase': 'validate', 'status': 'retrying', 'attempt': render_attempts, 'message': f'排版与导出检查发现 {len(issues)} 项问题，正在修复对应页面'})
-            project = assert_current_job(identifier, project_id)
-            if metadata['revision'] != store.read(project_id)['revision']:
-                raise RevisionConflict('导出期间文档已变化，旧文件未发布，请重新导出。')
-            base = f'{PREFIX}/artifacts/{identifier}'
-            warnings = [*metadata.get('warnings', []), *result.get('generationMeta', {}).get('research', {}).get('warnings', []), *result.get('generationMeta', {}).get('assetWarnings', [])]
-            artifact = {'id': identifier, 'revision': metadata['revision'], 'pptdRevision': metadata['revision'], 'pptxUrl': base + '/' + metadata['pptx'], 'pdfUrl': base + '/' + metadata['pdf'], 'sourceUrl': base + '/' + metadata['source'], 'reportUrl': base + '/' + metadata['report'], 'previewUrls': [base + '/' + name for name in metadata['previews']], 'warnings': list(dict.fromkeys(warnings))}
-            meta = result.get('generationMeta', {})
-            visual_review = metadata.get('visualReview')
-            meta['validation'] = {**meta.get('validation', {}), 'status': 'render-passed', 'renderRequired': False,
-                                  'revision': metadata['revision'], 'reportUrl': artifact['reportUrl'],
-                                  **({'visualReview': visual_review} if visual_review else {})}
-            project.update(artifact=artifact, generationMeta=meta, phase='ready', activeJobId=None, contentGenerated=True, updatedAt=time.time())
-            reply = (
-                f"演示文件已生成，共 {metadata['pageCount']} 页；整稿及全部单页已通过 AI 视觉审查，预览、可编辑 PPTX、PDF 和 PPTD 源文件已就绪。"
-                if visual_review else
-                f"演示文件已生成，共 {metadata['pageCount']} 页；本次为导出操作，未在导出阶段执行 AI 视觉审稿，预览、PPTX、PDF 和 PPTD 源文件已就绪。"
-            )
-            project['messages'] = [*project.get('messages', []), {'id': uuid4().hex, 'role': 'assistant', 'text': reply}][-1000:]
-            save(folder / 'metadata.json', artifact)
-            save(project_path(project_id), project)
-            execution = record_event(read(job_path(identifier)).get('execution'), {'phase': 'done', 'status': 'completed', 'message': f'共 {metadata["pageCount"]} 页，演示文件已就绪'})
-            update_job(identifier, status='completed', stage=100, message='生成完成', recoverable=False, execution=execution, result={'artifact': artifact, 'reply': reply, 'project': hydrate_project(project)})
-    except asyncio.CancelledError:
-        if read(job_path(identifier))['status'] != 'cancelled':
-            update_job(identifier, status='interrupted', message='任务中断，检查点已保留。', recoverable=True,
-                       execution=terminal_execution(read(job_path(identifier)).get('execution'), 'interrupted', '任务中断，检查点已保留'))
-        finish_project_job(identifier)
-        raise
-    except Exception as exc:
-        if isinstance(exc, pptd_generation.GenerationIncomplete):
-            checkpoint_save(exc.checkpoint)
-        current = read(job_path(identifier))
-        message, diagnostic, context = diagnose_error(exc, current.get('execution', {}).get('phase', 'context'),
-                                                      resumable=cp_path.is_file())
-        if diagnostic.get('issues') and cp_path.is_file():
-            plan = read(cp_path).get('plan', {})
-            paths = plan.get('document', {}).get('pages', [])
-            for issue in diagnostic['issues']:
-                path = issue.get('page') or next((p for p in paths if issue.get('location', '').startswith(p + '#') or issue.get('location') == p), None)
-                if path in paths:
-                    index = paths.index(path)
-                    issue['pageIndex'] = index
-                    issue['pageTitle'] = plan.get('pages', [])[index].get('title', '') if index < len(plan.get('pages', [])) else ''
-        logging.getLogger(__name__).error('PPTD job %s failed: %s (%s)', identifier, diagnostic['code'], ', '.join(diagnostic['exceptionTypes']))
-        update_job(identifier, status='failed', message=message, error=message, diagnostic=diagnostic, recoverable=True,
-                   execution=terminal_execution(current.get('execution'), 'failed', message, context))
-        finish_project_job(identifier)
-    finally:
-        await telemetry.flush()
-        TASKS.pop(identifier, None)
 
 
 @app.post(PREFIX + '/projects/{identifier}/pptd/import-template')

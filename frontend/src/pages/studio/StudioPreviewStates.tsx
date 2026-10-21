@@ -1,5 +1,6 @@
 import { ArrowUpRight, Layers, X } from 'lucide-react';
 
+import type { StudioJob } from './api';
 import type { PptdVersion, Project } from './model';
 import { SlideDraft } from './SlideDraft';
 
@@ -59,10 +60,12 @@ export function StudioLegacyPreview({
 export function StudioEmptyState({
 	loading,
 	canStop,
+	draft,
 	onFocus,
 }: {
 	loading: boolean;
 	canStop: boolean;
+	draft?: StudioJob['draftPreview'];
 	onFocus: () => void;
 }) {
 	return (
@@ -87,6 +90,27 @@ export function StudioEmptyState({
 					? '页面生成后会在这里展示，保留文字、图形和图表的编辑能力。'
 					: '从左侧输入主题开始，或从工作记录中继续创作。'}
 			</p>
+			{draft?.pages.length ? (
+				<div className="pptd-draft-preview" aria-label="页面草稿预览">
+					<div>
+						<strong>草稿预览</strong>
+						<span>
+							{draft.completedPages}/{draft.totalPages} 页已保存
+						</span>
+					</div>
+					<ol className="pptd-draft-pages">
+						{draft.pages.map((page) => (
+							<li
+								className={`pptd-draft-page is-${page.status}`}
+								key={`${page.index}-${page.path}`}
+							>
+								<small>{page.index + 1}</small>
+								<span>{page.title}</span>
+							</li>
+						))}
+					</ol>
+				</div>
+			) : null}
 			{!canStop && !loading && (
 				<button className="pptd-secondary" onClick={onFocus}>
 					写下第一个想法

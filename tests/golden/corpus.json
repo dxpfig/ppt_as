@@ -1,6 +1,36 @@
 {
 	"version": 1,
 	"updatedAt": "2026-10-21",
+	"fixtures": {
+		"short-basic": {
+			"path": "inputs/short-basic.md",
+			"sha256": "d8abef81d2e87c041a1d1e1fd98a3d88994f3aacc540b13ea4b2efbfcad88f93"
+		},
+		"management-report": {
+			"path": "inputs/management-report.md",
+			"sha256": "3e4ebedbabc126a5f07de3e8dd337a68e3b1d492b3724c8bd998f552765367e0"
+		},
+		"long-report": {
+			"path": "inputs/long-report.md",
+			"sha256": "d8ea201403dfe571c2d683df9bd5fd630843d818b15a15997dce16b57de6d6e9"
+		},
+		"structured-data": {
+			"path": "inputs/structured-data.json",
+			"sha256": "5c325079fe7de28638af4942cbc36ed38f62465abaff194cee684b2975a6d929"
+		},
+		"knowledge-base": {
+			"path": "inputs/knowledge-base.md",
+			"sha256": "2dfcb99b6401eff34b569697c97d83244d5bb70b2770432f2a5e3ec30a7304c2"
+		},
+		"page-actions": {
+			"path": "inputs/page-actions.json",
+			"sha256": "7ebe793153f3e7240efea8cb2b64c35269399b2fe341ea2ea6ffcced5a52773d"
+		},
+		"company-template": {
+			"path": "inputs/company-template.pptx",
+			"sha256": "5eb00c46d77a7907446dc18a6e8087fdf4578a48911252d4448e505df1232660"
+		}
+	},
 	"scenarios": [
 		{
 			"id": "short-basic",
@@ -8,6 +38,7 @@
 			"pages": 4,
 			"template": false,
 			"inputs": ["prompt"],
+			"fixtures": ["short-basic"],
 			"assertions": ["pptd-v2", "one-control-judgement-per-page", "export-openable"]
 		},
 		{
@@ -16,6 +47,7 @@
 			"pages": 5,
 			"template": false,
 			"inputs": ["prompt", "audience", "scenario"],
+			"fixtures": ["short-basic"],
 			"assertions": ["planned-page-count", "speaker-notes-opt-in", "export-openable"]
 		},
 		{
@@ -24,6 +56,7 @@
 			"pages": 20,
 			"template": false,
 			"inputs": ["prompt", "management-report"],
+			"fixtures": ["management-report"],
 			"assertions": ["narrative-coverage", "chart-table-preservation", "visual-review"]
 		},
 		{
@@ -32,6 +65,7 @@
 			"pages": 32,
 			"template": false,
 			"inputs": ["prompt", "long-reference"],
+			"fixtures": ["long-report"],
 			"assertions": [
 				"complete-plan",
 				"all-pages-written",
@@ -45,6 +79,7 @@
 			"pages": 12,
 			"template": true,
 			"inputs": ["prompt", "company-pptx"],
+			"fixtures": ["company-template"],
 			"assertions": [
 				"cover-reuse",
 				"closing-reuse",
@@ -58,6 +93,7 @@
 			"pages": 6,
 			"template": false,
 			"inputs": ["structured-data", "formula-reference"],
+			"fixtures": ["structured-data"],
 			"assertions": ["chart-values-immutable", "table-relationships", "formula-export"]
 		},
 		{
@@ -66,6 +102,7 @@
 			"pages": 8,
 			"template": false,
 			"inputs": ["company-knowledge-base"],
+			"fixtures": ["knowledge-base"],
 			"assertions": ["citation-provenance", "no-public-search", "tenant-isolation"]
 		},
 		{
@@ -74,6 +111,7 @@
 			"pages": 15,
 			"template": false,
 			"inputs": ["reference-over-context-budget"],
+			"fixtures": ["long-report"],
 			"assertions": ["lossless-chunking", "context-request-budget", "checkpoint-complete"]
 		},
 		{
@@ -82,6 +120,7 @@
 			"pages": 20,
 			"template": false,
 			"inputs": ["prompt"],
+			"fixtures": ["short-basic", "long-report"],
 			"fault": "cancel-mid-pages",
 			"assertions": [
 				"completed-pages-preserved",
@@ -95,6 +134,7 @@
 			"pages": 5,
 			"template": false,
 			"inputs": ["prompt"],
+			"fixtures": ["short-basic"],
 			"fault": "model-timeout",
 			"assertions": ["actionable-error", "no-artifact", "checkpoint-preserved"]
 		},
@@ -104,6 +144,7 @@
 			"pages": 5,
 			"template": false,
 			"inputs": ["prompt"],
+			"fixtures": ["short-basic"],
 			"fault": "vision-unavailable",
 			"assertions": ["no-unreviewed-publication", "explicit-diagnostic"]
 		},
@@ -113,6 +154,7 @@
 			"pages": 8,
 			"template": true,
 			"inputs": ["prompt", "local-assets"],
+			"fixtures": ["short-basic"],
 			"offline": true,
 			"assertions": ["no-public-network", "local-fonts", "export-openable"]
 		},
@@ -122,6 +164,7 @@
 			"pages": 3,
 			"template": true,
 			"inputs": ["prompt", "page-design-request"],
+			"fixtures": ["management-report", "page-actions"],
 			"assertions": [
 				"repair-current-page-only",
 				"review-current-page-only",

@@ -1,11 +1,7 @@
 import {
 	ArrowUpRight,
 	ChevronLeft,
-	Check,
 	ChevronRight,
-	Download,
-	Eye,
-	FileText,
 	History,
 	Layers,
 	LoaderCircle,
@@ -14,19 +10,16 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 	Pencil,
-	RefreshCw,
 	RotateCcw,
 	Sparkles,
 	Square,
-	Upload,
-	X,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 
 import { studioApi, StudioError } from './api';
-import type { DesignMode, ReferenceBudget, ReferenceFile, Scenario, Workflow } from './api';
+import type { ReferenceBudget, ReferenceFile } from './api';
 import { PageActions } from './PageActions';
 import { PptdJobStatus } from './PptdJobStatus';
 import {
@@ -39,14 +32,13 @@ import {
 } from './pptdState';
 import type { GenerationPreferences } from './pptdState';
 import { PptdThumbnail } from './PptdThumbnail';
-import {
-	readReferenceDocument,
-	REFERENCE_FILE_ACCEPT,
-	REFERENCE_FILE_MAX_BYTES,
-} from './referenceDocument';
+import { readReferenceDocument } from './referenceDocument';
+import { StudioCreationSettings } from './StudioCreationSettings';
 import { StudioDialogs } from './StudioDialogs';
 import { StudioExportBar } from './StudioExportBar';
+import { formatCharacters } from './studioFormat';
 import { StudioHeader } from './StudioHeader';
+import { StudioMaterialsPanel } from './StudioMaterialsPanel';
 import { StudioEmptyState, StudioLegacyPreview, StudioVersionHistory } from './StudioPreviewStates';
 import { usePptdStudio } from './usePptdStudio';
 import { useMediaQuery, usePageWheel, usePresentation } from './usePreviewNavigation';
@@ -55,16 +47,6 @@ import './studio.css';
 import './pptd-studio.css';
 import './studio-theme.css';
 
-const scenarios: { value: Scenario; label: string }[] = [
-	{ value: 'auto', label: '自动识别场景' },
-	{ value: 'management-report', label: '工作汇报' },
-	{ value: 'analysis-decision', label: '分析决策' },
-	{ value: 'business-plan', label: '商业计划' },
-	{ value: 'tech-engineering', label: '技术工程' },
-	{ value: 'academic-research', label: '学术研究' },
-	{ value: 'education-training', label: '教育培训' },
-	{ value: 'brand-creative', label: '品牌创意' },
-];
 const statusLabels = {
 	queued: '等待开始',
 	running: '正在创作',
@@ -73,15 +55,6 @@ const statusLabels = {
 	cancelled: '已停止',
 	interrupted: '任务中断',
 };
-function formatCharacters(value: number) {
-	if (value >= 10000) return `${(value / 10000).toFixed(value >= 100000 ? 0 : 1)} 万字`;
-	return `${value.toLocaleString('zh-CN')} 字`;
-}
-function formatBudgetSource(source: string) {
-	if (source.includes('model-api')) return '服务端发现';
-	if (source.includes('fallback')) return '配置回退预算，未获服务端确认';
-	return '配置预算';
-}
 type ReferenceAttachment = ReferenceFile & { text?: string };
 function composeReferenceText(manual: string, attachments: { name: string; text?: string }[]) {
 	let result = manual.trim();
@@ -606,497 +579,63 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 						</button>
 					</div>
 					<div className="pptd-brief-scroll">
-						<div className="pptd-intro">
-							<h1>
-								{project.pptd ? '让表达更进一步' : '把你的想法，变成精彩演示。'}
-							</h1>
-							<p>
-								{project.pptd
-									? '描述修改目标，或直接在右侧选择元素编辑。'
-									: '输入主题、材料或完整大纲，自动规划内容和视觉设计。'}
-							</p>
-						</div>
-						<div
-							className={`pptd-model ${health?.llmConfigured ? '' : 'is-unavailable'}`}
-						>
-							<span className="pptd-status-dot" />
-							<div>
-								<strong>
-									{connected ? health?.model || '读取模型配置…' : '服务未连接'}
-								</strong>
-								<small>
-									{connected
-										? `${health?.provider || '模型服务'} · ${health?.llmConfigured ? '已配置' : '未配置模型凭据'}`
-										: '检查后端服务后重新连接'}
-								</small>
-							</div>
-							<button
-								className="studio-icon"
-								title="刷新模型状态"
-								aria-label="刷新模型状态"
-								onClick={() => void studio.reconnect()}
-							>
-								<RefreshCw size={14} />
-							</button>
-						</div>
-						{studio.error && (
-							<div className="pptd-error" role="alert">
-								<span>{studio.error}</span>
-								<button
-									className="studio-icon"
-									aria-label="关闭错误提示"
-									onClick={() => studio.setError('')}
-								>
-									<X size={14} />
-								</button>
-							</div>
-						)}
-						{notice && (
-							<div className="pptd-notice" role="status">
-								<Check size={14} />
-								{notice}
-							</div>
-						)}
 						<form onSubmit={(event) => void submit(event)}>
-							<label className="pptd-field">
-								<span>{project.pptd ? '修改要求' : '演示主题或内容'}</span>
-								<textarea
-									ref={inputRef}
-									value={prompt}
-									onChange={(event) => setPrompt(event.target.value)}
-									disabled={busy || legacy}
-									rows={5}
-									placeholder={
-										project.pptd
-											? '例如：让这页突出核心结论，用图表解释数据变化…'
-											: '例如：面向管理团队的季度业务复盘，重点呈现增长、挑战与下一步计划…'
-									}
-								/>
-							</label>
-							<div className="pptd-field-grid">
-								<label className="pptd-field">
-									<span>创作方式</span>
-									<select
-										value={preferences.workflow}
-										disabled={busy || legacy}
-										onChange={(event) =>
-											update('workflow', event.target.value as Workflow)
-										}
-									>
-										<option value="new">新建演示</option>
-										<option value="edit" disabled={!project.pptd}>
-											修改当前演示
-										</option>
-										<option value="recreate">参考重建</option>
-									</select>
-								</label>
-								<label className="pptd-field">
-									<span>页数</span>
-									<div className="pptd-page-count">
-										<select
-											aria-label="页数模式"
-											value={
-												preferences.pageCount === 'auto' ? 'auto' : 'custom'
-											}
-											disabled={busy}
-											onChange={(event) =>
-												update(
-													'pageCount',
-													event.target.value === 'auto'
-														? 'auto'
-														: String(project.pptd?.pageCount || 10),
-												)
-											}
-										>
-											<option value="auto">自动规划</option>
-											<option value="custom">指定页数</option>
-										</select>
-										{preferences.pageCount !== 'auto' && (
-											<input
-												aria-label="指定页数"
-												type="number"
-												min={1}
-												max={60}
-												value={preferences.pageCount}
-												onChange={(event) =>
-													update('pageCount', event.target.value)
-												}
-												disabled={busy}
-											/>
-										)}
-									</div>
-								</label>
-								<label className="pptd-field">
-									<span>使用场景</span>
-									<select
-										value={preferences.scenario}
-										disabled={busy}
-										onChange={(event) =>
-											update('scenario', event.target.value as Scenario)
-										}
-									>
-										{scenarios.map((item) => (
-											<option key={item.value} value={item.value}>
-												{item.label}
-											</option>
-										))}
-									</select>
-								</label>
-								<label className="pptd-field">
-									<span>使用方式</span>
-									<select
-										value={preferences.usage}
-										disabled={busy}
-										onChange={(event) =>
-											update(
-												'usage',
-												event.target.value as 'reading' | 'presentation',
-											)
-										}
-									>
-										<option value="presentation">现场演讲</option>
-										<option value="reading">独立阅读</option>
-									</select>
-								</label>
-							</div>
-							<label className="pptd-field">
-								<span>受众</span>
-								<input
-									value={preferences.audience}
-									disabled={busy}
-									onChange={(event) => update('audience', event.target.value)}
-									placeholder="例如：管理团队、客户、学生"
-								/>
-							</label>
-							<label className="pptd-field">
-								<span>视觉设计</span>
-								<select
-									value={preferences.designMode}
-									disabled={busy}
-									onChange={(event) =>
-										update('designMode', event.target.value as DesignMode)
-									}
-								>
-									<option value="autonomous">自主设计 · 根据内容选择</option>
-									<option value="design-system">指定设计规范</option>
-									<option value="template">使用公司模板</option>
-									<option value="style-reference">参考视觉风格</option>
-								</select>
-							</label>
-							{['design-system', 'style-reference'].includes(
-								preferences.designMode,
-							) && (
-								<label className="pptd-field">
-									<span>
-										{preferences.designMode === 'design-system'
-											? '设计规范'
-											: '风格说明'}
-									</span>
-									<textarea
-										rows={3}
-										value={preferences.designSystem}
-										disabled={busy}
-										onChange={(event) =>
-											update('designSystem', event.target.value)
-										}
-										placeholder="描述字体、配色、排版与希望参考的视觉风格"
-									/>
-								</label>
-							)}
-							{preferences.designMode === 'template' && (
-								<div className="pptd-template">
-									<label className="pptd-field">
-										<span>公司模板</span>
-										<select
-											aria-label="公司模板"
-											value={templateId}
-											disabled={busy}
-											onChange={(event) => setTemplateId(event.target.value)}
-										>
-											<option value="">选择或上传模板</option>
-											{studio.templates.map((item) => (
-												<option key={item.id} value={item.id}>
-													{item.name}
-												</option>
-											))}
-										</select>
-									</label>
-									<button
-										type="button"
-										className="pptd-secondary"
-										disabled={busy}
-										onClick={() => templateInput.current?.click()}
-									>
-										<Upload size={14} />
-										上传 PPTX / POTX
-									</button>
-									<input
-										ref={templateInput}
-										type="file"
-										accept=".pptx,.potx"
-										hidden
-										onChange={(event) => void uploadTemplate(event)}
-									/>
-									{template?.warnings.map((warning) => (
-										<p className="pptd-hint" key={warning}>
-											{warning}
-										</p>
-									))}
-								</div>
-							)}
-							{(preferences.workflow === 'recreate' ||
-								preferences.designMode === 'style-reference' ||
-								images.length > 0) && (
-								<div className="pptd-reference-images">
-									<span>视觉参考</span>
-									<p>添加截图或设计参考图，让模型读取画面内容与风格。</p>
-									<button
-										type="button"
-										className="pptd-secondary"
-										disabled={busy || readingImages}
-										onClick={() => imageInput.current?.click()}
-									>
-										<Upload size={14} />
-										{readingImages ? '正在读取图片…' : '添加参考图片'}
-									</button>
-									<input
-										ref={imageInput}
-										aria-label="参考图片文件"
-										type="file"
-										accept="image/png,image/jpeg,image/webp"
-										multiple
-										hidden
-										onChange={(event) => void readImages(event)}
-									/>
-									<div>
-										{images.map((image, index) => (
-											<figure key={`${image.name}-${index}`}>
-												<img src={image.imageData} alt={image.name} />
-												<figcaption>{image.name}</figcaption>
-												<button
-													type="button"
-													className="studio-icon"
-													aria-label={`移除参考图 ${image.name}`}
-													disabled={busy || readingImages}
-													onClick={() =>
-														setImages((previous) =>
-															previous.filter(
-																(_, item) => item !== index,
-															),
-														)
-													}
-												>
-													<X size={12} />
-												</button>
-											</figure>
-										))}
-									</div>
-								</div>
-							)}
-							{importWarnings.length > 0 && (
-								<details className="pptd-import-warnings">
-									<summary>
-										<strong>模板导入说明</strong>
-										<span>
-											{importWarnings.length} 类差异
-											{importWarningCount > importWarnings.length
-												? ` · 影响 ${importWarningCount} 处`
-												: ''}
-										</span>
-										<ChevronRight size={14} />
-									</summary>
-									<div>
-										<p>
-											模板已可用于生成；以下能力会保留为可编辑内容，但复杂样式可能近似呈现。
-										</p>
-										<ul>
-											{importWarnings.map((item) => (
-												<li key={item.message}>
-													<span>{item.message}</span>
-													{item.count > 1 && (
-														<strong>×{item.count}</strong>
-													)}
-												</li>
-											))}
-										</ul>
-									</div>
-								</details>
-							)}
-							<details className="pptd-materials">
-								<summary>
-									<FileText size={14} />
-									参考材料与内容选项
-								</summary>
-								<label className="pptd-field">
-									<span>
-										参考资料
-										{referenceBudget
-											? ` · ${formatCharacters(referenceText.length)} / ${formatCharacters(referenceBudget.maxCharacters)}`
-											: ''}
-									</span>
-									<textarea
-										rows={5}
-										value={preferences.references}
-										disabled={busy || readingReference}
-										onChange={(event) =>
-											update('references', event.target.value)
-										}
-										placeholder="粘贴已有内容、大纲、数据或参考说明"
-									/>
-								</label>
-								<button
-									type="button"
-									className="pptd-secondary"
-									disabled={busy || readingReference || referenceBudgetLoading}
-									onClick={() => referenceInput.current?.click()}
-								>
-									<Upload size={14} />
-									{readingReference ? '正在解析资料…' : '添加文本资料'}
-								</button>
-								<input
-									ref={referenceInput}
-									type="file"
-									aria-label="参考文本文件，支持 TXT、Markdown、CSV、JSON 和 DOCX"
-									accept={REFERENCE_FILE_ACCEPT}
-									hidden
-									onChange={(event) => void readReference(event)}
-								/>
-								{referenceAttachments.length > 0 && (
-									<div className="pptd-reference-files">
-										{referenceAttachments.map((attachment) => (
-											<article key={attachment.id}>
-												<div
-													className={`pptd-reference-file-icon ${
-														attachment.extension === '.docx'
-															? 'is-word'
-															: ''
-													}`}
-													aria-hidden="true"
-												>
-													<FileText size={18} />
-													<small>
-														{attachment.extension === '.docx'
-															? 'DOCX'
-															: 'TEXT'}
-													</small>
-												</div>
-												<div className="pptd-reference-file-copy">
-													<strong>{attachment.name}</strong>
-													<small>
-														<Check size={11} />
-														已添加 ·{' '}
-														{formatCharacters(attachment.characters)}
-													</small>
-												</div>
-												<div className="pptd-reference-file-actions">
-													<button
-														type="button"
-														className="studio-icon"
-														aria-label={`查看参考资料 ${attachment.name}`}
-														title="查看解析内容"
-														disabled={previewingReference}
-														onClick={() =>
-															void previewReference(attachment)
-														}
-													>
-														<Eye size={14} />
-													</button>
-													<a
-														className="studio-icon"
-														href={attachment.downloadUrl}
-														download={attachment.name}
-														aria-label={`下载参考资料 ${attachment.name}`}
-														title="下载原文件"
-													>
-														<Download size={14} />
-													</a>
-													<button
-														type="button"
-														className="studio-icon"
-														aria-label={`移除参考资料 ${attachment.name}`}
-														title="移除"
-														disabled={busy || readingReference}
-														onClick={() =>
-															void removeReferenceAttachment(
-																attachment.name,
-															)
-														}
-													>
-														<X size={12} />
-													</button>
-												</div>
-											</article>
-										))}
-									</div>
-								)}
-								<p className="pptd-hint">
-									{referenceBudget
-										? `当前模型上下文 ${referenceBudget.contextTokens.toLocaleString('zh-CN')} tokens（${formatBudgetSource(referenceBudget.source)}），` +
-											`参考资料上限 ${formatCharacters(referenceBudget.maxCharacters)}，` +
-											`单文件上限 ${Math.round(referenceBudget.maxFileBytes / 1024 / 1024)} MB。`
-										: referenceBudgetLoading
-											? '正在读取当前模型的上下文预算…'
-											: `暂时无法读取模型预算，请稍后重试。原始文件上限仍为 ${Math.round(REFERENCE_FILE_MAX_BYTES / 1024 / 1024)} MB。`}
-									DOCX 会读取标题、段落、列表和表格中的正文。
-								</p>
-								<label className="pptd-check">
-									<input
-										type="checkbox"
-										checked={preferences.allowResearch}
-										disabled={busy}
-										onChange={(event) =>
-											update('allowResearch', event.target.checked)
-										}
-									/>
-									允许检索外部资料
-								</label>
-								<label className="pptd-check">
-									<input
-										type="checkbox"
-										checked={preferences.speakerNotes}
-										disabled={busy}
-										onChange={(event) =>
-											update('speakerNotes', event.target.checked)
-										}
-									/>
-									生成演讲备注
-								</label>
-								<label className="pptd-check">
-									<input
-										type="checkbox"
-										checked={preferences.animationRequested}
-										disabled={busy}
-										onChange={(event) =>
-											update('animationRequested', event.target.checked)
-										}
-									/>
-									添加演示动画
-								</label>
-							</details>
-							<label className="pptd-check">
-								<input
-									type="checkbox"
-									checked={expertMode}
-									disabled={busy}
-									onChange={(event) => setExpertMode(event.target.checked)}
-								/>
-								PPT 专家（原生工作流）
-							</label>
-							{project.pptd && preferences.workflow === 'edit' && (
-								<label className="pptd-field">
-									<span>修改范围</span>
-									<select
-										value={scope}
-										disabled={busy}
-										onChange={(event) =>
-											setScope(event.target.value as 'page' | 'deck')
-										}
-									>
-										<option value="page">当前第 {pageIndex + 1} 页</option>
-										<option value="deck">整个演示</option>
-									</select>
-								</label>
-							)}
+							<StudioCreationSettings
+								project={project}
+								health={health}
+								connected={connected}
+								busy={busy}
+								legacy={legacy}
+								error={studio.error}
+								notice={notice}
+								prompt={prompt}
+								preferences={preferences}
+								images={images}
+								readingImages={readingImages}
+								templateId={templateId}
+								templates={studio.templates}
+								template={template}
+								inputRef={inputRef}
+								templateInput={templateInput}
+								imageInput={imageInput}
+								onPromptChange={setPrompt}
+								onPreferenceChange={update}
+								onReconnect={() => void studio.reconnect()}
+								onCloseError={() => studio.setError('')}
+								onTemplateChange={setTemplateId}
+								onUploadTemplate={(event) => void uploadTemplate(event)}
+								onReadImages={(event) => void readImages(event)}
+								onRemoveImage={(index) =>
+									setImages((previous) =>
+										previous.filter((_, item) => item !== index),
+									)
+								}
+							/>
+							<StudioMaterialsPanel
+								busy={busy}
+								preferences={preferences}
+								onPreferenceChange={update}
+								importWarnings={importWarnings}
+								importWarningCount={importWarningCount}
+								referenceText={referenceText}
+								referenceBudget={referenceBudget}
+								referenceBudgetLoading={referenceBudgetLoading}
+								readingReference={readingReference}
+								referenceAttachments={referenceAttachments}
+								previewingReference={previewingReference}
+								referenceInput={referenceInput}
+								onReferenceFileChange={(event) => void readReference(event)}
+								onPreviewReference={(attachment) =>
+									void previewReference(attachment)
+								}
+								onRemoveReference={(name) => void removeReferenceAttachment(name)}
+								expertMode={expertMode}
+								onExpertModeChange={setExpertMode}
+								hasDocument={hasDocument}
+								pageIndex={pageIndex}
+								scope={scope}
+								onScopeChange={setScope}
+							/>
 							<button
 								className="pptd-primary pptd-generate"
 								type="submit"
@@ -1416,6 +955,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 						<StudioEmptyState
 							loading={studio.loading}
 							canStop={studio.canStop}
+							draft={job?.draftPreview}
 							onFocus={() => inputRef.current?.focus()}
 						/>
 					)}

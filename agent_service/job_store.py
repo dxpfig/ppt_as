@@ -42,7 +42,54 @@ class JobStore:
         if not isinstance(value, dict):
             raise ValueError('Job state must be a JSON object')
         value['stageMetrics'] = stage_metrics(value.get('execution'))
+        draft = self._draft_preview(identifier, value)
+        if draft:
+            value['draftPreview'] = draft
+        else:
+            value.pop('draftPreview', None)
         return value
+
+    def _draft_preview(self, identifier: str, job: dict) -> dict | None:
+        if job.get('status') not in ('queued', 'running', 'interrupted'):
+            return None
+        checkpoint_path = self.root / 'checkpoints' / f'{self._identifier(identifier)}.json'
+        if not checkpoint_path.is_file():
+            return None
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        plan = checkpoint.get('plan') or {}
+        planned = plan.get('pages') if isinstance(plan, dict) else None
+        if not isinstance(planned, list) or not planned:
+            return None
+        completed = {
+            item.get('path')
+            for item in checkpoint.get('pages') or []
+            if isinstance(item, dict) and isinstance(item.get('data'), dict)
+        }
+        paths = (plan.get('document') or {}).get('pages') or []
+        pages = []
+        for index, item in enumerate(planned[:60]):
+            if not isinstance(item, dict):
+                item = {}
+            path = item.get('path') or (
+                paths[index] if index < len(paths) and isinstance(paths[index], str) else ''
+            )
+            pages.append(
+                {
+                    'path': path,
+                    'index': index,
+                    'title': str(item.get('title') or f'第 {index + 1} 页')[:120],
+                    'status': 'ready' if path in completed else 'pending',
+                }
+            )
+        return {
+            'status': 'draft',
+            'completedPages': sum(page['status'] == 'ready' for page in pages),
+            'totalPages': len(pages),
+            'pages': pages,
+        }
 
     def save(self, identifier: str, job: dict) -> dict:
         if not isinstance(job, dict):

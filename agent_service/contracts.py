@@ -39,7 +39,7 @@ class ArtifactRecord(BaseModel):
     model_config = ConfigDict(extra='allow')
 
     id: str
-    revision: int = Field(ge=1)
+    revision: int = Field(default=0, ge=0)
     pptxUrl: str
     pdfUrl: str = ''
     sourceUrl: str = ''

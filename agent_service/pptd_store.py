@@ -24,6 +24,8 @@ from zipfile import ZipFile, ZIP_DEFLATED
 import yaml
 from pptd_engine.document import load_yaml, ProbeDumper, Yaml12SafeLoader
 
+from .contracts import DocumentRevision
+
 
 class RevisionConflict(ValueError):
     """The client's base revision is older than the authoritative document."""
@@ -209,7 +211,13 @@ class DocumentStore:
                 target.write_text(_serialize(value), encoding='utf-8')
             self._read_source(source)
             revision = previous['revision'] + 1 if previous else 1
-            version = {'id': version_id, 'revision': revision, 'label': str(label)[:300], 'createdAt': datetime.now(timezone.utc).isoformat(), 'pageCount': len(pages)}
+            version = DocumentRevision(
+                id=version_id,
+                revision=revision,
+                label=str(label)[:300],
+                createdAt=datetime.now(timezone.utc).isoformat(),
+                pageCount=len(pages),
+            ).model_dump()
             history = (previous['versions'] if previous else []) + [version]
             (version_dir / 'metadata.json').write_text(json.dumps({'revision': revision, 'versions': history}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
             # Flush the entire snapshot before making it reachable by readers.

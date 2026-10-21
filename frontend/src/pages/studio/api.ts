@@ -101,6 +101,17 @@ export type StudioJob = {
 	createdAt?: number;
 	updatedAt?: number;
 	execution?: JobExecution;
+	draftPreview?: {
+		status: 'draft';
+		completedPages: number;
+		totalPages: number;
+		pages: {
+			path: string;
+			index: number;
+			title: string;
+			status: 'ready' | 'pending';
+		}[];
+	};
 	diagnostic?: {
 		code?: string;
 		phase?: string;

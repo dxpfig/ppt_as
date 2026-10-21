@@ -1,5 +1,6 @@
 """Durable job persistence and transition tests."""
 import asyncio
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -131,6 +132,49 @@ class JobStoreTests(unittest.TestCase):
 
         self.assertEqual(stage_metrics(execution)['plan'], {'status': 'completed', 'seconds': 3.5})
         self.assertNotIn('pages', stage_metrics(execution))
+
+    def test_running_job_exposes_only_page_titles_and_draft_status(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = JobStore(root)
+            store.save(
+                'job',
+                {
+                    'id': 'job',
+                    'projectId': 'project',
+                    'status': 'running',
+                    'stage': 40,
+                    'message': '创作中',
+                },
+            )
+            (root / 'checkpoints').mkdir()
+            (root / 'checkpoints' / 'job.json').write_text(
+                json.dumps(
+                    {
+                        'plan': {
+                            'document': {'pages': ['pages/a.page', 'pages/b.page']},
+                            'pages': [
+                                {'path': 'pages/a.page', 'title': '开场'},
+                                {'path': 'pages/b.page', 'title': '结论'},
+                            ],
+                        },
+                        'pages': [
+                            {
+                                'path': 'pages/a.page',
+                                'data': {'elements': [], 'private': 'not-for-preview'},
+                            }
+                        ],
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            draft = store.read('job')['draftPreview']
+
+            self.assertEqual(draft['completedPages'], 1)
+            self.assertEqual(draft['totalPages'], 2)
+            self.assertEqual(draft['pages'][0]['title'], '开场')
+            self.assertNotIn('private', json.dumps(draft))
 
 
 class JobStreamTests(unittest.IsolatedAsyncioTestCase):
