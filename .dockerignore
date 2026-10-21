@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+node_modules
+frontend/node_modules
+backend/node_modules
+frontend/dist
+backend/dist
+packages/pptd-runtime/build
+runtime
+.remember
+.traces
+experiments
+tmp
+*.log
+.env
+!.env.example

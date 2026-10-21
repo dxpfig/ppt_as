@@ -1,0 +1,49 @@
+name: ppt-as
+
+services:
+    agent:
+        image: ${PPT_AS_AGENT_IMAGE:-ppt-as-agent:latest}
+        build:
+            context: ../..
+            dockerfile: deploy/docker/agent.Dockerfile
+        env_file:
+            - ../../.env
+        environment:
+            STUDIO_DATA_DIR: /app/runtime/studio
+            PPTD_CHROMIUM: /usr/bin/chromium
+        volumes:
+            - ppt-runtime:/app/runtime
+        expose:
+            - '8001'
+        restart: unless-stopped
+
+    backend:
+        image: ${PPT_AS_BACKEND_IMAGE:-ppt-as-backend:latest}
+        build:
+            context: ../..
+            dockerfile: deploy/docker/backend.Dockerfile
+        environment:
+            AGENT_SERVICE_URL: http://agent:8001
+            PORT: '3002'
+            HOST: 0.0.0.0
+        depends_on:
+            agent:
+                condition: service_healthy
+        expose:
+            - '3002'
+        restart: unless-stopped
+
+    frontend:
+        image: ${PPT_AS_FRONTEND_IMAGE:-ppt-as-frontend:latest}
+        build:
+            context: ../..
+            dockerfile: deploy/docker/frontend.Dockerfile
+        ports:
+            - '${PPT_AS_PORT:-8080}:80'
+        depends_on:
+            backend:
+                condition: service_healthy
+        restart: unless-stopped
+
+volumes:
+    ppt-runtime:

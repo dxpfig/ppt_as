@@ -1,0 +1,16 @@
+[Unit]
+Description=PPT AS service
+After=network.target docker.service
+
+[Service]
+Type=forking
+WorkingDirectory=/opt/ppt-as
+ExecStart=/opt/ppt-as/start.sh
+ExecStop=/opt/ppt-as/stop.sh
+Restart=on-failure
+RestartSec=10
+User=pptas
+Group=pptas
+
+[Install]
+WantedBy=multi-user.target
