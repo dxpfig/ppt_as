@@ -144,6 +144,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const [designOpen, setDesignOpen] = useState(false);
 	const [designPrompt, setDesignPrompt] = useState('');
 	const [dismissedPageAction, setDismissedPageAction] = useState<string | null>(null);
+	const [candidateBusy, setCandidateBusy] = useState<'apply' | 'discard' | null>(null);
 	const [notice, setNotice] = useState('');
 	const [deleteId, setDeleteId] = useState<string | null>(null);
 	useEffect(() => {
@@ -413,6 +414,35 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 		if (started) {
 			setDesignPrompt('');
 			setDesignOpen(false);
+		}
+	}
+	async function applyDesignCandidate() {
+		const candidate = pageAction?.candidate;
+		if (!candidate || !project.pptd || candidateBusy) return;
+		setCandidateBusy('apply');
+		try {
+			await studioApi.applyDesignCandidate(project.id, candidate.id, project.pptd.revision);
+			await studio.refreshProject();
+			setDismissedPageAction(job?.id ?? null);
+			setNotice('页面设计稿已应用，请重新导出以获取最新文件。');
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : '应用设计稿失败。');
+		} finally {
+			setCandidateBusy(null);
+		}
+	}
+	async function discardDesignCandidate() {
+		const candidate = pageAction?.candidate;
+		if (!candidate || candidateBusy) return;
+		setCandidateBusy('discard');
+		try {
+			await studioApi.discardDesignCandidate(project.id, candidate.id);
+			setDismissedPageAction(job?.id ?? null);
+			setNotice('页面设计稿已放弃，当前文档未改变。');
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : '放弃设计稿失败。');
+		} finally {
+			setCandidateBusy(null);
 		}
 	}
 	async function readReference(event: ChangeEvent<HTMLInputElement>) {
@@ -1453,6 +1483,51 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 												</li>
 											))}
 										</ol>
+									)}
+									{pageAction.candidate && (
+										<div className="pptd-design-candidate">
+											<img
+												src={pageAction.candidate.previewUrl}
+												alt="页面设计候选稿预览"
+											/>
+											<div>
+												<p>
+													设计稿尚未应用。确认后会保存为新版本，当前文档在确认前保持不变。
+												</p>
+												<button
+													type="button"
+													className="pptd-secondary"
+													disabled={!!candidateBusy}
+													onClick={() => void discardDesignCandidate()}
+												>
+													{candidateBusy === 'discard' ? (
+														<LoaderCircle
+															className="pptd-spin"
+															size={14}
+														/>
+													) : (
+														<X size={14} />
+													)}
+													放弃
+												</button>
+												<button
+													type="button"
+													className="pptd-primary"
+													disabled={!!candidateBusy}
+													onClick={() => void applyDesignCandidate()}
+												>
+													{candidateBusy === 'apply' ? (
+														<LoaderCircle
+															className="pptd-spin"
+															size={14}
+														/>
+													) : (
+														<Check size={14} />
+													)}
+													应用设计
+												</button>
+											</div>
+										</div>
 									)}
 								</section>
 							)}

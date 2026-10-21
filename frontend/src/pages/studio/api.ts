@@ -77,6 +77,13 @@ export type PageActionReport = {
 	issues: PageActionIssue[];
 	observations?: { pagePath: string; evidence: string }[];
 	model?: string;
+	candidate?: {
+		id: string;
+		baseRevision: number;
+		previewUrl: string;
+		applyUrl: string;
+		discardUrl: string;
+	};
 };
 export type StudioJob = {
 	id: string;
@@ -336,6 +343,16 @@ export const studioApi = {
 		request<unknown>(
 			`/projects/${encodeURIComponent(id)}/pptd/versions/${encodeURIComponent(versionId)}/restore`,
 			json('POST', { expectedRevision }),
+		),
+	applyDesignCandidate: (id: string, candidateId: string, expectedRevision: number) =>
+		request<unknown>(
+			`/projects/${encodeURIComponent(id)}/pptd/design-candidates/${encodeURIComponent(candidateId)}/apply`,
+			json('POST', { expectedRevision }),
+		),
+	discardDesignCandidate: (id: string, candidateId: string) =>
+		request<{ id: string; discarded: boolean }>(
+			`/projects/${encodeURIComponent(id)}/pptd/design-candidates/${encodeURIComponent(candidateId)}`,
+			{ method: 'DELETE' },
 		),
 	cancel: (id: string) =>
 		request<StudioJob>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),

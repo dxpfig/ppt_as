@@ -7,7 +7,10 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
+import time
+from uuid import uuid4
 
 import pymupdf
 
@@ -336,22 +339,95 @@ async def design_page(store, project_id: str, page_path: str, request, data_root
             if rendered.issues:
                 raise ValueError("页面设计稿仍有排版问题，原稿未被覆盖。")
         review = await _review_rendered(rendered, request, page_path)
-        committed = store.commit(
-            project_id,
-            candidate["document"],
-            candidate["pages"],
-            f"页面设计：{page_path}",
-            initial.state["revision"],
+        candidate_id = uuid4().hex
+        candidate_dir = design_candidate_dir(store.root, project_id, candidate_id)
+        candidate_dir.mkdir(parents=True)
+        CandidateSource(initial.source_root, candidate).snapshot(
+            project_id, candidate_dir / "source"
         )
-        return _report(
+        (candidate_dir / "preview.png").write_bytes(rendered.image)
+        metadata = {
+            "id": candidate_id,
+            "projectId": project_id,
+            "pagePath": page_path,
+            "baseRevision": initial.state["revision"],
+            "createdAt": time.time(),
+            "status": "pending",
+        }
+        (candidate_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report = _report(
             page_path,
             "design",
-            revision=committed["revision"],
+            revision=initial.state["revision"],
             status=review["status"],
             issues=review["issues"],
             observations=review.get("observations", []),
             model=review.get("model", ""),
         )
+        report["candidate"] = {
+            "id": candidate_id,
+            "baseRevision": initial.state["revision"],
+            "previewUrl": f"/api/studio/projects/{project_id}/pptd/design-candidates/{candidate_id}/preview",
+            "applyUrl": f"/api/studio/projects/{project_id}/pptd/design-candidates/{candidate_id}/apply",
+            "discardUrl": f"/api/studio/projects/{project_id}/pptd/design-candidates/{candidate_id}",
+        }
+        return report
+
+
+def design_candidate_dir(root: Path, project_id: str, candidate_id: str) -> Path:
+    if not project_id or not project_id.replace("-", "").replace("_", "").isalnum():
+        raise ValueError("无效的项目标识。")
+    if not candidate_id or not candidate_id.isalnum():
+        raise ValueError("无效的设计候选标识。")
+    return Path(root).resolve() / "design-candidates" / project_id / candidate_id
+
+
+def read_design_candidate(root: Path, project_id: str, candidate_id: str) -> tuple[Path, dict]:
+    folder = design_candidate_dir(root, project_id, candidate_id)
+    metadata_path = folder / "metadata.json"
+    if not metadata_path.is_file():
+        raise ValueError("设计候选不存在或已失效。")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("projectId") != project_id or metadata.get("id") != candidate_id:
+        raise ValueError("设计候选元数据不匹配。")
+    return folder, metadata
+
+
+def apply_design_candidate(
+    store,
+    project_id: str,
+    candidate_id: str,
+    expected_revision: int,
+) -> dict:
+    folder, metadata = read_design_candidate(store.root, project_id, candidate_id)
+    if metadata.get("status") != "pending":
+        raise ValueError("该设计候选已经处理。")
+    if metadata.get("baseRevision") != expected_revision:
+        raise ValueError("页面设计期间文档已更新，请重新生成设计稿。")
+    state = store._read_source(folder / "source")
+    committed = store.commit(
+        project_id,
+        state["document"],
+        state["pages"],
+        f"页面设计：{metadata.get('pagePath')}",
+        expected_revision,
+    )
+    metadata["status"] = "applied"
+    (folder / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return committed
+
+
+def discard_design_candidate(store, project_id: str, candidate_id: str) -> None:
+    folder, metadata = read_design_candidate(store.root, project_id, candidate_id)
+    if metadata.get("status") == "applied":
+        raise ValueError("已经应用的页面设计不能放弃。")
+    shutil.rmtree(folder)
 
 
 async def run_page_action(kind: str, store, project_id: str, page_path: str, request, data_root: Path) -> dict:

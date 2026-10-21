@@ -701,6 +701,59 @@ async def pptd_versions(identifier: str):
     return store.read(identifier)['versions']
 
 
+@app.get(PREFIX + '/projects/{identifier}/pptd/design-candidates/{candidate_id}/preview')
+async def design_candidate_preview(identifier: str, candidate_id: str):
+    folder, _ = page_actions.read_design_candidate(ROOT, key(identifier), key(candidate_id))
+    preview = folder / 'preview.png'
+    if not preview.is_file():
+        raise HTTPException(404, '设计稿预览不存在。')
+    return FileResponse(preview, media_type='image/png', headers={
+        'Cache-Control': 'private, max-age=300',
+        'X-Content-Type-Options': 'nosniff',
+    })
+
+
+@app.post(PREFIX + '/projects/{identifier}/pptd/design-candidates/{candidate_id}/apply')
+async def design_candidate_apply(identifier: str, candidate_id: str, body: dict = Body(...)):
+    expected = body.get('expectedRevision')
+    if type(expected) is not int:
+        raise HTTPException(422, '应用设计稿必须提供 expectedRevision。')
+    try:
+        committed = page_actions.apply_design_candidate(
+            document_store(), key(identifier), key(candidate_id), expected
+        )
+    except RevisionConflict:
+        raise
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    project = read(project_path(identifier))
+    project.update(
+        workflow='pptd-v2',
+        phase='ready',
+        activeJobId=None,
+        artifact=None,
+        contentGenerated=True,
+        updatedAt=time.time(),
+    )
+    project['messages'] = [
+        *project.get('messages', []),
+        {'id': uuid4().hex, 'role': 'assistant', 'text': '页面设计稿已应用。'},
+    ][-1000:]
+    save(project_path(identifier), project)
+    return committed
+
+
+@app.delete(PREFIX + '/projects/{identifier}/pptd/design-candidates/{candidate_id}')
+async def design_candidate_discard(identifier: str, candidate_id: str):
+    try:
+        page_actions.discard_design_candidate(
+            document_store(), key(identifier), key(candidate_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'id': candidate_id, 'discarded': True}
+
+
 @app.post(PREFIX + '/projects/{identifier}/pptd/versions/{version_id}/restore')
 async def pptd_restore_version(identifier: str, version_id: str, body: dict = Body(...)):
     store, project = require_pptd(identifier)
@@ -960,8 +1013,7 @@ async def run_page_action_job(identifier, request):
             project['artifact'] = None
             message = '当前页面修复完成' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
         else:
-            project['artifact'] = None
-            message = '当前页面设计完成' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
+            message = '页面设计稿已生成，可预览后应用' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
         project['messages'] = [
             *project.get('messages', []),
             {'id': uuid4().hex, 'role': 'assistant', 'text': message},
