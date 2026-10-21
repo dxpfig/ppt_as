@@ -751,6 +751,8 @@ planned
 - 快速模式页面并发和专家模式批次/迭代/修复预算改由共享 Policy 提供。
 - 非法策略值显式报错，不再静默回退。
 - 新增架构基线与迁移不变量文档 `docs/architecture-refactor.md`。
+- 新增 `agent_service/orchestrator.py`，统一判断页面操作、专家、旧版和快速路线。
+- 新增 `agent_service/render_service.py`，页面操作不再私有实现单页浏览器渲染。
 
 计划形成的模块边界：
 

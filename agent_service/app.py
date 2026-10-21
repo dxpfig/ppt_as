@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from .pptd_compat import normalize_pages
@@ -1167,15 +1167,24 @@ def finish_editable_fallback(identifier, project_id, checkpoint, store):
 
 
 async def run_job(identifier, request):
-    # Kimi expert defaults to the complete original tool-driven workflow. The
-    # coordinated per-page pipeline remains available as an explicit fallback
-    # for providers that cannot sustain the agentic loop.
-    if request.kind in page_actions.PAGE_ACTION_KINDS:
+    route = orchestrator.resolve_route(
+        kind=request.kind,
+        workflow=request.project.workflow,
+        has_document=document_store().exists(request.project.id),
+        expert_enabled=agentic_kimi_enabled(),
+    )
+    if route == orchestrator.ExecutionRoute.PAGE_ACTION:
         return await run_page_action_job(identifier, request)
-    if request.kind == 'kimi-slides' and agentic_kimi_enabled():
+    if route == orchestrator.ExecutionRoute.EXPERT:
         return await run_kimi_job(identifier, request)
-    if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):
+    if route == orchestrator.ExecutionRoute.LEGACY:
         return await run_legacy_job(identifier, request)
+    return await run_pptd_job(identifier, request)
+
+
+async def run_pptd_job(identifier, request):
+    # Deterministic coordinated pipeline shared by quick generation, editing
+    # and export-only requests.
     store = document_store()
     project_id = request.project.id
     cp_path = ROOT / 'checkpoints' / f'{identifier}.json'

@@ -28,6 +28,10 @@
 
 后续重构应让 Orchestrator、页面队列和资源池读取同一 Policy 对象，避免各模块直接散读环境变量。
 
+`agent_service/orchestrator.py` 已集中负责执行路线判断，`app.py` 不再自行组合页面操作、专家、旧版和快速路线的优先级。
+
+`agent_service/render_service.py` 已承载共享单页渲染、页面问题过滤和浏览器证据输出。
+
 ## 目标阶段
 
 1. 统一任务状态机和阶段事件。

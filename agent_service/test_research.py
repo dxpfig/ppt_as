@@ -1,7 +1,7 @@
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from agent_service.research import research_context
 
 
@@ -39,5 +39,29 @@ class ResearchTests(unittest.IsolatedAsyncioTestCase):
             result = await research_context(request(prompt='https://example.org/private'))
         self.assertEqual(result['sources'], [])
         self.assertIn('不将该链接视作已核实内容', result['warnings'][0])
+
+    async def test_company_knowledge_is_used_only_when_explicitly_selected(self):
+        selected = request()
+        selected.knowledgeBaseIds = ['kb-1']
+        company = {
+            'status': 'available',
+            'sources': [{
+                'title': '公司规范',
+                'url': '',
+                'text': '内部规范正文',
+                'provider': 'weknora',
+                'documentId': 'doc-1',
+                'chunkId': 'chunk-1',
+            }],
+            'warnings': [],
+        }
+        with patch('agent_service.research.knowledge.configured', return_value=True), patch(
+            'agent_service.research.knowledge.search',
+            AsyncMock(return_value=company),
+        ) as search:
+            result = await research_context(selected)
+        search.assert_awaited_once_with('主题', ['kb-1'])
+        self.assertEqual(result['sources'][0]['text'], '内部规范正文')
+        self.assertEqual(result['status'], 'available')
 
 if __name__ == '__main__': unittest.main()

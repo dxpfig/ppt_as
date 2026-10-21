@@ -12,11 +12,21 @@ async def research_context(request):
     references = request.references or request.project.references or ""
     if references:
         sources.append({"title": "用户提供的参考资料", "url": "", "text": references, "provider": "user"})
-    if knowledge.configured():
+    knowledge_ids = [
+        value for value in (getattr(request, 'knowledgeBaseIds', None) or [])
+        if isinstance(value, str) and value.strip()
+    ]
+    if not knowledge_ids:
+        knowledge_ids = [
+            value.strip()
+            for value in os.getenv('WEKNORA_KNOWLEDGE_BASE_IDS', '').split(',')
+            if value.strip()
+        ]
+    if knowledge.configured() and knowledge_ids:
         try:
             company = await knowledge.search(
                 request.prompt or request.project.title,
-                getattr(request, 'knowledgeBaseIds', None),
+                knowledge_ids,
             )
             sources.extend(company['sources'])
             warnings.extend(company['warnings'])
