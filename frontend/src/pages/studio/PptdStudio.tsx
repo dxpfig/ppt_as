@@ -141,6 +141,9 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const [showVersions, setShowVersions] = useState(false);
 	const [scope, setScope] = useState<'page' | 'deck'>('page');
 	const [expertMode, setExpertMode] = useState(false);
+	const [designOpen, setDesignOpen] = useState(false);
+	const [designPrompt, setDesignPrompt] = useState('');
+	const [dismissedPageAction, setDismissedPageAction] = useState<string | null>(null);
 	const [notice, setNotice] = useState('');
 	const [deleteId, setDeleteId] = useState<string | null>(null);
 	useEffect(() => {
@@ -209,6 +212,9 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const currentPage = pages.find((page) => page.path === selectedPage) ?? pages[0];
 	const pageIndex = currentPage ? pages.indexOf(currentPage) : 0;
 	const versions = document?.versions ?? project.pptd?.versions ?? [];
+	const pageAction = job?.status === 'completed' ? job.result?.pageAction : undefined;
+	const pageActionJob = !!job?.kind?.startsWith('page-');
+	const showPageAction = !!pageAction && dismissedPageAction !== job?.id && pageActionJob;
 	const template = studio.templates.find((item) => item.id === templateId);
 	const referenceText = composeReferenceText(preferences.references, referenceAttachments);
 	const canGenerate =
@@ -380,6 +386,33 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 			}
 		} catch (cause) {
 			studio.setError(cause instanceof Error ? cause.message : '请检查输入设置。');
+		}
+	}
+	async function runPageAction(kind: 'page-repair' | 'page-review', description: string) {
+		if (!currentPage || busy) return;
+		setDismissedPageAction(null);
+		await studio.start(kind, {
+			prompt: description,
+			selectedSlideId: currentPage.path,
+			scenario: preferences.scenario,
+			usage: preferences.usage,
+			templateId: project.templateId,
+		});
+	}
+	async function submitPageDesign(event: FormEvent) {
+		event.preventDefault();
+		if (!currentPage || !designPrompt.trim() || busy) return;
+		setDismissedPageAction(null);
+		const started = await studio.start('page-design', {
+			prompt: designPrompt.trim(),
+			selectedSlideId: currentPage.path,
+			scenario: preferences.scenario,
+			usage: preferences.usage,
+			templateId: project.templateId,
+		});
+		if (started) {
+			setDesignPrompt('');
+			setDesignOpen(false);
 		}
 	}
 	async function readReference(event: ChangeEvent<HTMLInputElement>) {
@@ -1256,7 +1289,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							)}
 						</div>
 					</div>
-					{job && (
+					{job && !pageActionJob && (
 						<PptdJobStatus
 							key={job.id}
 							job={job}
@@ -1265,6 +1298,12 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							onResume={() => void studio.resume()}
 							onRetry={() => void studio.retry()}
 						/>
+					)}
+					{job && pageActionJob && busy && (
+						<div className="pptd-page-action-progress" aria-live="polite">
+							<LoaderCircle className="pptd-spin" size={16} />
+							<span>{job.message || '正在处理当前页面'}</span>
+						</div>
 					)}
 					{project.pptd ? (
 						<>
@@ -1321,6 +1360,171 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									)}
 								</div>
 							</div>
+							<div className="pptd-page-actions" aria-label="当前页面操作">
+								<div>
+									<span>当前页</span>
+									<strong>
+										{currentPage
+											? `${String(pageIndex + 1).padStart(2, '0')} ${pageTitle(currentPage, pageIndex)}`
+											: '未选择页面'}
+									</strong>
+								</div>
+								<div>
+									<button
+										type="button"
+										disabled={busy || !connected || !currentPage}
+										onClick={() =>
+											void runPageAction(
+												'page-repair',
+												'检查并修复当前页面的排版、溢出和可读性问题。',
+											)
+										}
+									>
+										<RefreshCw size={15} />
+										页面修复
+									</button>
+									<button
+										type="button"
+										disabled={busy || !connected || !currentPage}
+										onClick={() =>
+											void runPageAction(
+												'page-review',
+												'检查当前页面的视觉效果并报告具体问题。',
+											)
+										}
+									>
+										<Eye size={15} />
+										AI 视觉检视
+									</button>
+									<button
+										type="button"
+										disabled={busy || !connected || !currentPage}
+										onClick={() => setDesignOpen(true)}
+									>
+										<Pencil size={15} />
+										设计
+									</button>
+								</div>
+							</div>
+							{showPageAction && pageAction && (
+								<section className="pptd-page-action-result" aria-live="polite">
+									<header>
+										<div>
+											<strong>
+												{pageAction.action === 'review'
+													? 'AI 视觉检视'
+													: pageAction.action === 'repair'
+														? '页面修复'
+														: '页面设计'}
+												· 第{' '}
+												{pages.findIndex(
+													(page) => page.path === pageAction.pagePath,
+												) + 1}{' '}
+												页
+											</strong>
+											<small>
+												{pageAction.status === 'passed'
+													? '检查通过，未发现阻塞问题'
+													: `发现 ${pageAction.issues.length} 项问题`}
+												{pageAction.revision
+													? ` · 版本 ${pageAction.revision}`
+													: ''}
+											</small>
+										</div>
+										<button
+											type="button"
+											aria-label="关闭页面检查结果"
+											onClick={() => setDismissedPageAction(job?.id ?? '')}
+										>
+											<X size={15} />
+										</button>
+									</header>
+									{!!pageAction.issues.length && (
+										<ol>
+											{pageAction.issues.map((issue, index) => (
+												<li
+													key={`${issue.code}-${issue.elementId ?? index}`}
+												>
+													<strong>{issue.message}</strong>
+													{issue.evidence && (
+														<p>依据：{issue.evidence}</p>
+													)}
+													{issue.repair && <p>建议：{issue.repair}</p>}
+												</li>
+											))}
+										</ol>
+									)}
+								</section>
+							)}
+							{designOpen && (
+								<div
+									className="pptd-design-backdrop"
+									role="presentation"
+									onMouseDown={(event) => {
+										if (event.target === event.currentTarget)
+											setDesignOpen(false);
+									}}
+								>
+									<form
+										className="pptd-design-dialog"
+										onSubmit={(event) => void submitPageDesign(event)}
+									>
+										<header>
+											<div>
+												<strong>重新设计当前页</strong>
+												<small>
+													{currentPage
+														? `${String(pageIndex + 1).padStart(2, '0')} ${pageTitle(currentPage, pageIndex)}`
+														: ''}
+												</small>
+											</div>
+											<button
+												type="button"
+												aria-label="关闭页面设计"
+												onClick={() => setDesignOpen(false)}
+											>
+												<X size={16} />
+											</button>
+										</header>
+										<label>
+											<span>设计想法</span>
+											<textarea
+												autoFocus
+												rows={4}
+												value={designPrompt}
+												onChange={(event) =>
+													setDesignPrompt(event.target.value)
+												}
+												placeholder="例如：改成左右双栏，左侧放核心结论，右侧用三步流程表达实施路径。"
+											/>
+										</label>
+										<p>
+											将参考当前模板和本页内容重新编排。完成后保存为新版本，可从版本记录恢复。
+										</p>
+										<footer>
+											<button
+												type="button"
+												className="pptd-secondary"
+												onClick={() => setDesignOpen(false)}
+											>
+												取消
+											</button>
+											<button
+												type="submit"
+												className="pptd-primary"
+												disabled={busy || !designPrompt.trim()}
+											>
+												{busy ? (
+													<LoaderCircle className="pptd-spin" size={15} />
+												) : (
+													<Sparkles size={15} />
+												)}
+												生成设计稿
+											</button>
+										</footer>
+									</form>
+								</div>
+							)}
 							{presentation.presenting && (
 								<div className="pptd-presentation-controls" aria-label="播放控制">
 									<button

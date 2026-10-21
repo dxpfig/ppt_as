@@ -57,9 +57,37 @@ export type ProjectSummary = {
 	updatedAt?: number;
 	phase?: string;
 };
+export type PageActionIssue = {
+	pagePath: string;
+	pageIndex?: number;
+	elementIds?: string[];
+	elementId?: string;
+	severity?: 'error' | 'warning';
+	code: string;
+	message: string;
+	evidence?: string;
+	repair?: string;
+	location?: string;
+};
+export type PageActionReport = {
+	action: 'review' | 'repair' | 'design';
+	pagePath: string;
+	revision: number;
+	status: 'passed' | 'issues';
+	issues: PageActionIssue[];
+	observations?: { pagePath: string; evidence: string }[];
+	model?: string;
+};
 export type StudioJob = {
 	id: string;
-	kind?: 'outline' | 'revise' | 'render' | 'kimi-slides';
+	kind?:
+		| 'outline'
+		| 'revise'
+		| 'render'
+		| 'kimi-slides'
+		| 'page-repair'
+		| 'page-review'
+		| 'page-design';
 	status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 	stage: number;
 	message: string;
@@ -90,6 +118,7 @@ export type StudioJob = {
 			code?: string;
 			message: string;
 		}[];
+		pageAction?: PageActionReport;
 	};
 	error?: string;
 	recoverable?: boolean;
@@ -173,7 +202,14 @@ export type Scenario =
 	| 'education-training'
 	| 'brand-creative';
 export type JobRequest = {
-	kind: 'outline' | 'revise' | 'render' | 'kimi-slides';
+	kind:
+		| 'outline'
+		| 'revise'
+		| 'render'
+		| 'kimi-slides'
+		| 'page-repair'
+		| 'page-review'
+		| 'page-design';
 	project: Project;
 	prompt?: string;
 	pageCount?: number | null;

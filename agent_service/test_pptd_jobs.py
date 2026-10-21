@@ -126,6 +126,43 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job['checkpoint']['totalPages'], 3)
         self.assertIn('可继续任务', job['message'])
 
+    async def test_page_review_routes_with_current_page_and_returns_report(self):
+        async def review_action(kind, store, project_id, page_path, request, data_root):
+            self.assertEqual(kind, 'page-review')
+            self.assertEqual(project_id, self.project['id'])
+            self.assertEqual(page_path, 'pages/a.page')
+            return {
+                'action': 'review',
+                'pagePath': page_path,
+                'revision': 0,
+                'status': 'passed',
+                'issues': [],
+                'observations': [{'pagePath': page_path, 'evidence': '页面层级清晰'}],
+                'model': 'fake-vision',
+            }
+
+        with patch.object(service.page_actions, 'run_page_action', side_effect=review_action):
+            response = await self.client.post('jobs', json={
+                'kind': 'page-review',
+                'project': self.project,
+                'selectedSlideId': 'pages/a.page',
+            })
+            self.assertEqual(response.status_code, 202, response.text)
+            job = await self.wait(response.json()['id'])
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(job['result']['pageAction']['action'], 'review')
+        self.assertEqual(job['result']['pageAction']['pagePath'], 'pages/a.page')
+
+    async def test_page_repair_requires_a_selected_page(self):
+        response = await self.client.post('jobs', json={
+            'kind': 'page-repair',
+            'project': self.project,
+        })
+        self.assertEqual(response.status_code, 202, response.text)
+        job = await self.wait(response.json()['id'])
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('指定当前页面', job['error'])
+
     async def test_model_timeout_is_actionable_and_keeps_page_checkpoint(self):
         from openai import APITimeoutError
         async def timeout(request, progress, **kwargs):

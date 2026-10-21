@@ -1607,6 +1607,191 @@
 	min-height: 0;
 	overflow: hidden;
 }
+.pptd-page-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 10px 2px;
+	border-top: 1px solid var(--ui-border, #dce4cc);
+}
+.pptd-page-actions > div {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.pptd-page-actions > div:first-child {
+	color: var(--ui-muted, #8a9579);
+	font-size: 10px;
+	white-space: nowrap;
+}
+.pptd-page-actions > div:first-child strong {
+	max-width: 260px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--ui-text, #35412f);
+	font-size: 11px;
+	font-weight: 500;
+}
+.pptd-page-actions button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 32px;
+	padding: 0 11px;
+	border: 1px solid var(--ui-border, #d6dfc8);
+	border-radius: 8px;
+	background: var(--ui-elevated, #fbfcf7);
+	color: var(--ui-text, #35412f);
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+.pptd-page-actions button:hover:not(:disabled) {
+	border-color: var(--ui-accent, #667b54);
+	background: var(--ui-hover, #eef2e5);
+}
+.pptd-page-actions button:disabled {
+	cursor: not-allowed;
+	opacity: 0.48;
+}
+.pptd-page-action-progress {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 4px 0 8px;
+	padding: 9px 11px;
+	border: 1px solid var(--ui-border, #d8e0cb);
+	border-radius: 9px;
+	background: var(--ui-surface, #f2f6ea);
+	color: var(--ui-secondary, #56664b);
+	font-size: 11px;
+}
+.pptd-page-action-result {
+	border: 1px solid var(--ui-border, #d8e0cb);
+	border-radius: 10px;
+	background: var(--ui-elevated, #fbfcf7);
+	margin: 0 0 10px;
+	padding: 11px 12px;
+	box-shadow: 0 8px 22px var(--ui-shadow, #27332012);
+}
+.pptd-page-action-result header,
+.pptd-design-dialog header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 14px;
+}
+.pptd-page-action-result header > div,
+.pptd-design-dialog header > div {
+	display: grid;
+	gap: 3px;
+	min-width: 0;
+}
+.pptd-page-action-result header strong {
+	font-size: 12px;
+	font-weight: 600;
+}
+.pptd-page-action-result header small,
+.pptd-design-dialog header small {
+	color: var(--ui-muted, #87927a);
+	font-size: 10px;
+}
+.pptd-page-action-result header > button,
+.pptd-design-dialog header > button {
+	display: grid;
+	place-items: center;
+	width: 26px;
+	height: 26px;
+	border: 0;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--ui-muted, #87927a);
+	cursor: pointer;
+}
+.pptd-page-action-result ol {
+	max-height: 180px;
+	overflow: auto;
+	display: grid;
+	gap: 8px;
+	margin: 10px 0 0;
+	padding: 10px 0 0 20px;
+	border-top: 1px solid var(--ui-border, #e2e8d9);
+}
+.pptd-page-action-result li {
+	padding-left: 3px;
+	font-size: 11px;
+	line-height: 1.6;
+}
+.pptd-page-action-result li strong {
+	font-weight: 550;
+}
+.pptd-page-action-result li p {
+	margin: 2px 0 0;
+	color: var(--ui-muted, #74806a);
+	font-size: 10px;
+}
+.pptd-design-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 90;
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	background: #17201366;
+	backdrop-filter: blur(3px);
+}
+.pptd-design-dialog {
+	width: min(520px, 100%);
+	display: grid;
+	gap: 14px;
+	padding: 18px;
+	border: 1px solid var(--ui-border, #d8e0cb);
+	border-radius: 14px;
+	background: var(--ui-elevated, #fbfcf7);
+	color: var(--ui-text, #35412f);
+	box-shadow: 0 24px 70px #1d29174d;
+}
+.pptd-design-dialog header strong {
+	font-size: 15px;
+	font-weight: 600;
+}
+.pptd-design-dialog label {
+	display: grid;
+	gap: 7px;
+	font-size: 11px;
+	color: var(--ui-muted, #74806a);
+}
+.pptd-design-dialog textarea {
+	width: 100%;
+	resize: vertical;
+	min-height: 108px;
+	padding: 11px 12px;
+	border: 1px solid var(--ui-border, #d6dfc8);
+	border-radius: 9px;
+	background: var(--ui-bg, #f7f9f1);
+	color: var(--ui-text, #35412f);
+	font: inherit;
+	font-size: 12px;
+	line-height: 1.7;
+}
+.pptd-design-dialog > p {
+	margin: -4px 0 0;
+	color: var(--ui-muted, #87927a);
+	font-size: 10px;
+	line-height: 1.65;
+}
+.pptd-design-dialog footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+.pptd-design-dialog footer button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
 .pptd-export .pptd-secondary,
 .pptd-export .pptd-primary {
 	padding: 6px 9px;
@@ -1885,5 +2070,31 @@
 	}
 	.pptd-live-status.is-expanded {
 		max-height: 50%;
+	}
+}
+@media (max-width: 760px) {
+	.pptd-page-actions {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.pptd-page-actions > div:last-child {
+		width: 100%;
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+	.pptd-page-actions button {
+		justify-content: center;
+		padding: 0 7px;
+	}
+	.pptd-page-actions > div:first-child strong {
+		max-width: calc(100vw - 90px);
+	}
+	.pptd-design-backdrop {
+		align-items: end;
+		padding: 10px;
+	}
+	.pptd-design-dialog {
+		border-radius: 14px 14px 10px 10px;
 	}
 }

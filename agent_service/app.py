@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference, kimi_agent
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from .pptd_compat import normalize_pages
@@ -920,6 +920,87 @@ async def run_kimi_job(identifier, request):
         TASKS.pop(identifier, None)
 
 
+async def run_page_action_job(identifier, request):
+    project_id = request.project.id
+    page_path = request.selectedSlideId
+
+    def progress(stage, message):
+        assert_current_job(identifier, project_id)
+        update_job(identifier, status='running', stage=stage, message=message)
+
+    try:
+        if not isinstance(page_path, str) or not page_path:
+            raise ValueError('页面操作必须指定当前页面。')
+        progress(5, '正在准备当前页面')
+        async with LLM_LIMIT:
+            report = await asyncio.wait_for(
+                page_actions.run_page_action(
+                    request.kind,
+                    document_store(),
+                    project_id,
+                    page_path,
+                    request,
+                    ROOT,
+                ),
+                timeout=agents.timeout_setting('PPTD_PAGE_ACTION_TIMEOUT_SECONDS', 1800),
+            )
+        project = assert_current_job(identifier, project_id)
+        project.update(
+            workflow='pptd-v2',
+            phase='ready',
+            activeJobId=None,
+            contentGenerated=True,
+            updatedAt=time.time(),
+        )
+        action = report['action']
+        issue_count = len(report.get('issues') or [])
+        if action == 'review':
+            message = '当前页面视觉检视完成' + (f'，发现 {issue_count} 项问题' if issue_count else '，未发现问题')
+        elif action == 'repair':
+            project['artifact'] = None
+            message = '当前页面修复完成' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
+        else:
+            project['artifact'] = None
+            message = '当前页面设计完成' + (f'，仍有 {issue_count} 项问题' if issue_count else '')
+        project['messages'] = [
+            *project.get('messages', []),
+            {'id': uuid4().hex, 'role': 'assistant', 'text': message},
+        ][-1000:]
+        save(project_path(project_id), project)
+        update_job(
+            identifier,
+            status='completed',
+            stage=100,
+            message=message,
+            recoverable=False,
+            result={
+                'reply': message,
+                'revision': report['revision'],
+                'pageAction': report,
+                'project': hydrate_project(project),
+            },
+        )
+    except asyncio.CancelledError:
+        current = read(job_path(identifier))
+        if current['status'] != 'cancelled':
+            update_job(identifier, status='interrupted', message='页面操作已中断，原稿未覆盖。', recoverable=False)
+        finish_project_job(identifier)
+        raise
+    except Exception as exc:
+        message = clean_error(exc)
+        update_job(
+            identifier,
+            status='failed',
+            message=message,
+            error=message,
+            recoverable=False,
+        )
+        finish_project_job(identifier)
+    finally:
+        await telemetry.flush()
+        TASKS.pop(identifier, None)
+
+
 def agentic_kimi_enabled():
     return os.getenv('PPT_KIMI_AGENTIC', '1').strip().lower() not in ('0', 'false', 'no')
 
@@ -1037,6 +1118,8 @@ async def run_job(identifier, request):
     # Kimi expert defaults to the complete original tool-driven workflow. The
     # coordinated per-page pipeline remains available as an explicit fallback
     # for providers that cannot sustain the agentic loop.
+    if request.kind in page_actions.PAGE_ACTION_KINDS:
+        return await run_page_action_job(identifier, request)
     if request.kind == 'kimi-slides' and agentic_kimi_enabled():
         return await run_kimi_job(identifier, request)
     if request.project.workflow != 'pptd-v2' and not document_store().exists(request.project.id):

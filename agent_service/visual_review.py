@@ -524,6 +524,63 @@ async def review_deck_overview(state, artifact_dir: Path, *, scenario='auto', us
         return report
 
 
+async def review_page(state, artifact_dir: Path, page_path: str, *, scenario='auto', usage='reading', on_event=None):
+    """Review exactly one rendered page without claiming coverage of the deck."""
+    artifact_dir = Path(artifact_dir)
+    paths = state.get('document', {}).get('pages')
+    if not isinstance(paths, list) or page_path not in paths:
+        raise VisualReviewError('待审页面不属于当前文档。', pagePath=page_path)
+    page_index = paths.index(page_path)
+    page = next((item for item in state.get('pages', []) if item.get('path') == page_path), None)
+    if page is None:
+        raise VisualReviewError('待审页面缺少页面数据。', pagePath=page_path, pageIndex=page_index)
+    single = {
+        'document': {**state['document'], 'pages': [page_path]},
+        'pages': [page],
+    }
+    metadata, images = _inspect_source(single, artifact_dir)
+    config = vision_configuration()
+    async with VisionClient(config) as client:
+        await _emit(on_event, status='started', scope='page', pagePath=page_path, pageIndex=page_index,
+                    message='正在验证视觉模型的实际看图能力', covered=0, total=1)
+        capability = await client.verify_vision(artifact_dir)
+        payload = {
+            'scope': 'page',
+            'usage': usage,
+            'scenario': scenario,
+            'document': single['document'],
+            'pages': metadata,
+            'instructions': '只检查当前页面；识别可读性、对齐、密度、溢出、遮挡和视觉问题。',
+            'sourceHints': [
+                {'pagePath': page_path, 'elementId': element.get('elementId'), 'kind': 'small-font',
+                 'fontSize': element['content']['fontSize']}
+                for element in metadata[0]['elements']
+                if isinstance(element.get('content'), dict)
+                and type(element['content'].get('fontSize')) in (int, float)
+                and element['content']['fontSize'] < 12
+            ],
+            'hintPolicy': '源数据提示不是错误；必须结合实际图片、页面用途与设计意图确认问题后才可列入 issues。',
+        }
+        await _emit(on_event, status='started', scope='page', pagePath=page_path, pageIndex=page_index,
+                    message='AI 正在高清审查当前页面', covered=0, total=1)
+        raw = await client.ask(_review_system(scenario), json.dumps(payload, ensure_ascii=False), images)
+        report = _validate_verdict(raw, metadata, metadata)
+        for issue in report['issues']:
+            issue['pageIndex'] = page_index
+        report.update(
+            model=config.model,
+            provider=config.provider,
+            capability=capability,
+            images=images,
+            pagePath=page_path,
+            pageIndex=page_index,
+        )
+        await _emit(on_event, status='completed', scope='page', pagePath=page_path, pageIndex=page_index,
+                    message='当前页面视觉审查完成', covered=1, total=1,
+                    issueCount=len(report['issues']))
+        return report
+
+
 async def review_deck(state, artifact_dir: Path, *, scenario='auto', usage='reading', on_event=None, previous_review=None):
     """Full review: one whole-deck pass plus a high-resolution pass per page."""
     artifact_dir = Path(artifact_dir)
