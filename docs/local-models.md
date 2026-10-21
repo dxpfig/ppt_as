@@ -51,3 +51,33 @@ Studio 的参考资料预算也使用当前模型动态发现结果，但资料�
 2026-10-10 修复记录：5 页任务已完成内容生成，在导出发现缺失字体及未支持字距后进入修复。相同第 4 页输入可复现模型返回说明文字、没有 JSON 的问题；当前 vLLM 已通过实际 JSON Schema 能力探测。原始失败时监控端口 3001 不可达，定位依据是任务事件、导出问题和独立复现，不是完整历史响应。
 
 同一故障还暴露出导出器缺少字距映射：现已将 PPTD `letterSpacing` 写入 DrawingML 字符间距（`spc`，单位为 1/100 点），覆盖主题继承、直接覆盖、负间距和零值。保持原始设计，不通过丢弃属性绕过验收；其他尚未支持的样式仍然会阻止发布。第 4 页独立复测已通过 JSON、结构、字体与原生导出检查。
+
+## 本地 Qwen 检查（2026-10-21）
+
+本地 Qwen profile 位于 `config/profiles/qwen.env.example`，当前服务参数为：
+
+- 模型：`Qwen3.8-27B`
+- 地址：`http://192.168.0.11:8000/v1`
+- 推理服务：vLLM 0.27
+- 上下文：262144 tokens
+- tokenizer：`/tokenize` 可用
+- 结构化输出：JSON Schema 可用
+- 图片输入：可用
+
+使用以下命令检查模型列表、tokenizer、结构化输出和可选图片输入：
+
+```bash
+pnpm check:qwen -- --env .env
+pnpm check:qwen -- --env .env --image runtime/sample-slide.png
+```
+
+2026-10-21 使用历史本地配置实测通过，项目自身动态发现结果为：
+
+- provider：`openai`
+- contextTokens：262144
+- inputTokens：221952
+- outputTokens：32000
+- counting：`server-tokenizer`
+- structuredOutput：`json-schema`
+
+当前 `.env` 仍使用 MiniMax；Qwen profile 尚未自动覆盖运行配置。切换前应备份 `.env`，并使用固定样例完成快速模式、专家模式、页面操作和导出回归。
