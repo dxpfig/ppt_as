@@ -47,3 +47,7 @@ docs/api-reference/generated
 # Runtime artifacts (do not commit)
 .remember/
 .traces/
+
+# Large generated comparison artifacts; keep them locally outside Git
+experiments/long_file_ppt_ex/*.pptx
+experiments/long_file_ppt_ex/analysis/*.png
