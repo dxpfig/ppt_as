@@ -5,7 +5,6 @@ import {
 	ChevronRight,
 	Download,
 	Eye,
-	FileArchive,
 	FileText,
 	History,
 	Layers,
@@ -47,6 +46,7 @@ import {
 	REFERENCE_FILE_MAX_BYTES,
 } from './referenceDocument';
 import { SlideDraft } from './SlideDraft';
+import { StudioExportBar } from './StudioExportBar';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { usePptdStudio } from './usePptdStudio';
 import { useMediaQuery, usePageWheel, usePresentation } from './usePreviewNavigation';
@@ -1419,68 +1419,16 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									</button>
 								</div>
 							)}
-							<footer className="pptd-export">
-								<div>
-									<strong>
-										{currentPage
-											? pageTitle(currentPage, pageIndex)
-											: project.title}
-									</strong>
-								</div>
-								<div className="pptd-export-buttons">
-									{!!project.artifact?.warnings.length && (
-										<details className="pptd-export-warnings">
-											<summary>
-												导出说明 · {project.artifact.warnings.length}
-											</summary>
-											<div role="note">
-												{project.artifact.warnings.map((warning) => (
-													<p key={warning}>{warning}</p>
-												))}
-											</div>
-										</details>
-									)}
-									<a
-										href={project.pptd.sourceUrl}
-										className="pptd-secondary"
-										download
-									>
-										<FileArchive size={15} />
-										源文件 ZIP
-									</a>
-									{project.artifact ? (
-										<>
-											<a
-												className="pptd-secondary"
-												href={project.artifact.pptxUrl}
-												download
-											>
-												<Download size={15} />
-												PPTX
-											</a>
-											{project.artifact.pdfUrl && (
-												<a
-													className="pptd-secondary"
-													href={project.artifact.pdfUrl}
-													download
-												>
-													<Download size={15} />
-													PDF
-												</a>
-											)}
-										</>
-									) : (
-										<button
-											className="pptd-primary"
-											disabled={busy || !connected}
-											onClick={() => void studio.start('render')}
-										>
-											<Download size={15} />
-											导出 PPTX / PDF
-										</button>
-									)}
-								</div>
-							</footer>
+							<StudioExportBar
+								title={
+									currentPage ? pageTitle(currentPage, pageIndex) : project.title
+								}
+								sourceUrl={project.pptd.sourceUrl}
+								artifact={project.artifact}
+								busy={busy}
+								connected={connected}
+								onExport={() => void studio.start('render')}
+							/>
 						</>
 					) : legacy ? (
 						<div className="pptd-legacy">

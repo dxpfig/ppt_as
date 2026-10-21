@@ -9,7 +9,6 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
-from . import pptd_exports
 from .pptd_store import DocumentStore, RevisionConflict, _serialize, safe_path
 from .kimi_rules import SCENARIOS
 from .visual_repair import semantic_payload
@@ -17,6 +16,8 @@ from .visual_completion import apply_completion, complete_content, needs_complet
 from . import repair_coordinator
 from .review_service import review_deck
 from . import export_service as pptd_exports
+from .page_work_queue import PageWorkQueue, PageWorkStatus
+from .execution_policy import quick_policy
 
 
 async def repair_deck(*args, **kwargs):
@@ -179,6 +180,9 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
     DocumentStore._validate(state['document'], state['pages'])
     changed = state['document'] != initial['document'] or state['pages'] != initial['pages']
     state['revision'] = base_revision + int(changed)
+    page_queue = PageWorkQueue(state['document']['pages'], 1)
+    for page_path in state['document']['pages']:
+        page_queue.mark(page_path, PageWorkStatus.GENERATED)
     private = store.root / 'visual_candidates' / folder.name / uuid4().hex
     private.mkdir(parents=True)
     store.snapshot(project_id, private / 'source')
@@ -199,6 +203,7 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
     def persist():
         visual['candidate'] = {'document': deepcopy(state['document']), 'pages': deepcopy(state['pages'])}
         cp['_visualReview'] = deepcopy(visual)
+        cp['_pageStates'] = page_queue.snapshot()
         cp['_committedRevision'] = base_revision
         cp['stage'] = 'export'
         if save_checkpoint:
@@ -253,6 +258,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             rendered_pages = error.previews
             layout_measurements = error.layouts
         else:
+            for page_path in state['document']['pages']:
+                page_queue.mark(page_path, PageWorkStatus.RENDERED)
             rendered_pages = {p['path']: (candidate_folder / name).read_bytes()
                               for p, name in zip(state['pages'], metadata.get('previews', []))}
             exported_report = json.loads((candidate_folder / metadata['report']).read_text(encoding='utf-8'))
@@ -266,7 +273,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             previous_review = next((r for r in reversed(visual['reports']) if r.get('source') != 'renderer'), None)
             report = await review_deck(deepcopy(state), candidate_folder, scenario=request.scenario,
                                        usage=request.usage, on_event=review_event, previous_review=previous_review,
-                                       cache_dir=store.root / 'review-cache')
+                                       cache_dir=store.root / 'review-cache',
+                                       concurrency=quick_policy().visual_review_concurrency)
             paths = state['document']['pages']
             if (report.get('status') not in ('passed', 'issues') or
                     report.get('coveredPages') != paths or not isinstance(report.get('issues'), list)):
@@ -278,11 +286,18 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             if report['status'] != ('issues' if issues else 'passed'):
                 raise ValueError('AI 视觉审查状态与问题列表不一致。')
         visual['reports'].append({**report, 'attempt': attempt})
+        for page_path in report.get('coveredPages', []):
+            page_queue.mark(page_path, PageWorkStatus.REVIEWED)
         visual['issues'] = issues
         persist()
         if not issues:
+            for page_path in state['document']['pages']:
+                page_queue.mark(page_path, PageWorkStatus.APPROVED)
+            persist()
             break
         fingerprint = _fingerprint(issues)
+        if repair_coordinator.stalled(visual['fingerprints'], issues):
+            raise VisualReviewExhausted(issues)
         if visual['repairs'] >= budget:
             raise VisualReviewExhausted(issues)
         emit('retrying', f'AI 发现 {len(issues)} 项问题，正在自动修复并准备复审', scope='repair',
@@ -323,6 +338,9 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
         if repaired['document'] == state['document'] and repaired['pages'] == state['pages']:
             raise VisualReviewExhausted(issues)
         state = {**state, 'document': repaired['document'], 'pages': repaired['pages'], 'revision': base_revision + 1}
+        for page_path in {issue.get('pagePath') or issue.get('page') for issue in issues}:
+            if page_path in page_queue.states:
+                page_queue.mark(page_path, PageWorkStatus.REPAIRED)
         persist()
 
     if assert_current:
@@ -334,6 +352,8 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
                'reviewedPages': len(state['pages']), 'totalPages': len(state['pages']), 'issueCount': 0,
                'repairedIssueCount': sum(len(r.get('issues', [])) for r in visual['reports']),
                'summary': '整稿与全部单页已通过 AI 视觉复审', 'model': report.get('model', '')}
+    for page_path in state['document']['pages']:
+        page_queue.mark(page_path, PageWorkStatus.APPROVED)
     metadata['visualReview'] = summary
     report_path = candidate_folder / metadata['report']
     export_report = json.loads(report_path.read_text(encoding='utf-8'))

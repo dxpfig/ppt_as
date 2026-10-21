@@ -165,8 +165,8 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(result, BaseException): raise result
                 return copy.deepcopy(result)
         events = []
-        with patch.dict(os.environ, {'PPTD_VISUAL_REVIEW_CONCURRENCY': '1'}), patch.object(module, 'vision_configuration', return_value=VisionConfig('openai', 'vision', 'key', 'http://provider.test/v1')), patch.object(module, 'VisionClient', return_value=Client()):
-            result = await module.review_deck(state(), self.folder, on_event=events.append, **kwargs)
+        with patch.object(module, 'vision_configuration', return_value=VisionConfig('openai', 'vision', 'key', 'http://provider.test/v1')), patch.object(module, 'VisionClient', return_value=Client()):
+            result = await module.review_deck(state(), self.folder, on_event=events.append, concurrency=1, **kwargs)
         return result, events
     async def test_every_page_has_high_resolution_image_in_addition_to_contact_sheet(self):
         result, events = await self.run_review([verdict(['pages/a.page', 'pages/b.page']), verdict(['pages/a.page']), verdict(['pages/b.page'])])
@@ -206,12 +206,12 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     active -= 1
 
-        with patch.dict(os.environ, {'PPTD_VISUAL_REVIEW_CONCURRENCY': '2'}), patch.object(
+        with patch.object(
             module,
             'vision_configuration',
             return_value=VisionConfig('openai', 'vision', 'key'),
         ), patch.object(module, 'VisionClient', return_value=Client()):
-            result = await module.review_deck(state(), self.folder)
+            result = await module.review_deck(state(), self.folder, concurrency=2)
         self.assertEqual(maximum, 2)
         self.assertEqual(result['coveredPages'], ['pages/a.page', 'pages/b.page'])
         self.assertEqual(

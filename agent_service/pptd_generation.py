@@ -866,9 +866,10 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         if not existing and not any(isinstance(a,dict) and (a.get("visualAnalysis") or a.get("imageData")) for a in attachments):
             raise ValueError("复刻或风格迁移需要可读取的原始视觉参考，请先导入参考文件并生成视觉分析")
     await save("context")
+    policy=quick_policy()
     model=make_model(output_mode=getattr(request,"outputMode","auto"),observable_retries=True)
     state["outputMode"]={"requested":getattr(request,"outputMode","auto"),"effective":getattr(model,"pptd_output_mode","provider-default"),"stream":bool(getattr(model,"stream",False))}
-    repair_limit=max(2,int(os.getenv("PPTD_REPAIR_BUDGET","8")))
+    repair_limit=policy.repair_rounds
     try:
         reference_characters = context.get("referenceCharacters", 0)
         reference_summary = (
@@ -982,7 +983,6 @@ async def generate_pptd(request: JobRequest, progress, *, existing: dict | None 
         complete={p["path"]:p for p in state["pages"]}
         paths=plan["document"]["pages"]
         external=state.get("externalIssues",[])
-        policy = quick_policy()
         queue = PageWorkQueue(paths, policy.page_concurrency)
         state.setdefault("drafts",{})
         async def produce(index,path):

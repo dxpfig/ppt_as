@@ -1,7 +1,13 @@
 """Unified execution routing contracts."""
 import unittest
 
-from agent_service.orchestrator import ExecutionRoute, resolve_route
+from agent_service.orchestrator import (
+    ExecutionRoute,
+    JobStatus,
+    STAGES,
+    resolve_route,
+    transition_allowed,
+)
 
 
 class OrchestratorRoutingTests(unittest.TestCase):
@@ -36,3 +42,14 @@ class OrchestratorRoutingTests(unittest.TestCase):
 
     def test_quick_generation_is_default_pptd_route(self):
         self.assertEqual(self.route(kind='render'), ExecutionRoute.PPTD)
+
+    def test_job_state_machine_rejects_transitions_after_terminal_status(self):
+        self.assertTrue(transition_allowed(JobStatus.QUEUED, JobStatus.RUNNING))
+        self.assertTrue(transition_allowed(JobStatus.RUNNING, JobStatus.COMPLETED))
+        self.assertTrue(transition_allowed(JobStatus.INTERRUPTED, JobStatus.RUNNING))
+        self.assertFalse(transition_allowed(JobStatus.COMPLETED, JobStatus.RUNNING))
+        self.assertFalse(transition_allowed(JobStatus.CANCELLED, JobStatus.RUNNING))
+
+    def test_stage_sequence_has_single_visual_before_export(self):
+        identifiers = [item[0] for item in STAGES]
+        self.assertEqual(identifiers[-4:], ['validate', 'visual', 'export', 'done'])

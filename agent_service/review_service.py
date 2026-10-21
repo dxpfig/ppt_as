@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from . import visual_review
 
@@ -59,7 +60,7 @@ def _write(cache_dir: Path | None, key: str, report: dict) -> None:
     folder = Path(cache_dir)
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f'{key}.json'
-    temporary = target.with_suffix('.tmp')
+    temporary = folder / f'.{key}.{uuid4().hex}.tmp'
     temporary.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + '\n',
         encoding='utf-8',
@@ -76,6 +77,7 @@ async def review_deck(
     on_event=None,
     previous_review=None,
     cache_dir=None,
+    concurrency=2,
 ):
     artifact_dir = Path(artifact_dir)
     images = [artifact_dir / f'slide-{index + 1}.png' for index in range(len(state.get('pages', [])))]
@@ -102,6 +104,7 @@ async def review_deck(
         usage=usage,
         on_event=on_event,
         previous_review=previous_review,
+        concurrency=concurrency,
     )
     _write(cache_dir, key, report)
     return report

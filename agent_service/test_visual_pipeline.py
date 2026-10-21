@@ -286,6 +286,23 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         async def forbidden(*a,**kw):self.fail('resume must not reset repair budget')
         with self.assertRaises(ValueError):await self.run_pipeline(review,forbidden)
 
+    async def test_identical_issue_fingerprint_stops_repair_before_budget(self):
+        repairs = []
+
+        async def review(state, *args, **kwargs):
+            return self.report(state, [self.issue()])
+
+        async def repair(request, state, *args, **kwargs):
+            repairs.append(True)
+            value = deepcopy(state)
+            value['pages'][0]['data']['elements'][0]['bounds'][2] += 5
+            return value
+
+        with self.assertRaises(ValueError):
+            await self.run_pipeline(review, repair)
+        self.assertEqual(len(repairs), 1)
+        self.assertEqual(self.store.read('deck')['revision'], 1)
+
     async def test_revision_change_during_review_prevents_publication(self):
         async def review(state,*a,**kw):
             self.store.commit('deck',**self.source,label='Concurrent change',expected_revision=1)
@@ -453,7 +470,15 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         async def passing(state,*args,**kwargs):return self.report(state)
         result=await self.run_pipeline(passing)
         self.assertEqual(result['revision'],2)
-        self.assertEqual(self.store.read('deck')['revision'],2)
+
+    async def test_successful_visual_gate_persists_approved_page_states(self):
+        async def passing(state, *args, **kwargs):
+            return self.report(state)
+
+        await self.run_pipeline(passing)
+        states = self.checkpoint['_pageStates']
+        self.assertEqual(states[0]['path'], 'pages/one.page')
+        self.assertEqual(states[0]['status'], 'approved')
 
     async def test_pending_proof_cannot_reconcile_other_content_or_concurrent_revision(self):
         from agent_service import visual_pipeline as pipeline

@@ -4,8 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
-import os
 
+from .execution_policy import quick_policy
 from .visual_repair import repair_deck as visual_repair_deck
 
 
@@ -49,7 +49,7 @@ async def repair_deck_batched(
         if issue.get('pagePath') or issue.get('page')
     }
     ordered = [page['path'] for page in state['pages'] if page['path'] in issue_pages]
-    limit = max(1, int(os.getenv('PPTD_VISUAL_REPAIR_PAGE_BATCH', '4')))
+    limit = quick_policy().visual_repair_page_batch
     if len(ordered) <= limit:
         return await repair(
             request,

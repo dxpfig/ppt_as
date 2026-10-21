@@ -19,6 +19,7 @@ from .pptd_store import DocumentStore, RevisionConflict
 from .pptd_compat import normalize_pages
 from .layout_autofit import autofit_state
 from . import export_service as pptd_exports, pptd_generation, visual_pipeline
+from .execution_policy import quick_policy
 from .resource_manager import MODEL_LIMIT
 from .job_execution import initial_execution, checkpoint_execution, record_event, terminal_execution, diagnose_error
 from pptd_engine import workbench
@@ -107,6 +108,11 @@ def update_job(identifier, **changes):
     job = read(job_path(identifier))
     if job["status"] == "cancelled":
         return job
+    if "status" in changes and changes["status"] != job["status"]:
+        if not orchestrator.transition_allowed(job["status"], changes["status"]):
+            raise ValueError(
+                f"非法任务状态迁移：{job['status']} → {changes['status']}"
+            )
     job.update(changes, updatedAt=time.time())
     if 'message' in changes or 'stage' in changes or 'status' in changes:
         job['events'] = [*job.get('events', []), {'timestamp': time.time(), 'stage': job.get('stage', 0), 'message': job.get('message', ''), 'status': job['status']}][-200:]
@@ -1186,6 +1192,7 @@ async def run_job(identifier, request):
 async def run_pptd_job(identifier, request):
     # Deterministic coordinated pipeline shared by quick generation, editing
     # and export-only requests.
+    policy = quick_policy()
     store = document_store()
     project_id = request.project.id
     cp_path = ROOT / 'checkpoints' / f'{identifier}.json'
@@ -1359,7 +1366,7 @@ async def run_pptd_job(identifier, request):
                     break
                 except ValueError as exc:
                     issues = getattr(exc, 'issues', None)
-                    if (issues and autofit_attempts < int(os.getenv('PPTD_LAYOUT_AUTOFIT_BUDGET', '2'))
+                    if (issues and autofit_attempts < policy.layout_autofit_budget
                             and getattr(exc, 'generation_context', {}).get('phase') != 'visual'):
                         fitted = autofit_document_for_export(store, project_id, exc, current_revision)
                     else:
@@ -1383,7 +1390,7 @@ async def run_pptd_job(identifier, request):
                     fingerprint = json.dumps(mapped, sort_keys=True)
                     checkpoint = {**(checkpoint or {}), 'externalIssues': mapped, '_sourceExisting': source_existing, '_visualReview': None}
                     checkpoint_save(checkpoint)
-                    if fingerprint in seen_issues or render_attempts >= int(os.getenv('PPTD_RENDER_REPAIR_BUDGET', '4')):
+                    if fingerprint in seen_issues or render_attempts >= policy.render_repair_budget:
                         raise ValueError('渲染检查仍未通过，已保留文档和检查点。' + str(exc)) from exc
                     seen_issues.add(fingerprint)
                     progress(60, f'浏览器/导出检查发现 {len(issues)} 项问题，正在第 {render_attempts} 轮修复')

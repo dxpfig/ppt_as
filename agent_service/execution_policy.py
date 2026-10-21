@@ -46,6 +46,10 @@ class ExecutionPolicy:
     repair_rounds: int
     layout_page_attempts: int
     layout_page_batch: int
+    visual_repair_page_batch: int
+    visual_review_concurrency: int
+    layout_autofit_budget: int
+    render_repair_budget: int
     visual_review: str
     export_after_review: bool
 
@@ -62,6 +66,10 @@ def quick_policy() -> ExecutionPolicy:
         repair_rounds=_integer('PPTD_REPAIR_BUDGET', 8, 2, 30),
         layout_page_attempts=0,
         layout_page_batch=1,
+        visual_repair_page_batch=_integer('PPTD_VISUAL_REPAIR_PAGE_BATCH', 4, 1, 20),
+        visual_review_concurrency=_integer('PPTD_VISUAL_REVIEW_CONCURRENCY', 2, 1, 6),
+        layout_autofit_budget=_integer('PPTD_LAYOUT_AUTOFIT_BUDGET', 2, 0, 10),
+        render_repair_budget=_integer('PPTD_RENDER_REPAIR_BUDGET', 4, 1, 20),
         visual_review='risk-and-final',
         export_after_review=True,
     )
@@ -89,6 +97,10 @@ def expert_policy() -> ExecutionPolicy:
             10,
         ),
         layout_page_batch=_integer('PPT_KIMI_LAYOUT_PAGE_BATCH', 4, 1, 20),
+        visual_repair_page_batch=_integer('PPTD_VISUAL_REPAIR_PAGE_BATCH', 4, 1, 20),
+        visual_review_concurrency=_integer('PPTD_VISUAL_REVIEW_CONCURRENCY', 2, 1, 6),
+        layout_autofit_budget=_integer('PPTD_LAYOUT_AUTOFIT_BUDGET', 2, 0, 10),
+        render_repair_budget=_integer('PPTD_RENDER_REPAIR_BUDGET', 4, 1, 20),
         visual_review='full',
         export_after_review=False,
     )

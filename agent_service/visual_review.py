@@ -581,7 +581,16 @@ async def review_page(state, artifact_dir: Path, page_path: str, *, scenario='au
         return report
 
 
-async def review_deck(state, artifact_dir: Path, *, scenario='auto', usage='reading', on_event=None, previous_review=None):
+async def review_deck(
+    state,
+    artifact_dir: Path,
+    *,
+    scenario='auto',
+    usage='reading',
+    on_event=None,
+    previous_review=None,
+    concurrency=2,
+):
     """Full review: one whole-deck pass plus a high-resolution pass per page."""
     artifact_dir = Path(artifact_dir)
     metadata, images = _inspect_source(state, artifact_dir)
@@ -632,11 +641,7 @@ async def review_deck(state, artifact_dir: Path, *, scenario='auto', usage='read
             report['deckFindings'] = [{'findingId': f'deck-{index}', **issue} for index, issue in enumerate(report['deckReview']['issues'])]
             await _emit(on_event, status='completed', scope='deck', message='AI 已完成整稿总览审查', covered=0, total=total, issueCount=len(report['deckReview']['issues']))
             report['pageReviews'] = []
-            try:
-                concurrency = int(os.getenv('PPTD_VISUAL_REVIEW_CONCURRENCY', '2'))
-            except ValueError:
-                concurrency = 2
-            semaphore = asyncio.Semaphore(max(1, min(6, concurrency)))
+            semaphore = asyncio.Semaphore(max(1, min(6, int(concurrency))))
             completed = {}
 
             async def review_one(index, item, rendered):

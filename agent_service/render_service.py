@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import pymupdf
 
@@ -168,8 +169,10 @@ async def render_page(source, project_id: str, folder: Path, page_path: str) -> 
     )
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = cache_dir / '.metadata.tmp'
-        temporary.write_text(
+        token = uuid4().hex
+        metadata_temporary = cache_dir / f'.metadata.{token}.tmp'
+        image_temporary = cache_dir / f'.page-{token}.png.tmp'
+        metadata_temporary.write_text(
             json.dumps(
                 {'issues': result.issues, 'layout': result.layout},
                 ensure_ascii=False,
@@ -177,7 +180,7 @@ async def render_page(source, project_id: str, folder: Path, page_path: str) -> 
             ),
             encoding='utf-8',
         )
-        (cache_dir / 'page.png.tmp').write_bytes(image)
-        (cache_dir / 'page.png.tmp').replace(cache_dir / 'page.png')
-        temporary.replace(cache_dir / 'metadata.json')
+        image_temporary.write_bytes(image)
+        image_temporary.replace(cache_dir / 'page.png')
+        metadata_temporary.replace(cache_dir / 'metadata.json')
     return result
