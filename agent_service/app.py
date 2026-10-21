@@ -1324,19 +1324,24 @@ async def run_job(identifier, request):
                                 reviewed = await visual_pipeline.export_reviewed(
                                     store, project_id, folder, request, validation_progress,
                                     checkpoint=checkpoint, save_checkpoint=checkpoint_save, on_event=execution_event,
-                                    assert_current=lambda: assert_current_job(identifier, project_id), publish=False,
+                                    assert_current=lambda: assert_current_job(identifier, project_id), publish=True,
                                 )
                             reviewed_revision = reviewed['revision']
                             checkpoint = read(cp_path) if cp_path.is_file() else (checkpoint or {})
                             checkpoint = {**checkpoint, 'stage': 'export', '_committedRevision': reviewed_revision}
                             checkpoint_save(checkpoint)
                             visual_summary = reviewed['visualReview']
+                            metadata = reviewed
+                            execution_event({'phase': 'export', 'status': 'completed',
+                                             'message': f'已生成 {metadata["pageCount"]} 页 PPTX/PDF 文件'})
+                            break
                         else:
                             visual_summary = visual_state
                         execution_event({'phase': 'export', 'status': 'started',
                                          'message': '视觉审稿通过，正在生成 PPTX/PDF 文件'})
-                    async with LLM_LIMIT:
-                        metadata = await pptd_exports.export_document(store, project_id, folder, export_progress)
+                    # Export uses render/native workers, not a model connection.
+                    # Holding LLM_LIMIT here serialized unrelated generations.
+                    metadata = await pptd_exports.export_document(store, project_id, folder, export_progress)
                     if visual_summary:
                         metadata['visualReview'] = visual_summary
                     execution_event({'phase': 'export', 'status': 'completed',

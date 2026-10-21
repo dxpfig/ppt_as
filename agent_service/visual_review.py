@@ -632,15 +632,57 @@ async def review_deck(state, artifact_dir: Path, *, scenario='auto', usage='read
             report['deckFindings'] = [{'findingId': f'deck-{index}', **issue} for index, issue in enumerate(report['deckReview']['issues'])]
             await _emit(on_event, status='completed', scope='deck', message='AI 已完成整稿总览审查', covered=0, total=total, issueCount=len(report['deckReview']['issues']))
             report['pageReviews'] = []
-            # Serial pages keep complete reports/checkpoints ordered and bound
-            # provider concurrency. Each request includes the original PNG.
-            for item, rendered in zip(metadata, images):
-                await _emit(on_event, status='started', scope='page', pagePath=item['pagePath'], pageIndex=item['pageIndex'], message=f"AI 正在高清审查第 {item['pageNumber']} 页", covered=len(report['pageReviews']), total=total)
-                reviewed = await checked('page', [item], [artifact_dir / rendered['file']], [finding for finding in report['deckFindings'] if finding['pagePath'] == item['pagePath']])
-                report['pageReviews'].append(reviewed)
-                report['coveredPages'].append(item['pagePath'])
-                await _emit(on_event, status='completed', scope='page', pagePath=item['pagePath'], pageIndex=item['pageIndex'], message=f"第 {item['pageNumber']} 页高清审查完成", covered=len(report['pageReviews']), total=total, issueCount=len(reviewed['issues']))
-                _write_report(artifact_dir, report)
+            try:
+                concurrency = int(os.getenv('PPTD_VISUAL_REVIEW_CONCURRENCY', '2'))
+            except ValueError:
+                concurrency = 2
+            semaphore = asyncio.Semaphore(max(1, min(6, concurrency)))
+            completed = {}
+
+            async def review_one(index, item, rendered):
+                async with semaphore:
+                    await _emit(
+                        on_event, status='started', scope='page',
+                        pagePath=item['pagePath'], pageIndex=item['pageIndex'],
+                        message=f"AI 正在高清审查第 {item['pageNumber']} 页",
+                        covered=len(completed), total=total,
+                    )
+                    reviewed = await checked(
+                        'page',
+                        [item],
+                        [artifact_dir / rendered['file']],
+                        [finding for finding in report['deckFindings']
+                         if finding['pagePath'] == item['pagePath']],
+                    )
+                    completed[index] = reviewed
+                    await _emit(
+                        on_event, status='completed', scope='page',
+                        pagePath=item['pagePath'], pageIndex=item['pageIndex'],
+                        message=f"第 {item['pageNumber']} 页高清审查完成",
+                        covered=len(completed), total=total,
+                        issueCount=len(reviewed['issues']),
+                    )
+                    return index, reviewed
+
+            tasks = [
+                asyncio.create_task(review_one(index, item, rendered))
+                for index, (item, rendered) in enumerate(zip(metadata, images))
+            ]
+            try:
+                for task in asyncio.as_completed(tasks):
+                    _, reviewed = await task
+                    report['pageReviews'].append(reviewed)
+                    report['coveredPages'].append(reviewed['coveredPages'][0])
+                    _write_report(artifact_dir, report)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            report['pageReviews'] = [
+                completed[index] for index in range(len(metadata)) if index in completed
+            ]
+            report['coveredPages'] = [item['pagePath'] for item in metadata]
             dedupe = set()
             for part in report['pageReviews']:
                 for issue in part['issues']:

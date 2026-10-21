@@ -507,9 +507,9 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
             job = await self.wait(identifier)
         self.assertEqual(job['status'], 'completed', job)
         self.assertEqual(len(generated), 2)
-        # One candidate render feeds validation/review, then the approved
-        # revision is rendered once more for the final artifact.
-        self.assertEqual([revision for revision, _ in exported], [1, 2, 2])
+        # The repaired candidate export is published directly; a later final
+        # export would duplicate the same files and work.
+        self.assertEqual([revision for revision, _ in exported], [1, 2])
         current = (await self.client.get('projects/demo')).json()
         state = (await self.client.get('projects/demo/pptd')).json()
         self.assertEqual(current['artifact']['revision'], 2)
@@ -583,7 +583,7 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
             resumed = await self.wait(resumed_id)
         self.assertEqual(resumed['status'], 'completed', resumed)
         resumed_generation.assert_awaited_once()
-        self.assertEqual(resumed_export.await_count, 2)
+        self.assertEqual(resumed_export.await_count, 1)
         self.assertEqual(resumed['parentJobId'], identifier)
         current = (await self.client.get('projects/demo')).json()
         self.assertEqual(current['artifact']['revision'], 2)

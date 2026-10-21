@@ -165,7 +165,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(result, BaseException): raise result
                 return copy.deepcopy(result)
         events = []
-        with patch.object(module, 'vision_configuration', return_value=VisionConfig('openai', 'vision', 'key', 'http://provider.test/v1')), patch.object(module, 'VisionClient', return_value=Client()):
+        with patch.dict(os.environ, {'PPTD_VISUAL_REVIEW_CONCURRENCY': '1'}), patch.object(module, 'vision_configuration', return_value=VisionConfig('openai', 'vision', 'key', 'http://provider.test/v1')), patch.object(module, 'VisionClient', return_value=Client()):
             result = await module.review_deck(state(), self.folder, on_event=events.append, **kwargs)
         return result, events
     async def test_every_page_has_high_resolution_image_in_addition_to_contact_sheet(self):
@@ -180,6 +180,44 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.closed)
         self.assertEqual(json.loads((self.folder/'visual-review.json').read_text())['status'], 'passed')
         self.assertTrue(events)
+
+    async def test_page_reviews_use_bounded_concurrency_and_preserve_page_order(self):
+        from agent_service import visual_review as module
+        from agent_service.visual_review import VisionConfig
+        active = 0
+        maximum = 0
+
+        class Client:
+            requests = 0
+            async def verify_vision(self, _folder): return {'status': 'passed'}
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): return None
+            async def ask(self, _system, prompt, _images):
+                nonlocal active, maximum
+                payload = json.loads(prompt)
+                paths = [item['pagePath'] for item in payload['pages']]
+                if payload['scope'] == 'deck':
+                    return verdict(paths)
+                active += 1
+                maximum = max(maximum, active)
+                try:
+                    await asyncio.sleep(0.05)
+                    return verdict(paths)
+                finally:
+                    active -= 1
+
+        with patch.dict(os.environ, {'PPTD_VISUAL_REVIEW_CONCURRENCY': '2'}), patch.object(
+            module,
+            'vision_configuration',
+            return_value=VisionConfig('openai', 'vision', 'key'),
+        ), patch.object(module, 'VisionClient', return_value=Client()):
+            result = await module.review_deck(state(), self.folder)
+        self.assertEqual(maximum, 2)
+        self.assertEqual(result['coveredPages'], ['pages/a.page', 'pages/b.page'])
+        self.assertEqual(
+            [review['coveredPages'][0] for review in result['pageReviews']],
+            ['pages/a.page', 'pages/b.page'],
+        )
     async def test_partial_coverage_and_unknown_element_ids_never_pass(self):
         from agent_service.visual_review import VisualReviewError
         with self.assertRaises(VisualReviewError):
