@@ -4,6 +4,7 @@ import os
 import re
 from lxml import html
 from .images import api_json, fetch_bytes, web_url
+from . import knowledge
 
 
 async def research_context(request):
@@ -11,6 +12,16 @@ async def research_context(request):
     references = request.references or request.project.references or ""
     if references:
         sources.append({"title": "用户提供的参考资料", "url": "", "text": references, "provider": "user"})
+    if knowledge.configured():
+        try:
+            company = await knowledge.search(
+                request.prompt or request.project.title,
+                getattr(request, 'knowledgeBaseIds', None),
+            )
+            sources.extend(company['sources'])
+            warnings.extend(company['warnings'])
+        except knowledge.KnowledgeError as exc:
+            warnings.append(str(exc))
     # Only explicit user links are fetched; search snippets keep their actual URL.
     links = list(dict.fromkeys(re.findall(r'https?://[^\s<>"）)\]]+', (request.prompt or '') + '\n' + references)))
     limit = asyncio.Semaphore(3)

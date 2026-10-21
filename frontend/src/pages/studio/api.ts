@@ -233,6 +233,7 @@ export type JobRequest = {
 	audience?: string;
 	selectedSlideId?: string;
 	references?: string;
+	knowledgeBaseIds?: string[];
 	templateId?: string;
 };
 export class StudioError extends Error {

@@ -54,6 +54,7 @@ class Project(BaseModel):
     pageCount: int | None = Field(default=None, ge=1, le=60)
     audience: str = Field(default="团队分享", max_length=1000)
     references: str = Field(default="", max_length=MAX_REFERENCES_CHARACTERS)
+    knowledgeBaseIds: list[str] = Field(default_factory=list, max_length=20)
     imageSource: Literal["auto", "knowledge", "web", "none"] = "auto"
     activeJobId: str | None = None
     templateId: str | None = None
