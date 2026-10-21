@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 
 from pptd_engine.fonts import is_east_asian
@@ -139,7 +140,7 @@ def _table_text(element: dict) -> str:
 
 def normalize_pages(pages: list[dict]) -> dict[str, int]:
     """Apply native-export-safe transformations to page text and shapes."""
-    changed = {"text": 0, "opacity": 0, "table": 0, "font": 0}
+    changed = {"text": 0, "opacity": 0, "table": 0, "font": 0, "native": 0}
     for page in pages:
         data = page.get("data") if isinstance(page, dict) else None
         if not isinstance(data, dict):
@@ -150,6 +151,9 @@ def normalize_pages(pages: list[dict]) -> dict[str, int]:
             if "opacity" in element:
                 element.pop("opacity", None)
                 changed["opacity"] += 1
+            if element.get("elementType") == "line" and "arrow" in element:
+                element.pop("arrow", None)
+                changed["native"] += 1
             content = element.get("content")
             if isinstance(content, dict) and isinstance(content.get("text"), str):
                 text = content["text"]
@@ -186,3 +190,24 @@ def normalize_pages(pages: list[dict]) -> dict[str, int]:
                 if _route_style(element, values):
                     changed["font"] += 1
     return changed
+
+
+def normalize_custom_fonts(document: dict, pages: list[dict]) -> int:
+    """Drop declared custom fonts that no page actually references."""
+    custom = document.get("customFonts")
+    if not isinstance(custom, list) or not custom:
+        return 0
+    content = json.dumps(pages, ensure_ascii=False, sort_keys=True)
+    kept = [
+        item
+        for item in custom
+        if isinstance(item, dict)
+        and isinstance(item.get("family"), str)
+        and item["family"] in content
+    ]
+    removed = len(custom) - len(kept)
+    if kept:
+        document["customFonts"] = kept
+    else:
+        document.pop("customFonts", None)
+    return removed

@@ -49,7 +49,13 @@ def _document_path(directory: Path) -> Path | None:
 def build(pptx: Path, root: Path, template_id: str) -> dict:
     """Import the upload once (idempotent per template) and return its audit."""
     destination = reference_path(root, template_id)
-    if _document_path(destination) and _stamp(destination).get('format') == REFERENCE_FORMAT:
+    source_sha256 = hashlib.sha256(pptx.read_bytes()).hexdigest()
+    stamp = _stamp(destination)
+    if (
+        _document_path(destination)
+        and stamp.get('format') == REFERENCE_FORMAT
+        and stamp.get('sourceSha256') == source_sha256
+    ):
         return _report(destination)
     if destination.exists():
         shutil.rmtree(destination)
@@ -64,7 +70,7 @@ def build(pptx: Path, root: Path, template_id: str) -> dict:
         raise ValueError('模板包含尚不能保留的对象，请先使用简化模板；未导入参考模板。')
     (destination / 'reference.json').write_text(
         json.dumps({'format': REFERENCE_FORMAT,
-                    'sourceSha256': hashlib.sha256(pptx.read_bytes()).hexdigest(),
+                    'sourceSha256': source_sha256,
                     'pageCount': report.get('pageCount'), 'report': report}, ensure_ascii=False) + '\n',
         encoding='utf-8')
     return report

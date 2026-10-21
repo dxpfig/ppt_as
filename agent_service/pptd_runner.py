@@ -21,7 +21,7 @@ from .execution_policy import quick_policy
 from .job_execution import diagnose_error, record_event, terminal_execution
 from .job_store import JobRuntime
 from .layout_autofit import autofit_state
-from .pptd_compat import normalize_pages
+from .pptd_compat import normalize_custom_fonts, normalize_pages
 from .pptd_store import RevisionConflict
 
 
@@ -64,11 +64,15 @@ def normalize_document_for_export(store, project_id, expected_revision):
         return None
     pages = deepcopy(state['pages'])
     changed = normalize_pages(pages)
-    if not any(changed.values()):
+    removed_fonts = normalize_custom_fonts(
+        document := deepcopy(state['document']),
+        pages,
+    )
+    if not any(changed.values()) and not removed_fonts:
         return None
     return store.commit(
         project_id,
-        deepcopy(state['document']),
+        document,
         pages,
         '导出兼容性修复',
         expected_revision,
@@ -228,6 +232,33 @@ async def run_pptd_job(
             while True:
                 committed = checkpoint and checkpoint.get('_committedRevision')
                 external = checkpoint and checkpoint.get('externalIssues')
+                if committed and checkpoint.get('stage') == 'export' and external:
+                    migrated = normalize_document_for_export(
+                        store,
+                        project_id,
+                        current_revision,
+                    )
+                    if migrated:
+                        current_revision = migrated['revision']
+                        checkpoint = {
+                            **checkpoint,
+                            '_committedRevision': current_revision,
+                        }
+                        checkpoint.pop('externalIssues', None)
+                        if request.kind != 'render':
+                            checkpoint['_visualReview'] = None
+                        checkpoint_save(checkpoint)
+                        external = None
+                        execution_event(
+                            {
+                                'phase': 'validate',
+                                'status': 'retrying',
+                                'message': (
+                                    '已自动清理未引用字体和不兼容样式，'
+                                    '正在重新执行排版检查。'
+                                ),
+                            }
+                        )
                 if (
                     committed
                     and checkpoint.get('stage') == 'export'
@@ -323,6 +354,10 @@ async def run_pptd_job(
                         raise
                     assert_current(identifier, project_id)
                     normalize_pages(result['pages'])
+                    normalize_custom_fonts(
+                        result['document'],
+                        result['pages'],
+                    )
                     assets = {
                         item['path']: Path(item['sourcePath'])
                         for item in result.get('assets', [])

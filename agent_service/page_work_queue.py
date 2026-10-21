@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .resource_manager import MODEL_PRESSURE
+
 
 class PageWorkStatus(StrEnum):
     PLANNED = 'planned'
@@ -39,7 +41,9 @@ class PageWorkQueue:
     @asynccontextmanager
     async def guard(self, path: str):
         state = self.states[path]
+        await MODEL_PRESSURE.wait()
         async with self.semaphore:
+            await MODEL_PRESSURE.wait()
             state.status = PageWorkStatus.GENERATED
             state.attempts += 1
             try:

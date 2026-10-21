@@ -20,11 +20,12 @@
 		"test:browser:page-actions": "node frontend/src/pages/studio/pptd-page-actions.browser.test.cjs",
 		"check:qwen": ".venv/bin/python scripts/check_local_qwen.py",
 		"test": "pnpm test:contract",
-		"test:fast": ".venv/bin/python -m unittest agent_service.test_golden_corpus agent_service.test_execution_policy agent_service.test_service_boundaries agent_service.test_provider_registry agent_service.test_resource_manager agent_service.test_render_cache agent_service.test_review_cache agent_service.test_export_cache agent_service.test_orchestrator agent_service.test_job_store agent_service.test_page_work_queue agent_service.test_knowledge agent_service.test_pptd_store agent_service.test_pptd_validation agent_service.test_pptd_compat agent_service.test_layout_autofit agent_service.test_model_context agent_service.test_page_actions && node --test frontend/src/pages/studio/executionState.test.mjs frontend/src/pages/studio/pptdState.test.mjs",
+		"test:fast": ".venv/bin/python -m unittest agent_service.test_golden_corpus agent_service.test_execution_policy agent_service.test_service_boundaries agent_service.test_provider_registry agent_service.test_resource_manager agent_service.test_render_cache agent_service.test_review_cache agent_service.test_export_cache agent_service.test_orchestrator agent_service.test_job_store agent_service.test_page_work_queue agent_service.test_knowledge agent_service.test_pptd_store agent_service.test_pptd_validation agent_service.test_pptd_compat agent_service.test_layout_autofit agent_service.test_model_context agent_service.test_performance agent_service.test_page_actions && node --test frontend/src/pages/studio/executionState.test.mjs frontend/src/pages/studio/pptdState.test.mjs",
 		"test:contract": "pnpm test:studio && pnpm --filter backend test",
 		"test:all": "pnpm test:fast && pnpm test:contract && pnpm test:pptd",
 		"perf:report": ".venv/bin/python scripts/performance_report.py",
-		"perf:summary": ".venv/bin/python scripts/performance_report.py --summary-only"
+		"perf:summary": ".venv/bin/python scripts/performance_report.py --summary-only",
+		"perf:compare": ".venv/bin/python scripts/compare_performance.py"
 	},
 	"lint-staged": {
 		"frontend/**/*.{ts,tsx}": [

@@ -1,0 +1,358 @@
+{
+	"version": 1,
+	"source": "/home/figodxp/workspace/ppt_as/runtime/w08-benchmark-20261021/jobs",
+	"jobsAnalyzed": 13,
+	"durationSeconds": {
+		"count": 13,
+		"min": 0.54,
+		"p50": 90.228,
+		"p95": 417.438,
+		"max": 417.438
+	},
+	"byKind": {
+		"outline": {
+			"count": 13,
+			"min": 0.54,
+			"p50": 90.228,
+			"p95": 417.438,
+			"max": 417.438
+		}
+	},
+	"byStatus": {
+		"completed": {
+			"count": 4,
+			"min": 29.34,
+			"p50": 56.838,
+			"p95": 102.908,
+			"max": 102.908
+		},
+		"failed": {
+			"count": 9,
+			"min": 0.54,
+			"p50": 118.353,
+			"p95": 417.438,
+			"max": 417.438
+		}
+	},
+	"byNode": {
+		"assets": {
+			"count": 9,
+			"min": 0.004,
+			"p50": 0.013,
+			"p95": 102.44,
+			"max": 102.44
+		},
+		"context": {
+			"count": 10,
+			"min": 0.504,
+			"p50": 0.797,
+			"p95": 121.232,
+			"max": 121.232
+		},
+		"done": {
+			"count": 3,
+			"min": 0.0,
+			"p50": 0.0,
+			"p95": 0.0,
+			"max": 0.0
+		},
+		"export": {
+			"count": 9,
+			"min": 0.0,
+			"p50": 31.51,
+			"p95": 162.715,
+			"max": 162.715
+		},
+		"pages": {
+			"count": 9,
+			"min": 26.564,
+			"p50": 43.742,
+			"p95": 124.339,
+			"max": 124.339
+		},
+		"plan": {
+			"count": 10,
+			"min": 0.004,
+			"p50": 35.691,
+			"p95": 120.672,
+			"max": 120.672
+		},
+		"validate": {
+			"count": 1,
+			"min": 123.881,
+			"p50": 123.881,
+			"p95": 123.881,
+			"max": 123.881
+		},
+		"visual": {
+			"count": 10,
+			"min": 0.678,
+			"p50": 36.709,
+			"p95": 232.221,
+			"max": 232.221
+		}
+	},
+	"milestones": {
+		"deliveredSeconds": {
+			"count": 3,
+			"min": 29.12,
+			"p50": 67.243,
+			"p95": 102.839,
+			"max": 102.839
+		},
+		"editableSeconds": {
+			"count": 9,
+			"min": 27.731,
+			"p50": 65.257,
+			"p95": 165.086,
+			"max": 165.086
+		},
+		"firstPageSeconds": {
+			"count": 8,
+			"min": 6.481,
+			"p50": 24.907,
+			"p95": 61.227,
+			"max": 61.227
+		},
+		"visualReviewSeconds": {
+			"count": 10,
+			"min": 28.892,
+			"p50": 96.488,
+			"p95": 417.425,
+			"max": 417.425
+		}
+	},
+	"jobs": [
+		{
+			"id": "1d511bedbe564e96910778cff9774d4d",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 417.438,
+			"nodes": {
+				"context": 0.539,
+				"plan": 41.558,
+				"assets": 0.013,
+				"pages": 122.944,
+				"visual": 232.221,
+				"export": 162.715
+			},
+			"milestones": {
+				"editableSeconds": 165.086,
+				"visualReviewSeconds": 417.425
+			},
+			"eventCount": 200
+		},
+		{
+			"id": "a715f29f135f48e19df6197cf7228908",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 154.984,
+			"nodes": {
+				"context": 0.781,
+				"plan": 33.013,
+				"assets": 0.004,
+				"pages": 31.434,
+				"visual": 78.531,
+				"export": 37.178
+			},
+			"milestones": {
+				"firstPageSeconds": 39.251,
+				"editableSeconds": 65.257,
+				"visualReviewSeconds": 154.981
+			},
+			"eventCount": 143
+		},
+		{
+			"id": "456610b374634c67acd5778b245545d6",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 67.281,
+			"nodes": {
+				"context": 39.071,
+				"plan": 38.368,
+				"assets": 30.646,
+				"pages": 41.781,
+				"visual": 8.256,
+				"export": 8.27,
+				"done": 0.0
+			},
+			"milestones": {
+				"firstPageSeconds": 17.08,
+				"editableSeconds": 50.258,
+				"visualReviewSeconds": 67.192,
+				"deliveredSeconds": 67.243
+			},
+			"eventCount": 128
+		},
+		{
+			"id": "36de361de6ec4ce7a9cd82bdff7383c7",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 0.54,
+			"nodes": {
+				"context": 0.513,
+				"plan": 0.004
+			},
+			"milestones": {},
+			"eventCount": 10
+		},
+		{
+			"id": "80c4aae68e6f4a9cab8e6ba638f2a5be",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 118.353,
+			"nodes": {
+				"context": 47.483,
+				"plan": 46.869,
+				"assets": 34.774,
+				"pages": 43.742,
+				"visual": 52.938,
+				"export": 35.103
+			},
+			"milestones": {
+				"firstPageSeconds": 26.013,
+				"editableSeconds": 56.776,
+				"visualReviewSeconds": 118.349
+			},
+			"eventCount": 148
+		},
+		{
+			"id": "5390ad51944c497d9852ff649a01f877",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 102.908,
+			"nodes": {
+				"context": 67.538,
+				"plan": 66.18,
+				"assets": 60.952,
+				"pages": 69.392,
+				"visual": 17.909,
+				"export": 17.927,
+				"done": 0.0
+			},
+			"milestones": {
+				"firstPageSeconds": 22.731,
+				"editableSeconds": 76.058,
+				"visualReviewSeconds": 102.753,
+				"deliveredSeconds": 102.839
+			},
+			"eventCount": 166
+		},
+		{
+			"id": "887802fa968c4e4c8d4de7ecb19f0698",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 156.638,
+			"nodes": {
+				"context": 0.504,
+				"plan": 27.618,
+				"assets": 0.011,
+				"pages": 48.136,
+				"visual": 68.675,
+				"export": 31.51
+			},
+			"milestones": {
+				"firstPageSeconds": 35.36,
+				"editableSeconds": 76.3,
+				"visualReviewSeconds": 156.634
+			},
+			"eventCount": 129
+		},
+		{
+			"id": "2f6acc7ca4314952abaf251cbe5969bb",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 90.228,
+			"nodes": {
+				"visual": 79.806,
+				"export": 42.868
+			},
+			"milestones": {
+				"visualReviewSeconds": 90.223
+			},
+			"eventCount": 71
+		},
+		{
+			"id": "4c1bd61f2855450eb748576d976b1bae",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 73.902,
+			"nodes": {
+				"context": 0.629,
+				"plan": 11.908,
+				"assets": 0.009,
+				"pages": 30.679,
+				"visual": 20.48
+			},
+			"milestones": {
+				"firstPageSeconds": 23.8,
+				"editableSeconds": 43.263,
+				"visualReviewSeconds": 73.9
+			},
+			"eventCount": 83
+		},
+		{
+			"id": "143d06590f09450785c8da0ab13fb300",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 29.34,
+			"nodes": {
+				"visual": 18.956,
+				"export": 18.973,
+				"done": 0.0
+			},
+			"milestones": {
+				"visualReviewSeconds": 28.892,
+				"deliveredSeconds": 29.12
+			},
+			"eventCount": 32
+		},
+		{
+			"id": "07d43992c8d94b66b02a1d1619e31ddb",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 39.477,
+			"nodes": {
+				"context": 0.814,
+				"plan": 0.018,
+				"assets": 0.004,
+				"pages": 26.564,
+				"visual": 0.678,
+				"export": 0.0
+			},
+			"milestones": {
+				"firstPageSeconds": 6.481,
+				"editableSeconds": 27.731,
+				"visualReviewSeconds": 39.472
+			},
+			"eventCount": 63
+		},
+		{
+			"id": "576d1173ed724832b14e7b57bcf8914a",
+			"kind": "outline",
+			"status": "failed",
+			"durationSeconds": 153.475,
+			"nodes": {
+				"context": 121.232,
+				"plan": 120.672,
+				"assets": 102.44,
+				"pages": 124.339,
+				"validate": 123.881
+			},
+			"milestones": {
+				"firstPageSeconds": 61.227,
+				"editableSeconds": 143.213
+			},
+			"eventCount": 200
+		},
+		{
+			"id": "9392afd854a541d19a804f66fa0d3225",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 46.394,
+			"nodes": {},
+			"milestones": {},
+			"eventCount": 5
+		}
+	]
+}

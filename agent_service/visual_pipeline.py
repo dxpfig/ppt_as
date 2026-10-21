@@ -18,6 +18,7 @@ from .review_service import review_deck
 from . import export_service as pptd_exports
 from .page_work_queue import PageWorkQueue, PageWorkStatus
 from .execution_policy import quick_policy
+from .layout_autofit import autofit_state
 
 
 async def repair_deck(*args, **kwargs):
@@ -228,6 +229,7 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
 
     persist()
     verified_candidate = None
+    autofit_attempts = 0
     while True:
         if assert_current:
             assert_current()
@@ -257,6 +259,41 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             report = {'status': 'issues', 'issues': issues, 'source': 'renderer', 'coveredPages': []}
             rendered_pages = error.previews
             layout_measurements = error.layouts
+            if (
+                pptd_exports.layout_only_issues(issues)
+                and autofit_attempts < quick_policy().layout_autofit_budget
+            ):
+                pages = deepcopy(state['pages'])
+                changed = autofit_state(
+                    {'pages': pages},
+                    layout_measurements or {},
+                    issues,
+                )
+                if any(changed.values()):
+                    autofit_attempts += 1
+                    state = {
+                        **state,
+                        'pages': pages,
+                        'revision': base_revision + 1,
+                    }
+                    for issue in issues:
+                        page_path = issue.get('pagePath')
+                        if page_path in page_queue.states:
+                            page_queue.mark(
+                                page_path,
+                                PageWorkStatus.REPAIRED,
+                                '已完成确定性排版自适应',
+                            )
+                    persist()
+                    emit(
+                        'retrying',
+                        '已对文本溢出执行确定性自适应，正在重新检查',
+                        scope='repair',
+                        attempt=autofit_attempts,
+                        issueCount=len(issues),
+                        total=len(state['pages']),
+                    )
+                    continue
         else:
             for page_path in state['document']['pages']:
                 page_queue.mark(page_path, PageWorkStatus.RENDERED)

@@ -12,13 +12,13 @@ from pptx.util import Pt
 from agent_service import template_reference as references
 
 
-def sample_template(path: Path) -> Path:
+def sample_template(path: Path, title: str = '季度经营汇报') -> Path:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Pt(960), Pt(540)
     cover = prs.slides.add_slide(prs.slide_layouts[6])
     heading = cover.shapes.add_textbox(Pt(60), Pt(200), Pt(800), Pt(90))
     run = heading.text_frame.paragraphs[0].add_run()
-    run.text = '季度经营汇报'
+    run.text = title
     run.font.size = Pt(40)
     run.font.name = '微软雅黑'
     run.font.color.rgb = RGBColor.from_string('E50011')
@@ -74,6 +74,13 @@ class TemplateReferenceTests(unittest.TestCase):
         first = references.build(self.source, self.root, 'corp')
         second = references.build(self.source, self.root, 'corp')
         self.assertEqual(first['pageCount'], second['pageCount'])
+
+    def test_rebuilds_when_the_same_template_id_receives_new_content(self):
+        references.build(self.source, self.root, 'corp')
+        replacement = sample_template(self.root / 'replacement.pptx', '新的经营主题')
+        references.build(replacement, self.root, 'corp')
+        reference = references.load(self.root, 'corp')
+        self.assertEqual(reference['summary']['pages'][0]['title'], '新的经营主题')
 
     def test_missing_reference_is_not_invented(self):
         self.assertIsNone(references.load(self.root, 'unknown'))

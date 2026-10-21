@@ -346,6 +346,55 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['visualReview']['status'],'passed')
         self.assertEqual(count,3)
 
+    async def test_layout_only_failure_autofits_before_calling_the_model(self):
+        from agent_service.pptd_exports import ValidationError
+        original_export = self.export
+        attempts = 0
+
+        async def export(store, project_id, folder, progress):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ValidationError(
+                    [
+                        {
+                            'page': 'pages/one.page',
+                            'elementId': 'title',
+                            'code': 'text-overflow',
+                            'message': 'Need less height',
+                        }
+                    ],
+                    layouts={
+                        'pages/one.page': {
+                            'elements': [
+                                {
+                                    'elementId': 'title',
+                                    'availableSize': [860, 40],
+                                    'measuredTextSize': [860, 80],
+                                }
+                            ]
+                        }
+                    },
+                )
+            return await original_export(store, project_id, folder, progress)
+
+        self.export = export
+
+        async def forbidden(*_args, **_kwargs):
+            self.fail('Layout-only overflow must not call the model repairer')
+
+        async def review(state, *args, **kwargs):
+            return self.report(state)
+
+        result = await self.run_pipeline(review, forbidden)
+        self.assertEqual(result['visualReview']['status'], 'passed')
+        self.assertEqual(attempts, 2)
+        self.assertEqual(self.checkpoint['_visualReview']['repairs'], 0)
+        self.assertLess(
+            self.store.read('deck')['pages'][0]['data']['elements'][0]['content']['fontSize'],
+            32,
+        )
+
     async def test_recovered_body_overflow_uses_safe_layout_repair_before_image_review(self):
         from agent_service.pptd_exports import ValidationError
         self.request.kind = 'outline'

@@ -71,6 +71,7 @@ class GenerationEvents(unittest.IsolatedAsyncioTestCase):
                 )
 
         with patch.object(g, 'make_agent', side_effect=lambda *args: Agent()), \
+             patch.object(g.MODEL_PRESSURE, 'rate_limited', return_value=1), \
              patch.object(g.asyncio, 'sleep', new=AsyncMock()) as sleep:
             result = await g._ask(
                 SimpleNamespace(model='MiniMax-M3'),

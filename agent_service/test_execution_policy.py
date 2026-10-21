@@ -13,7 +13,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(policy.mode, 'quick')
         self.assertEqual(policy.page_concurrency, 4)
         self.assertEqual(policy.visual_review, 'risk-and-final')
-        self.assertEqual(policy.visual_review_concurrency, 2)
+        self.assertEqual(policy.visual_review_concurrency, 3)
         self.assertEqual(policy.visual_repair_page_batch, 4)
         self.assertTrue(policy.export_after_review)
 

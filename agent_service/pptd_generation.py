@@ -24,6 +24,7 @@ from .kimi_rules import KimiRules, SCENARIOS
 from . import template_reference
 from .execution_policy import adapt_to_model, quick_policy
 from .page_work_queue import PageWorkQueue, PageWorkStatus
+from .resource_manager import MODEL_PRESSURE
 from .models import JobRequest
 from .pptd_validation import normalize_table_tracks, safe_relative, validate_document
 from .planned_content import planned_content_issues, recover_planned_content
@@ -298,6 +299,7 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
                 output_scope = model.json_response(wire_schema) if callable(getattr(model, 'json_response', None)) else nullcontext()
                 with output_scope:
                     response=await _await_model(agent,message,position,on_event,timeout=getattr(model,'pptd_request_timeout',180))
+                MODEL_PRESSURE.succeeded()
                 break
             except asyncio.CancelledError: raise
             except Exception as exc:
@@ -308,7 +310,11 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
                     await _emit(on_event,{**position,"attempt":request_attempt+1,"status":"retrying","message":f"{location}：模型请求超时，正在重试；已完成页面保持不变。"})
                     continue
                 if transient_status is not None and transport_attempt + 1 < transport_attempts:
-                    delay = min(20, 2 ** transport_attempt)
+                    delay = (
+                        MODEL_PRESSURE.rate_limited()
+                        if transient_status in (429, 529)
+                        else min(20, 2 ** transport_attempt)
+                    )
                     await _emit(on_event, {
                         **position,
                         'attempt': request_attempt + 1,

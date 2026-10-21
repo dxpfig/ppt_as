@@ -29,6 +29,8 @@ from .kimi_rules import KimiRules, SCENARIOS
 from .model_context import PROTECTED_REQUEST_FIELDS
 
 VISUAL_WAIT_SECONDS = 15.0
+_CAPABILITY_CACHE: dict[tuple[str, str, str], dict] = {}
+_CAPABILITY_LOCKS: dict[tuple[str, str, str], asyncio.Lock] = {}
 
 
 class VisualReviewError(ValueError):
@@ -253,6 +255,25 @@ class VisionClient:
 
     async def verify_vision(self, artifact_dir):
         """Pixels contain a random answer absent from the textual request."""
+        cache_enabled = os.getenv(
+            'PPT_VISION_CAPABILITY_CACHE',
+            '1',
+        ).strip().lower() not in ('0', 'false', 'no')
+        key = (
+            self.config.provider,
+            self.config.model,
+            self.config.base_url or '',
+        )
+        lock = _CAPABILITY_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            if cache_enabled and key in _CAPABILITY_CACHE:
+                return {**_CAPABILITY_CACHE[key], 'cached': True}
+            result = await self._verify_vision_pixels(artifact_dir)
+            if cache_enabled:
+                _CAPABILITY_CACHE[key] = result
+            return result
+
+    async def _verify_vision_pixels(self, artifact_dir):
         token = ''.join(secrets.choice('23456789') for _ in range(6))
         image = Image.new('RGB', (780, 180), 'white')
         draw = ImageDraw.Draw(image)

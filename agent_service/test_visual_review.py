@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import httpx2
@@ -59,6 +59,37 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class WireTests(unittest.IsolatedAsyncioTestCase):
+    async def test_passed_vision_capability_is_cached_per_endpoint(self):
+        from agent_service.visual_review import (
+            VisionClient,
+            VisionConfig,
+            _CAPABILITY_CACHE,
+            _CAPABILITY_LOCKS,
+        )
+
+        _CAPABILITY_CACHE.clear()
+        _CAPABILITY_LOCKS.clear()
+        with TemporaryDirectory() as folder, patch(
+            'agent_service.visual_review.AsyncOpenAI'
+        ), patch('agent_service.visual_review.secrets.choice', return_value='2'):
+            reviewer = VisionClient(
+                VisionConfig('openai', 'vision', 'key', 'http://provider.test/v1')
+            )
+            reviewer.ask = AsyncMock(
+                return_value={
+                    'digits': '222222',
+                    'color': 'red',
+                    'shape': 'circle',
+                }
+            )
+            first = await reviewer.verify_vision(folder)
+            second = await reviewer.verify_vision(folder)
+
+        self.assertEqual(first['method'], 'random-pixel-challenge')
+        self.assertEqual(second['method'], 'random-pixel-challenge')
+        self.assertTrue(second['cached'])
+        reviewer.ask.assert_awaited_once()
+
     async def test_openai_wire_contains_actual_image_bytes_and_no_hidden_retries(self):
         from agent_service.visual_review import VisionClient, VisionConfig
         seen = []

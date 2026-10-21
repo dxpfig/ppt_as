@@ -41,26 +41,63 @@ def collect(data_dir: Path, limit: int) -> dict:
             continue
         duration = max(0.0, float(updated) - float(created))
         nodes = {}
+        node_ends = {}
         for node in (job.get('execution') or {}).get('nodes') or []:
             started, ended = node.get('startedAt'), node.get('endedAt')
             if isinstance(started, (int, float)) and isinstance(ended, (int, float)):
                 nodes[node.get('id')] = max(0.0, float(ended) - float(started))
+                node_ends[node.get('id')] = float(ended)
+        events = [
+            *(job.get('events') or []),
+            *((job.get('execution') or {}).get('events') or []),
+        ]
+        first_page = next(
+            (
+                event.get('timestamp')
+                for event in events
+                if event.get('phase') == 'pages'
+                and event.get('pagePath')
+                and event.get('status') == 'completed'
+                and isinstance(event.get('timestamp'), (int, float))
+            ),
+            None,
+        )
+        milestones = {}
+        if isinstance(first_page, (int, float)):
+            milestones['firstPageSeconds'] = round(
+                max(0.0, float(first_page) - float(created)),
+                3,
+            )
+        for key, node_id in (
+            ('editableSeconds', 'pages'),
+            ('visualReviewSeconds', 'visual'),
+            ('deliveredSeconds', 'done'),
+        ):
+            if node_id in node_ends:
+                milestones[key] = round(
+                    max(0.0, node_ends[node_id] - float(created)),
+                    3,
+                )
         jobs.append({
             'id': job.get('id'),
             'kind': job.get('kind') or 'unknown',
             'status': job.get('status') or 'unknown',
             'durationSeconds': round(duration, 3),
             'nodes': {key: round(value, 3) for key, value in nodes.items()},
+            'milestones': milestones,
             'eventCount': len(job.get('events') or []),
         })
     by_kind = defaultdict(list)
     by_status = defaultdict(list)
     node_values = defaultdict(list)
+    milestone_values = defaultdict(list)
     for job in jobs:
         by_kind[job['kind']].append(job['durationSeconds'])
         by_status[job['status']].append(job['durationSeconds'])
         for node, seconds in job['nodes'].items():
             node_values[node].append(seconds)
+        for milestone, seconds in job['milestones'].items():
+            milestone_values[milestone].append(seconds)
     return {
         'version': 1,
         'source': str((data_dir / 'jobs').resolve()),
@@ -69,6 +106,10 @@ def collect(data_dir: Path, limit: int) -> dict:
         'byKind': {kind: summarize(values) for kind, values in sorted(by_kind.items())},
         'byStatus': {status: summarize(values) for status, values in sorted(by_status.items())},
         'byNode': {node: summarize(values) for node, values in sorted(node_values.items())},
+        'milestones': {
+            key: summarize(values)
+            for key, values in sorted(milestone_values.items())
+        },
         'jobs': jobs,
     }
 
