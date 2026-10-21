@@ -1,16 +1,16 @@
 # 模型配置
 
-配置保存在项目根目录 `.env`，密钥仅供服务端读取。2026-10-10 14:19 按用户要求将生成、修改和视觉审稿切回 MiniMax M3，使用此前配置的官方接口与密钥。主模型通过 OpenAI 兼容接口接入 AgentScope，界面 provider 为 `openai`，实际服务以表中地址为准。
+配置保存在项目根目录 `.env`，密钥仅供服务端读取。2026-10-21 的当前配置为：文本生成使用 `MiniMax-M3`，视觉审稿使用 `MiniMax-M3.1-Flash`。两者均通过 OpenAI 兼容接口接入，界面 provider 为 `openai`，实际服务以表中地址为准。
 
 | 用途                 | 模型               | 地址                                           | 接入状态                                            |
 | -------------------- | ------------------ | ---------------------------------------------- | --------------------------------------------------- |
 | PPT 规划、生成、修改 | MiniMax-M3         | `https://api.minimaxi.com/v1`                  | 已启用，实际文字请求通过                            |
-| AI 视觉审稿          | MiniMax-M3         | `https://api.minimaxi.com/v1`                  | 已启用，通过项目随机图片识别校验                    |
+| AI 视觉审稿          | MiniMax-M3.1-Flash | `https://api.minimaxi.com/v1`                  | 已启用，2026-10-21 随机图片识别校验通过             |
 | 向量                 | qwen3-vl-embedding | `http://192.168.0.11:8001/v1/embeddings`       | 仅保存，暂不接入业务；实测返回 2048 维向量          |
 | 重排                 | qwen3-vl-reranker  | `http://192.168.0.11:8002/score`               | 仅保存，暂不接入业务；实测返回评分                  |
 | OCR                  | PaddleOCR-VL-1.5   | `http://192.168.0.11:8118/v1/chat/completions` | 仅保存，暂不接入业务；2026-10-10 检查时端口拒绝连接 |
 
-主模型读取 `PPT_LLM_PROVIDER`、`PPT_LLM_MODEL`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`，`OPENAI_MODEL` 同步保存相同名称。视觉审稿读取 `PPT_VISION_PROVIDER`、`PPT_VISION_MODEL`、`PPT_VISION_BASE_URL`、`PPT_VISION_API_KEY`。
+主模型读取 `PPT_LLM_PROVIDER`、`PPT_LLM_MODEL`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`，`OPENAI_MODEL` 同步保存相同名称。视觉审稿读取 `PPT_VISION_PROVIDER`、`PPT_VISION_MODEL`、`PPT_VISION_BASE_URL`、`PPT_VISION_API_KEY`。视觉模型标识必须与服务端 `/models` 返回值完全一致；模型名中的空格、大小写或连字符错误会返回 400。通过的随机图片能力校验会按 provider/model/endpoint 缓存。
 
 当前保留流式接收（`PPT_LLM_STREAM=true`），`PPT_LLM_EXTRA_BODY={}` 已清除 Qwen 专用扩展；MiniMax 的输出模式沿用现有官方接口适配。此前本地 Qwen 使用的 `chat_template_kwargs.enable_thinking=false` 只适用于已验证的 vLLM 服务，不发送给 MiniMax。
 

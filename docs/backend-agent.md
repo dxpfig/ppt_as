@@ -4,13 +4,15 @@
 
 ```mermaid
 flowchart LR
-    Browser[浏览器 / React 工作台] -->|同源 /api/studio| Vite[Vite :5174]
+    Browser[浏览器 / React 工作台] -->|同源 /api/studio| Vite[Vite :5173]
     Vite --> BFF[Express BFF :3002]
-    BFF --> Python[FastAPI / AgentScope :8001]
-    Python --> Agents[策划 / 内容 / 编辑 Agent]
-    Agents --> LLM[配置的大模型服务]
-    Python --> Render[python-pptx 模板与文件生成]
-    Python --> Storage[项目 / 模板 / 任务 / 产物持久化]
+    BFF --> Python[FastAPI :8001]
+    Python --> Orchestrator[Orchestrator.dispatch]
+    Orchestrator --> Runners[PPTD / Expert / Page / Legacy Runner]
+    Runners --> Services[Context / Model / Queue / Render / Review / Repair / Export]
+    Services --> LLM[配置的文本与视觉模型]
+    Services --> Store[JobStore / PPTD DocumentStore]
+    Services --> Render[Chromium / LibreOffice / 原生 PPTX]
 ```
 
 ## 启动
@@ -67,7 +69,14 @@ Python 服务启动时自动读取项目根目录 `.env`，已有进程环境变
 4. 对话修改使用 `revise` 任务，可针对当前页或整份演示。页内编辑保留已有页面 ID，重新生成文件后才能让下载产物反映最新内容。
 5. 项目、模板、任务状态和生成产物保留在服务器运行时目录；浏览器刷新后可重新读取。并发生成、取消与错误由 Python 任务层处理，BFF 不承担模型调度。
 
-接口按 `/api/studio` 分组，核心资源为 `projects`、`templates`、`jobs` 和 `artifacts`。项目支持读取、列出和保存；模板上传使用 `multipart/form-data`；任务支持创建、查询状态与关键节点进度，以及取消；产物接口返回文件。工作台每秒轮询任务状态，当前没有任务 SSE 事件接口。具体参数与返回字段以 `agent_service/models.py` 和 FastAPI OpenAPI 文档为准。Python 服务本机文档地址为 `http://127.0.0.1:8001/docs`。
+接口按 `/api/studio` 分组，核心资源为 `projects`、`templates`、`jobs` 和 `artifacts`。项目支持读取、列出和保存；模板上传使用 `multipart/form-data`；任务支持创建、查询状态、关键节点进度、取消、重试和恢复；产物接口返回文件。`/jobs/{id}/events` 使用 SSE 推送任务快照，断线后客户端可回退轮询。具体参数与返回字段以 `agent_service/models.py` 和 FastAPI OpenAPI 文档为准。Python 服务本机文档地址为 `http://127.0.0.1:8001/docs`。
+
+任务状态只允许合法迁移：`queued → running → completed/failed/cancelled/interrupted`。`JobStore` 原子持久化任务，`JobRuntime` 统一进度、事件和检查点，`JobStream` 统一 SSE 快照、心跳和终止条件。四个 Runner 共享这些边界：
+
+- `pptd_runner.py`：快速生成、编辑和导出。
+- `expert_runner.py`：AgentScope 文件工具型 PPT 专家。
+- `page_action_runner.py`：页面修复、视觉检视和设计。
+- `legacy_runner.py`：未迁移旧项目的兼容路线。
 
 Express 直接转发请求与响应流，不在上传前调用 `express.json()`，因此 multipart 边界和文件字节保持完整。代理层已兼容将来使用 SSE 时的及时刷新响应头、关闭代理缓冲及保留 `Last-Event-ID`；客户端断开会关闭对应上游连接。文件下载保留 MIME、状态码和 `Content-Disposition`。上游不可达返回可读的 502 错误；`GET /api/health` 仅表示 BFF 自身可用，不代表模型与 Python 已就绪。
 
@@ -100,7 +109,9 @@ Express 直接转发请求与响应流，不在上传前调用 `express.json()`�
 ## 验证
 
 ```bash
-pnpm --filter backend test
+pnpm test:fast
+pnpm test:contract
+pnpm test:pptd
 pnpm build
 # 服务已启动且 LibreOffice 可用时：
 .venv/bin/python -m unittest agent_service.test_service -v

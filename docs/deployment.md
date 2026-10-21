@@ -1,6 +1,6 @@
 # 部署说明
 
-本文档对应当前已落地的源码、Docker 和离线部署骨架。完整离线验收仍依赖本地 Qwen、公司知识库和 Agent 镜像的最终验证。
+本文档对应当前已落地的源码、Docker 和离线部署骨架。W12 重构后的四个 Job Runner、统一 JobStore/SSE、渲染、审稿和导出服务均包含在同一模块化单体中。完整离线验收仍依赖本地 Qwen、公司知识库和 Agent 镜像的最终验证。
 
 ## Docker 部署
 
@@ -19,6 +19,8 @@ chmod 600 .env
 ```
 
 在 `.env` 中填写模型、视觉模型、知识库和渲染器配置。密钥只通过 `env_file` 注入容器，不写入镜像。
+
+`PPT_VISION_MODEL` 必须使用服务端实际支持的模型标识。部署后先执行随机图片识别校验，健康接口应显示模型、视觉、知识库和渲染器 provider 状态。
 
 启动：
 
@@ -44,6 +46,26 @@ docker compose -f deploy/docker/compose.yml down
 
 数据卷默认保留。只有明确需要删除全部运行数据时才使用 `down -v`。
 
+源码开发验证：
+
+```bash
+pnpm test:all
+pnpm build
+pnpm --filter frontend lint
+```
+
+性能门禁：
+
+```bash
+pnpm perf:report -- \
+  --data-dir runtime/studio \
+  --output runtime/diagnostics/performance.json
+pnpm perf:compare -- \
+  --baseline docs/performance-baseline-2026-10-21.json \
+  --candidate runtime/diagnostics/performance.json \
+  --max-regression 0.2
+```
+
 ### 容器
 
 | 容器     | 作用                            | 是否暴露宿主机 |
@@ -53,6 +75,7 @@ docker compose -f deploy/docker/compose.yml down
 | agent    | FastAPI、AgentScope、渲染与导出 | 否             |
 
 前端、BFF 镜像已验证构建；BFF 和前端容器已实际启动并通过 HTTP 检查。Agent 镜像包含 LibreOffice、Chromium 和 Python 依赖，构建体积较大。
+当前 Agent 镜像完整构建与三容器 Compose 全链路仍待验收，不能仅凭前端和 BFF 容器成功就宣称整个生产栈已部署完成。
 
 ## 源码部署
 
@@ -87,6 +110,8 @@ docker compose -f deploy/docker/compose.yml down
 ```
 
 `ppt-as.service.example` 可作为 systemd 单元的起点。当前 `start.sh` 使用项目内置进程管理器和 Vite 开发服务器，生产环境优先使用 Docker 或反向代理静态构建产物。
+
+源码模式的数据、检查点和缓存均位于 `STUDIO_DATA_DIR`。备份至少应覆盖 `projects/`、`documents/`、`document_versions/`、`jobs/`、`checkpoints/`、`templates/`、`reference-files/` 和 `artifacts/`。`render-cache/`、`review-cache/`、`export-cache/` 可重建，不属于权威数据。
 
 ## 离线部署
 
@@ -126,3 +151,12 @@ chmod 600 .env
 - Nginx 上传限制为 64 MB，SSE 和长任务代理关闭缓冲。
 - 运行数据使用持久化卷，删除卷前必须备份。
 - 离线包必须校验 `SHA256SUMS` 后才能加载镜像。
+
+## 已知限制与故障排查
+
+- 视觉模型必须真实支持图片输入；只返回“看过图片”文本的模型会被随机像素校验拒绝。
+- 429/529 会触发模型请求退避；持续限流时应降低页面并发和视觉审稿并发。
+- 文档 revision 冲突返回 409，必须重新加载后操作，不能强制覆盖。
+- Chromium 或 LibreOffice 不可用时不会伪造 PPTX/PDF 成功，应检查渲染器健康状态、字体和镜像。
+- 5/20 页真实任务可能因视觉模型主观样式或返回格式不完整而保留可编辑稿、拒绝发布；这是质量门禁行为。
+- 公司知识库真实检索需要租户配置；离线环境不得退化为伪造引用。
