@@ -83,7 +83,7 @@ test('long-running progress and recoverable failures stay visible in the main wo
 		assert.match(await status.innerText(), /模型未返回符合 JSON 契约/);
 		assert.match(await status.innerText(), /Expecting ',' delimiter/);
 		assert.match(await status.innerText(), /已保存 7\/13 页/);
-		assert.equal(await status.getByRole('button', { name: '重新开始任务' }).count(), 1);
+		assert.equal(await status.getByRole('button', { name: '重新生成' }).count(), 0);
 		const failedPosition = await status.boundingBox();
 		assert.ok(
 			failedPosition.y >= 0 && failedPosition.y + failedPosition.height <= 720,

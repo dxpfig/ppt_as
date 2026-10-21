@@ -4,7 +4,8 @@ import os
 import time
 
 PHASES = [('context', '读取材料'), ('plan', '内容策划'), ('assets', '准备素材'),
-          ('pages', '逐页创作'), ('validate', '检查修复'), ('export', '渲染导出'), ('visual', 'AI 视觉审稿'), ('done', '完成交付')]
+          ('pages', '逐页创作'), ('validate', '检查修复'), ('visual', 'AI 视觉审稿'),
+          ('export', '渲染导出'), ('done', '完成交付')]
 
 
 def initial_execution():

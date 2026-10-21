@@ -85,6 +85,11 @@ export type StudioJob = {
 		reply?: string;
 		artifact?: Artifact;
 		project?: Project;
+		warnings?: {
+			location?: string;
+			code?: string;
+			message: string;
+		}[];
 	};
 	error?: string;
 	recoverable?: boolean;

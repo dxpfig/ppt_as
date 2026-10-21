@@ -33,6 +33,7 @@ import { PptdJobStatus } from './PptdJobStatus';
 import {
 	defaultPreferences,
 	generationOptions,
+	groupImportWarnings,
 	isLegacyProject,
 	pageTitle,
 	pagePreviewSources,
@@ -221,9 +222,13 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const checkpoint =
 		typeof job?.checkpoint === 'string' ? job.checkpoint : job?.checkpoint?.summary;
 	const completedPages =
-		typeof job?.checkpoint === 'object' && typeof job.checkpoint.completedPages === 'number'
+		job?.checkpoint &&
+		typeof job.checkpoint === 'object' &&
+		typeof job.checkpoint.completedPages === 'number'
 			? job.checkpoint.completedPages
 			: undefined;
+	const importWarnings = groupImportWarnings(project.importWarnings);
+	const importWarningCount = importWarnings.reduce((total, item) => total + item.count, 0);
 	const iframeUrl = project.pptd
 		? (() => {
 				const url = new URL(project.pptd.viewUrl, window.location.origin);
@@ -874,15 +879,34 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									</div>
 								</div>
 							)}
-							{!!project.importWarnings?.length && (
-								<div className="pptd-import-warnings" role="status">
-									<strong>模板导入说明</strong>
-									{project.importWarnings.map((warning) => (
-										<p className="pptd-hint" key={warning}>
-											{warning}
+							{importWarnings.length > 0 && (
+								<details className="pptd-import-warnings">
+									<summary>
+										<strong>模板导入说明</strong>
+										<span>
+											{importWarnings.length} 类差异
+											{importWarningCount > importWarnings.length
+												? ` · 影响 ${importWarningCount} 处`
+												: ''}
+										</span>
+										<ChevronRight size={14} />
+									</summary>
+									<div>
+										<p>
+											模板已可用于生成；以下能力会保留为可编辑内容，但复杂样式可能近似呈现。
 										</p>
-									))}
-								</div>
+										<ul>
+											{importWarnings.map((item) => (
+												<li key={item.message}>
+													<span>{item.message}</span>
+													{item.count > 1 && (
+														<strong>×{item.count}</strong>
+													)}
+												</li>
+											))}
+										</ul>
+									</div>
+								</details>
 							)}
 							<details className="pptd-materials">
 								<summary>
@@ -1113,17 +1137,17 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 										onClick={() => void studio.resume()}
 									>
 										<RotateCcw size={14} />
-										从检查点继续
+										继续任务
 									</button>
 								)}
-								{terminal && job.recoverable !== false && (
+								{terminal && job.recoverable !== false && !checkpoint && (
 									<button
 										className="pptd-secondary"
 										disabled={busy}
 										onClick={() => void studio.retry()}
 									>
 										<RotateCcw size={14} />
-										重新开始任务
+										重新生成
 									</button>
 								)}
 								{!!job.events?.length && (
@@ -1337,9 +1361,9 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 									{!!project.artifact?.warnings.length && (
 										<details className="pptd-export-warnings">
 											<summary>
-												导出提示 · {project.artifact.warnings.length}
+												导出说明 · {project.artifact.warnings.length}
 											</summary>
-											<div role="status">
+											<div role="note">
 												{project.artifact.warnings.map((warning) => (
 													<p key={warning}>{warning}</p>
 												))}

@@ -29,5 +29,32 @@ class TextSpacingTests(unittest.TestCase):
             self.assertEqual(xml.xpath('//a:r/a:t/text()',namespaces=NS),['Inherited','Tight','Reset'])
             self.assertEqual(exporter.report.data['unsupported'],[])
 
+    def test_font_substitution_is_reported_as_a_user_readable_export_note(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'pages').mkdir()
+            (root / 'pages/a.page').write_text(json.dumps({
+                'pageType': 'content',
+                'elements': [{
+                    'elementId': 'title',
+                    'elementType': 'text',
+                    'bounds': [40, 40, 500, 60],
+                    'content': {'text': 'Arial sample', 'fontFamily': 'Arial', 'fontSize': 24},
+                }],
+            }), encoding='utf-8')
+            source = root / 'document.pptd'
+            source.write_text(json.dumps({
+                'version': 'v2',
+                'title': 'Font note',
+                'size': [960, 540],
+                'pages': ['pages/a.page'],
+            }), encoding='utf-8')
+
+            report = Exporter(source, root / 'out').run()
+
+            self.assertEqual(report['fontSubstitutions'], [
+                '字体替换：Arial 未安装，已改用开源等价字体 Liberation Sans 并随文件内嵌。',
+            ])
+
 
 if __name__ == '__main__': unittest.main()

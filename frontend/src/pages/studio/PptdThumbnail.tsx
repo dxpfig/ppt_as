@@ -15,7 +15,8 @@ export function PptdThumbnail({ sources, size }: { sources: PreviewSources; size
 		}
 		const observer = new IntersectionObserver(([entry]) => setNearby(entry.isIntersecting), {
 			root: element.closest('.pptd-page-list'),
-			rootMargin: '150px 0px',
+			rootMargin: '24px 0px',
+			threshold: 0.01,
 		});
 		observer.observe(element);
 		return () => observer.disconnect();

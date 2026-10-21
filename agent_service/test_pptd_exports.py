@@ -297,5 +297,9 @@ class ExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report['pdf']['pages'][0]['math'], 1)
         self.assertFalse(report['pdf']['rasterized'])
         self.assertEqual(report['ooxmlEvidence']['slides'][0]['nativeEquations'], 1)
+        self.assertFalse(
+            any('字体别名' in warning or '阴影采用浏览器 CSS' in warning for warning in artifact['warnings']),
+            'informational runtime details must not be promoted to export warnings',
+        )
 
 if __name__ == '__main__': unittest.main()

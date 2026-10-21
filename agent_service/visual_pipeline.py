@@ -26,6 +26,40 @@ async def repair_deck(*args, **kwargs):
     return await repair(*args, **kwargs)
 
 
+async def repair_deck_batched(request, state, issues, *, on_event=None, rendered_pages=None,
+                              layout_measurements=None, validate_candidate=None, on_audit=None):
+    """Keep each repair request within the provider context budget."""
+    issue_pages = {
+        issue.get('pagePath') or issue.get('page')
+        for issue in issues
+        if issue.get('pagePath') or issue.get('page')
+    }
+    ordered = [page['path'] for page in state['pages'] if page['path'] in issue_pages]
+    limit = max(1, int(os.getenv('PPTD_VISUAL_REPAIR_PAGE_BATCH', '4')))
+    if len(ordered) <= limit:
+        return await repair_deck(
+            request, state, issues, on_event=on_event,
+            rendered_pages=rendered_pages, layout_measurements=layout_measurements,
+            validate_candidate=validate_candidate, on_audit=on_audit,
+        )
+    repaired = deepcopy(state)
+    for start in range(0, len(ordered), limit):
+        paths = set(ordered[start:start + limit])
+        batch_issues = [
+            issue for issue in issues
+            if (issue.get('pagePath') or issue.get('page')) in paths
+        ]
+        repaired = await repair_deck(
+            request, repaired, batch_issues, on_event=on_event,
+            # The final export gate renders the combined candidate. Per-batch
+            # validation would reject correctly patched pages because the
+            # untouched batches still contain their original findings.
+            rendered_pages=rendered_pages, layout_measurements=layout_measurements,
+            validate_candidate=None, on_audit=on_audit,
+        )
+    return repaired
+
+
 class VisualReviewExhausted(ValueError):
     code = 'visual_review_exhausted'
 
@@ -125,7 +159,7 @@ def _fingerprint(issues):
 
 async def export_reviewed(store, project_id, folder, request, progress=None, *,
                           checkpoint=None, save_checkpoint=None, on_event=None,
-                          assert_current=None):
+                          assert_current=None, publish=True):
     folder = Path(folder)
     cp = deepcopy(checkpoint or {})
     request = copy(request)
@@ -177,11 +211,16 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
     # Two repair rounds are a hard cap; recovery never silently resets it.
     budget = 2
 
+    phase = 'visual'
+
     def emit(status, message, **extra):
         if assert_current:
             assert_current()
         if on_event:
-            on_event({'phase': 'visual', 'status': status, 'message': message, **extra})
+            on_event({'phase': phase, 'status': status, 'message': message, **extra})
+
+    def review_event(event):
+        return on_event(event) if on_event else None
 
     def persist():
         visual['candidate'] = {'document': deepcopy(state['document']), 'pages': deepcopy(state['pages'])}
@@ -246,12 +285,13 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             layout_measurements = {p['source']: {'canvasSize': state['document']['size'], 'elements': p.get('textLayout', [])}
                                    for p in exported_report.get('pdf', {}).get('pages', [])}
             if on_event:
-                on_event({'phase': 'export', 'status': 'completed', 'message': '候选稿已通过渲染与导出检查，准备 AI 视觉审查'})
+                on_event({'phase': 'export' if publish else 'validate', 'status': 'completed',
+                          'message': '候选稿已通过渲染与导出检查，准备 AI 视觉审查'})
             emit('started', f'AI 正在第 {attempt} 轮整稿视觉审查', scope='deck', attempt=attempt,
                  covered=0, total=len(state['pages']))
             previous_review = next((r for r in reversed(visual['reports']) if r.get('source') != 'renderer'), None)
             report = await review_deck(deepcopy(state), candidate_folder, scenario=request.scenario,
-                                       usage=request.usage, on_event=on_event, previous_review=previous_review)
+                                       usage=request.usage, on_event=review_event, previous_review=previous_review)
             paths = state['document']['pages']
             if (report.get('status') not in ('passed', 'issues') or
                     report.get('coveredPages') != paths or not isinstance(report.get('issues'), list)):
@@ -291,16 +331,18 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             # Complete source-bound content before style repair. The next loop
             # renders and reviews it with the same unchanged round budget.
             repaired, receipt = await complete_content(request, deepcopy(state), missing, completion_plan,
-                on_event=on_event, on_audit=audit, rendered_pages=rendered_pages)
+                on_event=review_event, on_audit=audit, rendered_pages=rendered_pages)
             receipts = [*visual.get('completionReceipts', []), receipt]
             next_semantics = expected_semantics(receipts)
             _assert_semantics(repaired, next_semantics)
             visual['completionReceipts'] = receipts
             accepted_semantics = next_semantics
         else:
-            repaired = await repair_deck(request, deepcopy(state), issues, on_event=on_event,
-                                         rendered_pages=rendered_pages, layout_measurements=layout_measurements,
-                                         validate_candidate=validate_candidate, on_audit=audit)
+            repaired = await repair_deck_batched(
+                request, deepcopy(state), issues, on_event=review_event,
+                rendered_pages=rendered_pages, layout_measurements=layout_measurements,
+                validate_candidate=validate_candidate, on_audit=audit,
+            )
         _assert_semantics(repaired, accepted_semantics)
         DocumentStore._validate(repaired['document'], repaired['pages'])
         if repaired['document'] == state['document'] and repaired['pages'] == state['pages']:
@@ -322,6 +364,20 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
     export_report = json.loads(report_path.read_text(encoding='utf-8'))
     export_report['visualReview'] = {**summary, 'reviews': visual['reports']}
     report_path.write_text(json.dumps(export_report, ensure_ascii=False, indent=2), encoding='utf-8')
+    if not publish:
+        if state['revision'] != base_revision:
+            committed = store.commit(project_id, state['document'], state['pages'], 'AI 视觉审稿自动修复', base_revision)
+            metadata['revision'] = committed['revision']
+        visual.pop('pendingVerified', None)
+        visual.update(status='passed', sourceRevision=metadata['revision'],
+                      sourceSemanticSha256=accepted_semantics, completionReceipts=[])
+        cp.update(stage='validated', _committedRevision=metadata['revision'], _visualReview=visual)
+        if save_checkpoint:
+            save_checkpoint(cp)
+        emit('completed', summary['summary'], covered=len(state['pages']), total=len(state['pages']),
+             issueCount=0, attempt=attempt)
+        return {**metadata, 'visualReview': summary, 'revision': metadata['revision'],
+                'pageCount': len(state['pages']), 'published': False}
     # Durable receipt precedes any publication. An interrupted final checkpoint
     # write can be reconciled only against this exact reviewed source and its
     # original semantic proof. Moving files first is safe: the download route

@@ -3,10 +3,13 @@ import json
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from agentscope.event import ModelCallEndEvent
 from agentscope.message import Msg
+from agentscope.model import ChatUsage
 from openai import AsyncOpenAI
 
 from agent_service.agents import make_model, make_agent
@@ -14,6 +17,19 @@ from agent_service.job_execution import diagnose_error
 
 
 class ModelContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_none_usage_fields_are_normalized_before_event_validation(self):
+        from agent_service.model_context import normalize_usage
+
+        usage = ChatUsage(input_tokens=None, output_tokens=None, time=0.01)
+        response = SimpleNamespace(usage=usage)
+        normalize_usage(response)
+        event = ModelCallEndEvent(reply_id='reply', input_tokens=usage.input_tokens,
+                                  output_tokens=usage.output_tokens,
+                                  cache_input_tokens=usage.cache_input_tokens,
+                                  cache_creation_input_tokens=usage.cache_creation_input_tokens)
+        self.assertEqual(event.input_tokens, 0)
+        self.assertEqual(event.output_tokens, 0)
+
     def test_reference_budget_uses_model_input_room_and_hard_cap(self):
         from agent_service.model_context import reference_budget_from_context
 

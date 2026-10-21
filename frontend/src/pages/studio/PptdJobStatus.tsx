@@ -52,6 +52,7 @@ export function PptdJobStatus({
 }) {
 	const running = isRunningJob(job);
 	const failed = ['failed', 'cancelled', 'interrupted'].includes(job.status);
+	const renderJob = job.kind === 'render';
 	const execution = executionView(job);
 	const [now, setNow] = useState(() => Date.now() / 1000);
 	const [expanded, setExpanded] = useState(false);
@@ -67,6 +68,8 @@ export function PptdJobStatus({
 	const current = execution.nodes.find((node) => node.id === execution.phase);
 	const repairPaths = new Set(execution.repairPaths);
 	const issues = job.diagnostic?.issues ?? [];
+	const warningIssues = job.result?.warnings ?? [];
+	const completedWithWarnings = job.status === 'completed' && warningIssues.length > 0;
 	const displayedPages =
 		selected.id === 'visual'
 			? execution.visualPages
@@ -121,9 +124,16 @@ export function PptdJobStatus({
 			: null;
 	const labels = {
 		queued: '等待开始',
-		running: execution.phase === 'visual' ? 'AI 审稿中' : '正在创作',
-		completed: '生成完成',
-		failed: '生成失败',
+		running:
+			execution.phase === 'visual'
+				? renderJob
+					? '导出前视觉审稿中'
+					: 'AI 审稿中'
+				: renderJob
+					? '导出前检查中'
+					: '正在创作',
+		completed: completedWithWarnings ? `完成 · ${warningIssues.length} 项待确认` : '生成完成',
+		failed: renderJob ? '导出前检查失败' : '生成失败',
 		cancelled: '任务已停止',
 		interrupted: '任务已中断',
 	};
@@ -207,6 +217,9 @@ export function PptdJobStatus({
 				<p className="pptd-live-message" aria-live="polite" title={job.message}>
 					{job.message}
 				</p>
+				{renderJob && (
+					<small>导出前验证：排版与 AI 视觉审稿通过后才会生成 PPTX/PDF。</small>
+				)}
 				{failed && issues.length > 0 && (
 					<button
 						type="button"
@@ -235,6 +248,24 @@ export function PptdJobStatus({
 							: ''}
 					</span>
 				</p>
+			)}
+			{completedWithWarnings && (
+				<details className="pptd-export-warnings">
+					<summary>排版待确认 · {warningIssues.length} 项</summary>
+					<div>
+						<ol className="pptd-diagnostic-issues">
+							{warningIssues.map((issue, index) => (
+								<li key={`${issue.location}-${issue.code}-${index}`}>
+									<p>{issue.message}</p>
+									<small>
+										{issue.location ? `位置：${issue.location}` : ''}
+										{issue.code ? ` · ${issue.code}` : ''}
+									</small>
+								</li>
+							))}
+						</ol>
+					</div>
+				</details>
 			)}
 			{failed && job.error && job.error !== job.message && (
 				<p className="pptd-live-error" title={job.error}>
@@ -477,9 +508,9 @@ export function PptdJobStatus({
 							从检查点继续
 						</button>
 					)}
-					{failed && job.recoverable !== false && (
+					{failed && job.recoverable !== false && !job.checkpoint && (
 						<button className="pptd-secondary" disabled={busy} onClick={onRetry}>
-							重新开始任务
+							重新生成
 						</button>
 					)}
 				</div>

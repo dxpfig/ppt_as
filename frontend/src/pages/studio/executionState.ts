@@ -13,8 +13,8 @@ export const executionPhases: { id: ExecutionPhase; label: string }[] = [
 	{ id: 'assets', label: '准备素材' },
 	{ id: 'pages', label: '逐页创作' },
 	{ id: 'validate', label: '检查修复' },
-	{ id: 'export', label: '渲染导出' },
 	{ id: 'visual', label: 'AI 视觉审稿' },
+	{ id: 'export', label: '渲染导出' },
 	{ id: 'done', label: '交付' },
 ];
 export type DisplayStatus = ExecutionStatus | 'unknown';

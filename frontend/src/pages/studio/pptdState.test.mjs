@@ -11,6 +11,7 @@ const { outputText } = ts.transpileModule(source, {
 const {
 	acceptServerProject,
 	generationOptions,
+	groupImportWarnings,
 	isLegacyProject,
 	isRunningJob,
 	pageTitle,
@@ -103,6 +104,21 @@ test('PPTD projects never become legacy just because compatibility slides exist'
 		false,
 	);
 	assert.equal(isLegacyProject(project()), false);
+});
+
+test('template import warnings are grouped without losing their scope', () => {
+	const groups = groupImportWarnings([
+		'Office visual effects are not imported.',
+		'Office visual effects are not imported.',
+		'Source timing tree not imported.',
+		'  ',
+		'Source timing tree not imported.',
+	]);
+	assert.deepEqual(groups, [
+		{ message: 'Office visual effects are not imported.', count: 2 },
+		{ message: 'Source timing tree not imported.', count: 2 },
+	]);
+	assert.deepEqual(groupImportWarnings(undefined), []);
 });
 
 test('interrupted jobs are terminal and page titles come from PPTD content', () => {

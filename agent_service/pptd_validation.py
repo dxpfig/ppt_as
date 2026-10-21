@@ -205,8 +205,12 @@ def normalize_table_tracks(page_data):
         rows = element.get("rows")
         if not isinstance(rows, list):
             continue
+        widths = element.get("columnWidths")
         normalized_rows = []
         for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("cells"), list):
+                row = row["cells"]
+                changed = True
             if not isinstance(row, list):
                 normalized_rows.append(row)
                 continue
@@ -218,6 +222,25 @@ def normalize_table_tracks(page_data):
                 else:
                     cells.append(cell)
             normalized_rows.append(cells)
+        column_count = len(widths) if isinstance(widths, list) else 0
+        if (
+            column_count > 1
+            and len(normalized_rows) > column_count
+            and all(
+                isinstance(row, list) and len(row) == 1
+                for row in normalized_rows[:column_count]
+            )
+            and isinstance(normalized_rows[column_count], list)
+            and len(normalized_rows[column_count]) == column_count
+        ):
+            # Some models write a horizontal header as one single-cell row per
+            # column. Collapse that split header; otherwise every row leaves
+            # the remaining columns empty and the table cannot be rendered.
+            normalized_rows = [
+                [row[0] for row in normalized_rows[:column_count]],
+                *normalized_rows[column_count:],
+            ]
+            changed = True
         if normalized_rows != rows:
             element["rows"] = normalized_rows
             rows = normalized_rows

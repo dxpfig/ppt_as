@@ -272,6 +272,12 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 				project = {
 					...project,
 					templateId: body.templateId,
+					importWarnings: [
+						'Office visual effects are not imported.',
+						'Office visual effects are not imported.',
+						'Source timing tree not imported.',
+						'Source timing tree not imported.',
+					],
 					templateReference: {
 						kind: 'company-template-reference',
 						pageCount: 12,
@@ -388,7 +394,7 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.reload();
 		await page
 			.locator('.pptd-workbench')
-			.getByRole('button', { name: '从检查点继续', exact: true })
+			.getByRole('button', { name: '继续任务', exact: true })
 			.click();
 		await page.getByText('已保存 · 版本 4', { exact: true }).waitFor();
 		assert.ok(requests.some((item) => item.path === '/jobs/interrupted/resume'));
@@ -426,6 +432,10 @@ test('main workspace uses authoritative documents, revisions, recovery, and real
 		await page.locator('iframe[title="演示文稿预览与编辑器"]').waitFor();
 		const imported = requests.find((item) => item.path.endsWith('/pptd/import-template'));
 		assert.equal(imported.body.templateId, 'corporate');
+		const warningSummary = page.locator('.pptd-import-warnings summary');
+		assert.match(await warningSummary.innerText(), /2 类差异 · 影响 4 处/);
+		await warningSummary.click();
+		assert.equal(await page.locator('.pptd-import-warnings li').count(), 2);
 		const templateRequest = requests
 			.filter((item) => item.path === '/jobs' && item.method === 'POST')
 			.at(-1);

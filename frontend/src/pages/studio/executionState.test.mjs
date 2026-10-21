@@ -36,7 +36,7 @@ test('explicit stages stay authoritative and percentages never invent completed 
 	);
 	assert.deepEqual(
 		view.nodes.map((node) => node.id),
-		['context', 'plan', 'assets', 'pages', 'validate', 'export', 'visual', 'done'],
+		['context', 'plan', 'assets', 'pages', 'validate', 'visual', 'export', 'done'],
 	);
 	assert.equal(view.phase, 'pages');
 	assert.equal(view.nodes.find((node) => node.id === 'assets').status, 'pending');

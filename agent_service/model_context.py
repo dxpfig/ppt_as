@@ -36,6 +36,17 @@ class ContextCountError(ValueError):
         super().__init__('无法取得有效的服务端 token 计数，已停止提交请求；请检查计数服务后恢复。')
 
 
+def normalize_usage(response):
+    """Coerce provider ``None`` usage fields before AgentScope validates events."""
+    usage = getattr(response, 'usage', None)
+    if usage is None:
+        return response
+    for name in ('input_tokens', 'output_tokens', 'cache_input_tokens', 'cache_creation_input_tokens'):
+        if getattr(usage, name, None) is None:
+            setattr(usage, name, 0)
+    return response
+
+
 def responses_count_payload(payload):
     """Translate complete Chat messages to the standard Responses count format.
 
@@ -342,7 +353,13 @@ class ContextBudgetMixin:
         if schema is not None and self._supports_json_schema:
             generate_kwargs['response_format'] = {'type':'json_schema', 'json_schema':{
                 'name':'pptd_response', 'strict':True, 'schema':schema}}
-        return await super()._call_api(model_name, messages, tools, tool_choice, **generate_kwargs)
+        result = await super()._call_api(model_name, messages, tools, tool_choice, **generate_kwargs)
+        if hasattr(result, '__aiter__'):
+            async def normalized_stream():
+                async for chunk in result:
+                    yield normalize_usage(chunk)
+            return normalized_stream()
+        return normalize_usage(result)
 
 
 class BudgetedOpenAIChatModel(ContextBudgetMixin, OpenAIChatModel):

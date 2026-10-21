@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from PIL import Image
 
 from agent_service import kimi_agent
 
@@ -64,19 +69,30 @@ class KimiAgentUnitTests(unittest.TestCase):
             info = {"pptx": str(path), "pptd": str(workspace / "template-pptd"),
                     "entry": str(workspace / "template-pptd" / "template.pptd"),
                     "screenshots": str(workspace / "template-screenshots")}
-            message = kimi_agent._initial_message(
-                SimpleNamespace(prompt="p", audience="a", pageCount=None, references="", attachments=[]),
+            request = SimpleNamespace(
+                prompt="p", audience="a", pageCount=None, references="", attachments=[],
+            )
+            requirements = kimi_agent.plan_requirements(request, {})
+            message = kimi_agent._planning_message(
+                request,
                 info,
+                {},
+                requirements,
             )
             self.assertIn("template-pptd", message)
             self.assertIn("严禁", message)
             self.assertIn("Using a template", message)
-            with_references = kimi_agent._initial_message(
+            with_references = kimi_agent._planning_message(
                 SimpleNamespace(
                     prompt="p", audience="a", pageCount=None,
                     references="附件事实：完成率 83%。", attachments=[],
                 ),
                 info,
+                {"characters": len("附件事实：完成率 83%。"), "outline": ""},
+                kimi_agent.plan_requirements(
+                    SimpleNamespace(pageCount=None),
+                    {"characters": len("附件事实：完成率 83%。"), "outline": ""},
+                ),
             )
             payload = json.loads(with_references)
             self.assertEqual(payload["references"], "附件事实：完成率 83%。")
@@ -104,20 +120,355 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertTrue((workspace / "sources" / "reference.md").is_file())
             self.assertTrue((workspace / "sources" / "reference-outline.md").is_file())
             self.assertIn("第 1 章", info["outline"])
-            payload = json.loads(kimi_agent._initial_message(
-                SimpleNamespace(
-                    prompt="p",
-                    audience="a",
-                    pageCount=None,
-                    references=references,
-                    attachments=[],
-                ),
+            request = SimpleNamespace(
+                prompt="p",
+                audience="a",
+                pageCount=None,
+                references=references,
+                attachments=[],
+            )
+            payload = json.loads(kimi_agent._planning_message(
+                request,
                 None,
                 info,
+                kimi_agent.plan_requirements(request, info),
             ))
             self.assertEqual(payload["references"], "")
             self.assertEqual(payload["referenceFile"], "sources/reference.md")
             self.assertIn("reference-outline.md", payload["note"])
+
+    def test_long_source_requires_a_complete_multi_chapter_plan(self):
+        from types import SimpleNamespace
+
+        outline = "\n".join([
+            "# 军用计算报告.docx",
+            "# 一、军用计算业务发展现状与趋势分析",
+            "# 二、未来军用计算业务发展需求",
+            "# 集团军用计算业务发展基础与现状",
+            "# 四、集团军用计算业务高质量发展规划",
+            "# 五、全方位保障措施",
+            "## 1.1 全球军事智能化加速演进",
+        ])
+        request = SimpleNamespace(pageCount=None)
+        info = {"characters": 47086, "outline": outline}
+        requirements = kimi_agent.plan_requirements(request, info)
+        self.assertEqual(len(requirements["principalSections"]), 5)
+        self.assertEqual(requirements["minimumPlanPages"], 17)
+        self.assertEqual(requirements["maximumPlanPages"], 32)
+        self.assertEqual(requirements["fieldLimits"]["content"], 240)
+
+        five_page_plan = {
+            "deckTitle": "军用计算",
+            "pages": [
+                {"path": f"pages/{index}.page", "title": title,
+                 "readerTask": "说明", "content": "内容", "visualPlan": "卡片",
+                 "sourceSections": sections}
+                for index, (title, sections) in enumerate([
+                    ("封面", []),
+                    ("目录", []),
+                    ("第一章", [requirements["principalSections"][0]]),
+                    ("第二章", [requirements["principalSections"][1]]),
+                    ("第三章", [requirements["principalSections"][2]]),
+                ], 1)
+            ],
+        }
+        issues = kimi_agent.audit_plan(five_page_plan, requirements)
+        self.assertTrue(any("计划页数不足" in issue for issue in issues))
+        self.assertTrue(any("四、集团" in issue and "五、全方位" in issue for issue in issues))
+        self.assertTrue(any("至少需要 2 页" in issue for issue in issues))
+
+        oversized = {**five_page_plan, "pages": [dict(page) for page in five_page_plan["pages"]]}
+        oversized["pages"][0]["content"] = "过长" * 121
+        self.assertTrue(any(
+            "content 过长" in issue
+            for issue in kimi_agent.audit_plan(oversized, requirements)
+        ))
+
+        explicit = kimi_agent.plan_requirements(SimpleNamespace(pageCount=5), info)
+        explicit_plan = {**five_page_plan, "pages": [dict(page) for page in five_page_plan["pages"]]}
+        explicit_plan["pages"][3]["sourceSections"] = [
+            requirements["principalSections"][1],
+            requirements["principalSections"][2],
+            requirements["principalSections"][3],
+        ]
+        explicit_plan["pages"][4]["sourceSections"] = [requirements["principalSections"][4]]
+        self.assertEqual(kimi_agent.audit_plan(explicit_plan, explicit), [])
+
+    def test_complete_plan_is_accepted_and_materialized_before_page_batches(self):
+        outline = "\n".join([
+            "# 一、现状与趋势",
+            "# 二、发展需求",
+            "# 三、基础与现状",
+            "# 四、发展规划",
+            "# 五、保障措施",
+        ])
+        request = SimpleNamespace(pageCount=None)
+        info = {"characters": 47086, "outline": outline}
+        requirements = kimi_agent.plan_requirements(request, info)
+        sections = requirements["principalSections"]
+        pages = [
+            {"path": "pages/01-cover.page", "title": "封面", "readerTask": "建立主题",
+             "content": "报告主题", "visualPlan": "封面", "sourceSections": []},
+            {"path": "pages/02-toc.page", "title": "目录", "readerTask": "总览",
+             "content": "五章", "visualPlan": "目录", "sourceSections": []},
+        ]
+        for index in range(3, requirements["minimumPlanPages"]):
+            section = sections[(index - 3) % len(sections)]
+            pages.append({
+                "path": f"pages/{index:02d}-body.page",
+                "title": f"正文 {index}",
+                "readerTask": f"论证 {section}",
+                "content": f"{section} 的事实与结论",
+                "visualPlan": "证据页",
+                "sourceSections": [section],
+            })
+        pages.append({
+            "path": "pages/99-closing.page", "title": "致谢", "readerTask": "收束",
+            "content": "感谢观看", "visualPlan": "致谢", "sourceSections": [],
+        })
+        plan = {"deckTitle": "完整报告", "pages": pages}
+        self.assertEqual(kimi_agent.audit_plan(plan, requirements), [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            entry = kimi_agent._write_plan_deck(workspace, plan, None)
+            document, paths, existing, missing = kimi_agent._deck_progress(entry)
+            self.assertEqual(document["pages"], [page["path"] for page in pages])
+            self.assertEqual(len(paths), len(pages))
+            self.assertEqual(existing, [])
+            self.assertEqual(missing, paths)
+            saved = json.loads((workspace / "deck" / "plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(saved["pages"]), len(pages))
+
+            planning = json.loads(kimi_agent._planning_message(
+                request, None, info, requirements,
+            ))
+            self.assertEqual(planning["planRequirements"]["minimumPlanPages"], 17)
+            self.assertEqual(planning["planRequirements"]["maximumPlanPages"], 32)
+            self.assertIn("只做完整内容规划", planning["note"])
+            self.assertIn("禁止创建或修改任何 deck/pages", planning["note"])
+            self.assertIn("紧凑的页面契约", planning["note"])
+            self.assertIn("content ≤ 240 字", planning["note"])
+            self.assertNotIn("write at most the first five planned pages", planning["note"])
+
+            execution = json.loads(kimi_agent._execution_message(
+                request,
+                None,
+                info,
+                plan,
+                {"batch": 1, "batchPages": paths[:5], "existingPages": [], "missingPages": paths},
+            ))
+            self.assertEqual(len(execution["batchPagePlans"]), 5)
+            self.assertEqual(execution["batchPagePlans"][0]["path"], paths[0])
+            self.assertIn("完整计划已经通过宿主校验", execution["note"])
+            self.assertIn("写入 continuation.batchPages", execution["note"])
+            self.assertIn("YAML 无法解析，必须完整重写", execution["note"])
+            self.assertEqual(execution["pageValidationIssues"], [])
+
+    def test_run_kimi_plans_once_then_writes_pages_in_batches(self):
+        class Client:
+            async def close(self):
+                pass
+
+        model = SimpleNamespace(
+            model="fake",
+            max_retries=0,
+            budget_enabled=True,
+            client=Client(),
+        )
+        calls = {
+            "planning": 0,
+            "execution": 0,
+            "batches": [],
+            "draft_present": [],
+            "validation_issues": [],
+        }
+        plan = {
+            "deckTitle": "分批测试",
+            "pages": [
+                {"path": f"pages/{index}.page", "title": title,
+                 "readerTask": "说明", "content": "内容", "visualPlan": "文本",
+                 "sourceSections": []}
+                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
+            ],
+        }
+
+        class Agent:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            async def reply(self, message):
+                text = message.get_text_content()
+                if "当前阶段只做完整内容规划" in text:
+                    calls["planning"] += 1
+                    target = self.workspace / "deck" / "plan.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+                    draft = self.workspace / "deck" / "pages" / "draft.page"
+                    draft.parent.mkdir(parents=True, exist_ok=True)
+                    draft.write_text("elements: []\n", encoding="utf-8")
+                    return None
+                calls["execution"] += 1
+                calls["draft_present"].append(
+                    (self.workspace / "deck" / "pages" / "draft.page").exists()
+                )
+                payload = json.loads(text)
+                calls["validation_issues"].append(payload["pageValidationIssues"])
+                batch = payload["continuation"]["batchPages"]
+                calls["batches"].append(batch)
+                for index, path in enumerate(batch, 1):
+                    target = self.workspace / "deck" / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if calls["execution"] == 1 and index == 1:
+                        target.write_text(
+                            "elements:\n"
+                            "- elementId: malformed\n"
+                            "  inset:\n"
+                            "    - 0.0\n"
+                            "  - 0.0\n",
+                            encoding="utf-8",
+                        )
+                        continue
+                    target.write_text(
+                        "elements:\n"
+                        f"- elementId: title-{calls['execution']}-{index}\n"
+                        "  elementType: text\n"
+                        "  bounds: [40, 40, 400, 60]\n"
+                        "  content:\n"
+                        "    text: 分批页面\n"
+                        "    wrap: true\n"
+                        "    align: [left, top]\n",
+                        encoding="utf-8",
+                    )
+                return None
+
+        async def run(request, *, data_root, progress, on_event=None, project_id, job_id):
+            return await kimi_agent.run_kimi(
+                request,
+                data_root=data_root,
+                progress=progress,
+                on_event=on_event,
+                project_id=project_id,
+                job_id=job_id,
+            )
+
+        request = SimpleNamespace(
+            prompt="生成演示",
+            audience="团队",
+            pageCount=None,
+            references="",
+            attachments=[],
+            scenario="auto",
+            templateId=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(kimi_agent, "make_model", return_value=model), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters: Agent(ws)), \
+             patch.object(kimi_agent, "_render_pages", return_value=None), \
+             patch.object(kimi_agent, "final_layout_issues", return_value=[]), \
+             patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
+            import asyncio
+            result = asyncio.run(run(
+                request,
+                data_root=Path(tmp),
+                progress=lambda *_: None,
+                project_id="planned-batches",
+                job_id="job-1",
+            ))
+
+        self.assertEqual(calls["planning"], 1)
+        self.assertEqual(calls["execution"], 3)
+        self.assertEqual(calls["draft_present"], [False, False, False])
+        self.assertEqual([len(batch) for batch in calls["batches"]], [2, 2, 1])
+        self.assertEqual(
+            [len(issues) for issues in calls["validation_issues"]],
+            [0, 1, 0],
+        )
+        self.assertEqual(
+            calls["validation_issues"][1][0]["path"],
+            "pages/1.page",
+        )
+
+    def test_run_kimi_repairs_layout_issue_before_commit(self):
+        class Client:
+            async def close(self):
+                pass
+
+        model = SimpleNamespace(model="fake", max_retries=0, budget_enabled=True, client=Client())
+        calls = {"layout_repairs": 0}
+        plan = {
+            "deckTitle": "排版修复测试",
+            "pages": [
+                {"path": f"pages/{index}.page", "title": title,
+                 "readerTask": "说明", "content": "内容", "visualPlan": "文本",
+                 "sourceSections": []}
+                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
+            ],
+        }
+        page_markup = (
+            "elements:\n"
+            "- elementId: title-{index}\n"
+            "  elementType: text\n"
+            "  bounds: [40, 40, 400, 60]\n"
+            "  content:\n"
+            "    text: 页面内容\n"
+            "    wrap: true\n"
+            "    align: [left, top]\n"
+        )
+
+        class Agent:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            async def reply(self, message):
+                text = message.get_text_content()
+                if "当前阶段只做完整内容规划" in text:
+                    target = self.workspace / "deck" / "plan.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+                    return None
+                if "本轮只处理这些页面" in text:
+                    calls["layout_repairs"] += 1
+                    target = self.workspace / "deck" / "pages" / "1.page"
+                    target.write_text(page_markup.format(index="repaired"), encoding="utf-8")
+                    return None
+                payload = json.loads(text)
+                for index, path in enumerate(payload["continuation"]["batchPages"], 1):
+                    target = self.workspace / "deck" / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(page_markup.format(index=index), encoding="utf-8")
+                return None
+
+        request = SimpleNamespace(
+            prompt="生成演示", audience="团队", pageCount=None, references="",
+            attachments=[], scenario="auto", templateId=None,
+        )
+        layout_calls = {"count": 0}
+
+        def layout(*_args, **_kwargs):
+            layout_calls["count"] += 1
+            if layout_calls["count"] == 1:
+                return [{"page": "pages/1.page", "location": "pages/1.page#title",
+                         "elementId": "title-1", "code": "text-overflow", "message": "需要修复"}]
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(kimi_agent, "make_model", return_value=model), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters: Agent(ws)), \
+             patch.object(kimi_agent, "_render_pages", return_value=None), \
+             patch.object(kimi_agent, "final_layout_issues", side_effect=layout), \
+             patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
+            import asyncio
+            result = asyncio.run(kimi_agent.run_kimi(
+                request, data_root=Path(tmp), progress=lambda *_: None,
+                project_id="layout-repair", job_id="job-layout",
+            ))
+
+        self.assertEqual(calls["layout_repairs"], 1)
+        self.assertEqual(layout_calls["count"], 2)
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(len(result["pages"]), 4)
+        self.assertEqual(result["revision"], 1)
 
     def test_find_entry_requires_new_deck(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,7 +481,7 @@ class KimiAgentUnitTests(unittest.TestCase):
             (root / "deck" / "deck.pptd").write_text("version: v2\n", encoding="utf-8")
             self.assertEqual(kimi_agent._find_entry(root).name, "deck.pptd")
 
-    def test_partial_deck_reports_missing_pages_without_loading_them(self):
+    def test_partial_deck_reports_missing_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
             entry = Path(tmp) / "deck" / "deck.pptd"
             (entry.parent / "pages").mkdir(parents=True)
@@ -146,6 +497,153 @@ class KimiAgentUnitTests(unittest.TestCase):
         self.assertEqual(paths, ["pages/one.page", "pages/two.page"])
         self.assertEqual(existing, ["pages/one.page"])
         self.assertEqual(missing, ["pages/two.page"])
+
+    def test_malformed_page_is_not_reported_as_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "deck" / "deck.pptd"
+            (entry.parent / "pages").mkdir(parents=True)
+            entry.write_text(
+                "version: v2\nsize: [960, 540]\n"
+                "pages: [pages/one.page, pages/two.page]\n",
+                encoding="utf-8",
+            )
+            (entry.parent / "pages" / "one.page").write_text(
+                "elements:\n"
+                "- elementId: broken\n"
+                "  inset:\n"
+                "    - 0.0\n"
+                "  - 0.0\n",
+                encoding="utf-8",
+            )
+            (entry.parent / "pages" / "two.page").write_text(
+                "elements: []\n", encoding="utf-8"
+            )
+            document, paths, existing, missing, invalid = kimi_agent._deck_status(entry)
+            with self.assertRaisesRegex(ValueError, r"pages/one\.page:\d+:\d+"):
+                kimi_agent._load_deck(entry)
+        self.assertEqual(document["pages"], paths)
+        self.assertEqual(existing, ["pages/two.page"])
+        self.assertEqual(missing, [])
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(invalid[0]["path"], "pages/one.page")
+        self.assertEqual(invalid[0]["code"], "yaml-invalid")
+        self.assertIn("pages/one.page:", invalid[0]["location"])
+
+    def test_white_text_on_white_background_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rendered = Path(tmp)
+            (rendered / "pages").mkdir()
+            Image.new("RGB", (960, 540), "white").save(
+                rendered / "pages" / "page-1.png"
+            )
+            document = {"size": [960, 540], "theme": {}}
+            pages = [{
+                "path": "pages/one.page",
+                "data": {"elements": [{
+                    "elementId": "invisible",
+                    "elementType": "text",
+                    "bounds": [40, 40, 400, 60],
+                    "content": {
+                        "text": '<span style="color:#FFFFFF">不可见标题</span>',
+                    },
+                }]},
+            }]
+            issues = kimi_agent._contrast_issues(document, pages, rendered)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "text-contrast")
+        self.assertEqual(issues[0]["elementId"], "invisible")
+
+    def test_configured_background_replaces_body_page_backgrounds_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = root / "deck" / "deck.pptd"
+            entry.parent.mkdir(parents=True)
+            background = root / "background.png"
+            background.write_bytes(b"configured-background")
+            document = {"size": [960, 540]}
+            pages = [
+                {"path": "pages/1.page", "data": {"elements": []}},
+                {"path": "pages/2.page", "data": {"elements": [{
+                    "elementId": "old-full-image",
+                    "elementType": "image",
+                    "src": "media/old.jpg",
+                    "bounds": [0, 0, 960, 540],
+                }]}},
+                {"path": "pages/3.page", "data": {"elements": []}},
+            ]
+            kimi_agent._apply_configured_background(
+                entry.parent, document, pages, background
+            )
+            self.assertNotIn("background", pages[0]["data"])
+            self.assertNotIn("background", pages[2]["data"])
+            self.assertEqual(len(pages[1]["data"]["elements"]), 1)
+            configured = pages[1]["data"]["elements"][0]
+            self.assertEqual(configured["elementId"], "host-background")
+            self.assertEqual(configured["bounds"], [0, 0, 960, 540])
+            self.assertTrue(configured["src"].endswith(".png"))
+            self.assertTrue((entry.parent / configured["src"]).is_file())
+
+    def test_continuation_batch_target_covers_all_remaining_batches(self):
+        completed = 2
+        for remaining_batches in range(7, 0, -1):
+            target = kimi_agent._batch_page_target(
+                23 - completed, remaining_batches, minimum=2
+            )
+            completed += target
+        self.assertGreaterEqual(completed, 23)
+        self.assertEqual(kimi_agent._batch_page_target(21, 7, 2), 3)
+        self.assertEqual(kimi_agent._batch_page_target(4, 7, 2), 2)
+        self.assertEqual(kimi_agent._batch_page_target(21, 7, 5), 5)
+        self.assertEqual(kimi_agent._batch_page_target(0, 7, 2), 0)
+
+    def test_recovery_checkpoint_reports_partial_agent_deck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = kimi_agent._workspace(root, "project", "job")
+            entry = workspace / "deck" / "deck.pptd"
+            (entry.parent / "pages").mkdir(parents=True)
+            entry.write_text(
+                "version: v2\nsize: [960, 540]\n"
+                "pages: [pages/one.page, pages/two.page, pages/three.page]\n",
+                encoding="utf-8",
+            )
+            (entry.parent / "pages" / "one.page").write_text(
+                "elements: []\n", encoding="utf-8"
+            )
+            checkpoint = kimi_agent.recovery_checkpoint(root, "project", "job")
+        self.assertEqual(checkpoint["completedPages"], 1)
+        self.assertEqual(checkpoint["totalPages"], 3)
+        self.assertEqual(checkpoint["missingPages"], 2)
+        self.assertEqual(checkpoint["summary"], "已保留 1/3 页")
+
+    def test_recovery_checkpoint_does_not_count_malformed_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = kimi_agent._workspace(root, "project", "job")
+            entry = workspace / "deck" / "deck.pptd"
+            (entry.parent / "pages").mkdir(parents=True)
+            entry.write_text(
+                "version: v2\nsize: [960, 540]\n"
+                "pages: [pages/one.page, pages/two.page, pages/three.page]\n",
+                encoding="utf-8",
+            )
+            (entry.parent / "pages" / "one.page").write_text(
+                "elements: []\n", encoding="utf-8"
+            )
+            (entry.parent / "pages" / "two.page").write_text(
+                "elements:\n"
+                "- elementId: broken\n"
+                "  offset:\n"
+                "    - 0.0\n"
+                "  - -3.0\n",
+                encoding="utf-8",
+            )
+            checkpoint = kimi_agent.recovery_checkpoint(root, "project", "job")
+        self.assertEqual(checkpoint["completedPages"], 1)
+        self.assertEqual(checkpoint["totalPages"], 3)
+        self.assertEqual(checkpoint["missingPages"], 2)
+        self.assertEqual(checkpoint["invalidPages"], 1)
+        self.assertEqual(checkpoint["summary"], "已保留 1/3 页")
 
     def test_workspace_can_restore_an_incomplete_agent_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,6 +778,27 @@ class KimiAgentUnitTests(unittest.TestCase):
         self.assertIn("感谢观看", filled["elements"][0]["content"]["text"])
         self.assertNotIn("欢迎一起交流", filled["elements"][1]["content"]["text"])
 
+    def test_long_cover_title_uses_two_lines_and_moves_the_subtitle_down(self):
+        page = {"elements": [
+            {"elementId": "title", "elementType": "text", "bounds": [0, 0, 960, 540],
+             "content": {"text": '<p style="text-align:center;line-height:1.2"><strong><span style="font-family:MiSans;font-size:66.0px;color:#FFFFFF;letter-spacing:4.0px">模板标题</span></strong></p><p style="text-align:center;line-height:1.2"></p><p style="text-align:center;line-height:1.2"></p>',
+                         "align": ["left", "middle"]}},
+            {"elementId": "subtitle", "elementType": "text", "bounds": [0, 244, 960, 36],
+             "content": {"text": '<p style="text-align:center"><span style="font-size:24.0px">副标题</span></p>'}},
+            {"elementId": "date", "elementType": "text", "bounds": [0, 321, 960, 55],
+             "content": {"text": '<p style="text-align:center"><span style="font-size:24.0px">2026.9</span></p>'}},
+        ]}
+        title = page["elements"][0]
+        title["content"] = kimi_agent._relabel(title["content"], "集团军用计算业务高质量发展专项论证报告")
+        kimi_agent._fit_cover_slots(page, [960, 540])
+        markup = title["content"]["text"]
+        self.assertEqual(markup.count("<p"), 2)
+        self.assertIn("集团军用计算业务", markup)
+        self.assertIn("高质量发展专项论证报告", markup)
+        self.assertLess(float(re.search(r"font-size:([0-9.]+)px", markup).group(1)), 66)
+        self.assertGreaterEqual(page["elements"][1]["bounds"][1], title["bounds"][1] + title["bounds"][3] + 16)
+        self.assertGreater(page["elements"][2]["bounds"][1], page["elements"][1]["bounds"][1])
+
     def test_body_background_is_copied_from_the_template(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -331,9 +850,11 @@ class KimiAgentUnitTests(unittest.TestCase):
             kimi_agent._apply_background(deck, document, pages, background, template)
             body = pages[1]["data"]["elements"]
             self.assertNotIn("wave-band", [e["elementId"] for e in body])
-            self.assertEqual(pages[1]["data"]["background"], {
-                "elementId": "bg", "elementType": "image", "src": "media/body.jpg",
-                "bounds": [0, 0, 960, 540]})
+            self.assertEqual(body[0], {
+                "elementId": "host-background", "elementType": "image", "src": "media/body.jpg",
+                "bounds": [0, 0, 960, 540], "fit": {"mode": "fill"},
+                "crop": {"left": 0, "top": 0, "right": 0, "bottom": 0}})
+            self.assertNotIn("background", pages[1]["data"])
             self.assertTrue((deck / "media" / "body.jpg").is_file())
 
     def test_page_background_is_repointed_at_the_template_image(self):
@@ -361,10 +882,12 @@ class KimiAgentUnitTests(unittest.TestCase):
             (deck / "media" / "canonical.jpg").write_bytes(b"canonical")
             kimi_agent._apply_background(deck, document, pages, background, template)
             self.assertEqual(pages[0]["data"]["background"], {"type": "solid", "color": "#FFFFFF"})
-            self.assertEqual(pages[1]["data"]["background"]["src"], "media/canonical.jpg")
-            self.assertEqual(pages[2]["data"]["background"]["src"], "media/canonical.jpg")
-            self.assertEqual(pages[2]["data"]["background"]["fit"], {"mode": "fill"})
-            self.assertEqual(pages[3]["data"]["background"]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[1]["data"]["elements"][0]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[2]["data"]["elements"][0]["src"], "media/canonical.jpg")
+            self.assertEqual(pages[2]["data"]["elements"][0]["fit"], {"mode": "fill"})
+            self.assertEqual(pages[3]["data"]["elements"][0]["src"], "media/canonical.jpg")
+            self.assertNotIn("background", pages[2]["data"])
+            self.assertNotIn("background", pages[3]["data"])
             self.assertEqual(pages[4]["data"]["background"], {"type": "solid", "color": "#FFFFFF"})
             self.assertTrue((deck / "media" / "canonical.jpg").is_file())
 

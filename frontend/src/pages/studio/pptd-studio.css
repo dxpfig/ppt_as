@@ -1087,9 +1087,60 @@
 	border-radius: 8px;
 	margin-bottom: 16px;
 }
-.pptd-import-warnings strong {
+.pptd-import-warnings summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+	list-style: none;
+}
+.pptd-import-warnings summary::-webkit-details-marker {
+	display: none;
+}
+.pptd-import-warnings summary strong {
 	font-size: 11px;
 	color: var(--ui-warning-text, #8d7857);
+}
+.pptd-import-warnings summary span {
+	min-width: 0;
+	color: var(--ui-muted, #8b7a60);
+	font-size: 10px;
+}
+.pptd-import-warnings summary svg {
+	flex-shrink: 0;
+	margin-left: auto;
+	color: var(--ui-muted, #8b7a60);
+	transition: transform 0.16s ease;
+}
+.pptd-import-warnings[open] summary svg {
+	transform: rotate(90deg);
+}
+.pptd-import-warnings > div {
+	margin-top: 10px;
+	padding-top: 9px;
+	border-top: 1px solid color-mix(in srgb, var(--ui-warning-text, #8d7857) 18%, transparent);
+}
+.pptd-import-warnings > div > p {
+	margin: 0 0 8px;
+	color: var(--ui-muted, #8b7a60);
+	font-size: 10px;
+	line-height: 1.7;
+}
+.pptd-import-warnings ul {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+	padding-left: 16px;
+}
+.pptd-import-warnings li {
+	color: var(--ui-secondary, #725f43);
+	font-size: 10px;
+	line-height: 1.55;
+}
+.pptd-import-warnings li > strong {
+	margin-left: 6px;
+	font-size: 9px;
+	white-space: nowrap;
 }
 .pptd-import-warnings p:last-child {
 	margin-bottom: 0;

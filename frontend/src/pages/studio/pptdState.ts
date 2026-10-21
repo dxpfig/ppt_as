@@ -41,6 +41,25 @@ export const isRunningJob = (job: Pick<StudioJob, 'status'> | null) =>
 	!!job && ['queued', 'running'].includes(job.status);
 export const isLegacyProject = (project: Project) => !project.pptd && project.slides.length > 0;
 
+export type ImportWarningGroup = {
+	message: string;
+	count: number;
+};
+
+// The importer reports one issue per affected shape. Users need the distinct
+// capability limits and their scope, not the same sentence dozens of times.
+export function groupImportWarnings(warnings: string[] | undefined): ImportWarningGroup[] {
+	const groups = new Map<string, ImportWarningGroup>();
+	for (const warning of warnings ?? []) {
+		const message = warning.trim();
+		if (!message) continue;
+		const existing = groups.get(message);
+		if (existing) existing.count += 1;
+		else groups.set(message, { message, count: 1 });
+	}
+	return [...groups.values()];
+}
+
 // Navigation previews use the current source even before an export passes review.
 export function pagePreviewSources(
 	project: Project,

@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -73,6 +74,65 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['visualReview']['rounds'],2)
         self.assertEqual((self.folder/'presentation.pptx').read_text(),'Hello')
         self.assertEqual(json.loads((self.folder/'export-report.json').read_text())['visualReview']['status'],'passed')
+
+    async def test_review_can_run_in_validation_without_publishing_an_export(self):
+        from agent_service import visual_pipeline as pipeline
+        async def review(state, *args, **kwargs):
+            return self.report(state)
+        with patch.object(pipeline.pptd_exports, 'export_document', side_effect=self.export), \
+             patch.object(pipeline, 'review_deck', side_effect=review):
+            result = await pipeline.export_reviewed(
+                self.store, 'deck', self.folder, self.request,
+                checkpoint=self.checkpoint,
+                save_checkpoint=lambda cp: self.checkpoint.update(deepcopy(cp)),
+                on_event=self.events.append, assert_current=lambda: None, publish=False,
+            )
+        self.assertFalse(self.folder.exists())
+        self.assertFalse(result['published'])
+        self.assertEqual(result['visualReview']['status'], 'passed')
+        self.assertEqual(self.store.read('deck')['revision'], 1)
+        self.assertEqual(self.checkpoint['stage'], 'validated')
+
+    async def test_visual_repair_is_split_into_bounded_page_batches(self):
+        from agent_service import visual_pipeline as pipeline
+
+        state = {
+            "document": {"pages": [f"pages/{index}.page" for index in range(1, 8)]},
+            "pages": [
+                {"path": f"pages/{index}.page", "data": {"elements": []}}
+                for index in range(1, 8)
+            ],
+        }
+        issues = [
+            {
+                "pagePath": page["path"],
+                "pageIndex": index,
+                "elementIds": [],
+                "code": "layout",
+                "message": "layout",
+            }
+            for index, page in enumerate(state["pages"])
+        ]
+        batches = []
+
+        async def repair(_request, current, batch_issues, **_kwargs):
+            batches.append([item["pagePath"] for item in batch_issues])
+            return deepcopy(current)
+
+        with patch.dict(os.environ, {"PPTD_VISUAL_REPAIR_PAGE_BATCH": "3"}), \
+             patch.object(pipeline, "repair_deck", side_effect=repair):
+            result = await pipeline.repair_deck_batched(
+                self.request, state, issues, validate_candidate=None
+            )
+        self.assertEqual(
+            [[path.split("/")[-1] for path in batch] for batch in batches],
+            [
+                ["1.page", "2.page", "3.page"],
+                ["4.page", "5.page", "6.page"],
+                ["7.page"],
+            ],
+        )
+        self.assertEqual(result["document"], state["document"])
 
     async def test_partial_coverage_is_not_a_pass(self):
         async def review(state,*args,**kw):return {**self.report(state),'coveredPages':[]}

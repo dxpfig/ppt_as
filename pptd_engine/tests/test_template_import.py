@@ -191,6 +191,91 @@ class TemplateImportTests(unittest.TestCase):
         names = [etree.QName(child).localname for child in properties[0]]
         self.assertEqual([name for name in names if name.startswith("ln")], ["lnL", "lnR", "lnT", "lnB"])
 
+    def test_placeholder_typography_inherits_master_defaults(self):
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[1])
+        slide.shapes.title.text = "继承标题"
+        slide.placeholders[1].text = "继承正文"
+
+        report, pages = self.import_document()
+        text = "\n".join(
+            element["content"]["text"]
+            for element in pages[0]["elements"]
+            if element["elementType"] == "text"
+        )
+        self.assertIn("font-size:44.0px", text)
+        self.assertIn("text-align:center", text)
+        self.assertIn("font-size:32.0px", text)
+        self.assertIn("text-align:left", text)
+        self.assertNotIn(
+            "theme-and-master-inheritance",
+            {issue["feature"] for issue in report["unsupported"]},
+        )
+
+    def test_text_insets_and_advanced_run_formats_are_not_false_warnings(self):
+        textbox = self.slide().shapes.add_textbox(Pt(40), Pt(40), Pt(400), Pt(100))
+        textbox.text_frame.margin_left = Pt(3)
+        textbox.text_frame.margin_top = Pt(5)
+        textbox.text_frame.margin_right = Pt(7)
+        textbox.text_frame.margin_bottom = Pt(9)
+        run = textbox.text_frame.paragraphs[0].add_run()
+        run.text = "H2O x2 deleted"
+        run._r.get_or_add_rPr().set("spc", "175")
+        run._r.get_or_add_rPr().set("baseline", "-25000")
+        run._r.get_or_add_rPr().set("strike", "sngStrike")
+
+        report, pages = self.import_document()
+        content = self.elements(pages, elementType="text")["content"]
+        self.assertEqual(content["inset"], [3.0, 5.0, 7.0, 9.0])
+        self.assertIn("letter-spacing:1.75px", content["text"])
+        self.assertIn("<sub>", content["text"])
+        self.assertIn("<s>", content["text"])
+        features = {issue["feature"] for issue in report["unsupported"]}
+        self.assertNotIn("text-frame-margins", features)
+        self.assertNotIn("advanced-text-format", features)
+
+        archive = self.export()
+        exported = etree.fromstring(archive.read("ppt/slides/slide1.xml"))
+        body = exported.find(".//" + A + "bodyPr")
+        self.assertEqual(
+            [body.get("lIns"), body.get("tIns"), body.get("rIns"), body.get("bIns")],
+            ["38100", "63500", "88900", "114300"],
+        )
+
+    def test_direct_colour_alpha_and_outer_shadow_round_trip(self):
+        slide = self.slide()
+        shape = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Pt(40), Pt(40), Pt(200), Pt(80))
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = RGBColor.from_string("336699")
+        shape.fill.fore_color._color._xClr.append(xml("alpha", val="40000"))
+        effects = etree.SubElement(shape._element.spPr, A + "effectLst")
+        outer = etree.SubElement(
+            effects,
+            A + "outerShdw",
+            blurRad="63500",
+            dist="25400",
+            dir="5400000",
+            algn="ctr",
+            rotWithShape="0",
+        )
+        color = etree.SubElement(outer, A + "srgbClr", val="112233")
+        etree.SubElement(color, A + "alpha", val="80000")
+
+        report, pages = self.import_document()
+        artwork = self.elements(pages, elementType="shape")
+        self.assertEqual(artwork["fill"]["color"], "#33669966")
+        self.assertEqual(artwork["shadow"]["blur"], 5.0)
+        self.assertEqual(artwork["shadow"]["offset"], [0.0, 2.0])
+        self.assertEqual(artwork["shadow"]["color"], "#112233CC")
+        self.assertNotIn("opacity", {issue["feature"] for issue in report["unsupported"]})
+
+        archive = self.export()
+        exported = etree.fromstring(archive.read("ppt/slides/slide1.xml"))
+        self.assertEqual(exported.find(".//" + A + "srgbClr/" + A + "alpha").get("val"), "40000")
+        shadow = exported.find(".//" + A + "outerShdw")
+        self.assertEqual(shadow.get("blurRad"), "63500")
+        self.assertEqual(shadow.get("dist"), "25400")
+        self.assertEqual(shadow.find(".//" + A + "alpha").get("val"), "80000")
+
     def test_gradient_fill_round_trips_as_native_drawingml(self):
         slide = self.slide()
         shape = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Pt(40), Pt(330), Pt(880), Pt(66))

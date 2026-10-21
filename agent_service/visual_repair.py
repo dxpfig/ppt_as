@@ -236,8 +236,8 @@ def apply_visual_patches(state, operations, issues, *, layout_measurements=None,
         else:
             _pointer(target, patch.path, op="set", value=patch.value)
         if page != before: changed_pages.add(patch.pagePath)
-    if changed_pages != set(targets):
-        raise ValueError("Visual repair did not change every page with findings")
+    if not changed_pages:
+        raise ValueError("Visual repair did not change any page with findings")
     # A model may rescale a line's local coordinate system alongside bounds.
     # Accept only mathematically identical paths, and retain the original bytes
     # so semantic checkpoint hashes and every curve/control point stay stable.

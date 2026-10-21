@@ -94,6 +94,38 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 202, response.text)
         return response.json()['id']
 
+    async def test_cancelled_kimi_job_keeps_partial_deck_continue_checkpoint(self):
+        identifier = 'partial-kimi'
+        service.save(service.project_path(self.project['id']), {
+            **self.project, 'phase': 'generating', 'activeJobId': identifier,
+        })
+        service.save(service.job_path(identifier), {
+            'id': identifier,
+            'projectId': self.project['id'],
+            'kind': 'kimi-slides',
+            'status': 'running',
+            'stage': 5,
+            'message': '正在生成',
+            'recoverable': True,
+        })
+        workspace = service.kimi_agent._workspace(self.root, self.project['id'], identifier)
+        entry = workspace / 'deck' / 'deck.pptd'
+        (entry.parent / 'pages').mkdir(parents=True)
+        entry.write_text(
+            'version: v2\nsize: [960, 540]\n'
+            'pages: [pages/one.page, pages/two.page, pages/three.page]\n',
+            encoding='utf-8',
+        )
+        (entry.parent / 'pages' / 'one.page').write_text('elements: []\n', encoding='utf-8')
+
+        response = await self.client.post(f'jobs/{identifier}/cancel')
+        self.assertEqual(response.status_code, 200, response.text)
+        job = response.json()
+        self.assertEqual(job['status'], 'cancelled')
+        self.assertEqual(job['checkpoint']['completedPages'], 1)
+        self.assertEqual(job['checkpoint']['totalPages'], 3)
+        self.assertIn('可继续任务', job['message'])
+
     async def test_model_timeout_is_actionable_and_keeps_page_checkpoint(self):
         from openai import APITimeoutError
         async def timeout(request, progress, **kwargs):
@@ -208,25 +240,20 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed['status'], 'completed', resumed)
         self.assertEqual(resumed['result']['project']['generationMeta']['validation']['visualReview']['reviewedPages'], 1)
 
-    async def test_export_only_job_automatically_repairs_visual_issues(self):
+    async def test_export_only_job_skips_visual_review(self):
         await self.seed()
         reviews = []
         async def review(state, folder, **kwargs):
             reviews.append(state)
             issues = [] if len(reviews) == 2 else [{'pagePath': 'pages/a.page', 'elementIds': ['title'], 'code': 'alignment', 'message': '标题未对齐'}]
             return {'status': 'issues' if issues else 'passed', 'coveredPages': state['document']['pages'], 'issues': issues}
-        async def repair(request, state, issues, **kwargs):
-            value = deepcopy(state)
-            value['pages'][0]['data']['elements'][0]['bounds'][0] = 50
-            return value
         with patch.object(service.pptd_exports, 'export_document', side_effect=self.export), \
-             patch.object(service.visual_pipeline, 'review_deck', side_effect=review), \
-             patch.object(service.visual_pipeline, 'repair_deck', side_effect=repair):
+             patch.object(service.visual_pipeline, 'review_deck', side_effect=review):
             response = await self.client.post('projects/demo/pptd/export')
             job = await self.wait(response.json()['id'])
         self.assertEqual(job['status'], 'completed', job)
-        self.assertEqual(job['result']['artifact']['revision'], 2)
-        self.assertEqual(len(reviews), 2)
+        self.assertEqual(job['result']['artifact']['revision'], 1)
+        self.assertEqual(len(reviews), 0)
         self.assertEqual((await self.client.get('projects/demo/pptd')).json()['pages'][0]['data']['elements'][0]['content']['text'], '保存原始内容')
 
     async def test_resume_export_completes_missing_planned_body_and_reviews_new_revision(self):
@@ -285,21 +312,17 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final['pages'][0]['data']['elements'][:-1], incomplete['pages'][0]['data']['elements'])
         self.assertEqual(resumed['result']['artifact']['revision'], 2)
 
-    async def test_export_resume_preserves_existing_generation_metadata(self):
+    async def test_export_preserves_generation_metadata_without_visual_review(self):
         await self.seed()
         original = service.read(self.root/'projects/demo.json')
         original['generationMeta'] = {'scenario':'tech-engineering', 'research':{'warnings':['原始研究记录']}, 'rules':['original-rule']}
         service.save(self.root/'projects/demo.json', original)
         with patch.object(service.pptd_exports, 'export_document', side_effect=self.export), \
-             patch.object(service.visual_pipeline, 'review_deck', side_effect=ValueError('temporary vision failure')):
+             patch.object(service.visual_pipeline, 'review_deck', side_effect=AssertionError('export must not review')):
             response = await self.client.post('projects/demo/pptd/export')
             identifier = response.json()['id']
-            self.assertEqual((await self.wait(identifier))['status'], 'failed')
-        with patch.object(service.pptd_exports, 'export_document', side_effect=self.export):
-            response = await self.client.post(f'jobs/{identifier}/resume')
-            self.assertEqual(response.status_code, 202, response.text)
-            resumed = await self.wait(response.json()['id'])
-        self.assertEqual(resumed['status'], 'completed', resumed)
+            completed = await self.wait(identifier)
+        self.assertEqual(completed['status'], 'completed', completed)
         meta = (await self.client.get('projects/demo')).json()['generationMeta']
         for name in ('scenario','research','rules'):
             self.assertEqual(meta[name], original['generationMeta'][name])
@@ -447,7 +470,9 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
             job = await self.wait(identifier)
         self.assertEqual(job['status'], 'completed', job)
         self.assertEqual(len(generated), 2)
-        self.assertEqual([revision for revision, _ in exported], [1, 2])
+        # One candidate render feeds validation/review, then the approved
+        # revision is rendered once more for the final artifact.
+        self.assertEqual([revision for revision, _ in exported], [1, 2, 2])
         current = (await self.client.get('projects/demo')).json()
         state = (await self.client.get('projects/demo/pptd')).json()
         self.assertEqual(current['artifact']['revision'], 2)
@@ -521,12 +546,76 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
             resumed = await self.wait(resumed_id)
         self.assertEqual(resumed['status'], 'completed', resumed)
         resumed_generation.assert_awaited_once()
-        resumed_export.assert_awaited_once()
+        self.assertEqual(resumed_export.await_count, 2)
         self.assertEqual(resumed['parentJobId'], identifier)
         current = (await self.client.get('projects/demo')).json()
         self.assertEqual(current['artifact']['revision'], 2)
         self.assertEqual(current['generationMeta']['validation']['status'], 'render-passed')
         self.assertEqual((await self.client.get('jobs/' + identifier)).json()['status'], 'cancelled')
+
+    async def test_render_migrates_legacy_native_incompatible_document(self):
+        await self.seed()
+        store = service.document_store()
+        state = store.read('demo')
+        pages = deepcopy(state['pages'])
+        element = pages[0]['data']['elements'][0]
+        element['content'] = {'fontFamily': 'Arial', 'text': '<p>第一行<br/>第二行 万亿元</p>'}
+        element['opacity'] = 0.4
+        store.commit('demo', state['document'], pages, '旧版文档', state['revision'])
+        exported = []
+
+        async def export(store, project_id, folder, progress):
+            exported.append(store.read(project_id))
+            return await self.export(store, project_id, folder, progress)
+
+        with patch.object(service.pptd_generation, 'generate_pptd', side_effect=AssertionError('render must not regenerate')), \
+             patch.object(service.pptd_exports, 'export_document', side_effect=export):
+            response = await self.client.post('jobs', json={'kind': 'render', 'project': self.project})
+            self.assertEqual(response.status_code, 202, response.text)
+            job = await self.wait(response.json()['id'])
+        self.assertEqual(job['status'], 'completed', job)
+        content = exported[-1]['pages'][0]['data']['elements'][0]['content']
+        self.assertNotIn('<br', content['text'].lower())
+        self.assertIn('第二行 万亿元', content['text'])
+        self.assertEqual(content['fontFamily'], {'latin': 'Arial', 'ea': '微软雅黑'})
+        self.assertNotIn('opacity', exported[-1]['pages'][0]['data']['elements'][0])
+        self.assertEqual(exported[-1]['revision'], 3)
+
+    async def test_render_autofits_measured_overflow_without_generation(self):
+        await self.seed()
+        store = service.document_store()
+        state = store.read('demo')
+        pages = deepcopy(state['pages'])
+        element = pages[0]['data']['elements'][0]
+        element['content'] = {'text': '<p><span style="font-size:40px">保存原始内容</span></p>'}
+        store.commit('demo', state['document'], pages, '待导出文档', state['revision'])
+        issue = {
+            'page': 'pages/a.page', 'elementId': 'title', 'location': 'pages/a.page#title',
+            'code': 'text-overflow', 'message': '文字超出文本框',
+            'layout': {'availableSize': [880, 90], 'measuredTextSize': [880, 130], 'paddingSize': [0, 0]},
+        }
+        exported = []
+
+        async def export(store, project_id, folder, progress):
+            current = store.read(project_id)
+            exported.append(current)
+            if len(exported) == 1:
+                raise service.pptd_exports.ValidationError(
+                    [issue], layouts={'pages/a.page': {'elements': [issue['layout'] | {'elementId': 'title'}]}}
+                )
+            return await self.export(store, project_id, folder, progress)
+
+        with patch.object(service.pptd_generation, 'generate_pptd', side_effect=AssertionError('render must not regenerate')), \
+             patch.object(service.pptd_exports, 'export_document', side_effect=export):
+            response = await self.client.post('jobs', json={'kind': 'render', 'project': self.project})
+            self.assertEqual(response.status_code, 202, response.text)
+            job = await self.wait(response.json()['id'])
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual([item['revision'] for item in exported], [2, 3])
+        markup = exported[-1]['pages'][0]['data']['elements'][0]['content']['text']
+        self.assertIn('保存原始内容', markup)
+        size = float(markup.split('font-size:', 1)[1].split('px', 1)[0])
+        self.assertLess(size, 40)
 
 
 if __name__ == '__main__': unittest.main()

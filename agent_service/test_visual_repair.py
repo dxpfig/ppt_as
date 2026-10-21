@@ -40,6 +40,14 @@ def operation(path="/bounds", value=None, **kwargs):
 
 
 class VisualPatchSafety(unittest.TestCase):
+    def test_partial_page_repair_is_allowed_for_incremental_kimi_rounds(self):
+        from agent_service.visual_repair import apply_visual_patches
+        source = source_deck()
+        issues = [issue(), issue(pagePath='pages/two.page', pageIndex=1, elementIds=['title'])]
+        result = apply_visual_patches(source, [operation()], issues)
+        self.assertNotEqual(result['pages'][0]['data'], source['pages'][0]['data'])
+        self.assertEqual(result['pages'][1]['data'], source['pages'][1]['data'])
+
     def test_chart_label_layout_preserves_data_and_prevents_hiding_categories(self):
         from agent_service.visual_repair import apply_visual_patches, semantic_payload
         source = source_deck()

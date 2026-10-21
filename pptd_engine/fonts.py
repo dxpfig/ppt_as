@@ -45,6 +45,8 @@ ALIASES = {
     'Arial Bold': 'Liberation Sans',
     'Helvetica': 'Liberation Sans',
     'Helvetica Neue': 'Liberation Sans',
+    'Calibri': 'Liberation Sans',
+    'Calibri Light': 'Liberation Sans',
     'Times New Roman': 'Liberation Serif',
 }
 STIX_MATH_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/stixtwomath/STIXTwoMath-Regular.ttf'

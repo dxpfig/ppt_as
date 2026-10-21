@@ -65,6 +65,51 @@ class TableTrackNormalizationTests(unittest.TestCase):
             [[{"text": "产品谱系"}, {"text": "核心型号"}, {"text": "对应芯片"}]],
         )
 
+    def test_cells_wrapper_is_unwrapped_without_changing_content(self):
+        page = {
+            "elements": [{
+                "elementType": "table",
+                "rows": [
+                    {"cells": ["驱动因素", "测算依据", "需求拉动"]},
+                    {"cells": ["预算", "1.94 万亿元", "采购增加"]},
+                ],
+                "rowHeights": [0.4, 0.6],
+                "columnWidths": [0.3, 0.4, 0.3],
+            }]
+        }
+        self.assertTrue(normalize_table_tracks(page))
+        self.assertEqual(
+            page["elements"][0]["rows"],
+            [
+                [{"text": "驱动因素"}, {"text": "测算依据"}, {"text": "需求拉动"}],
+                [{"text": "预算"}, {"text": "1.94 万亿元"}, {"text": "采购增加"}],
+            ],
+        )
+
+    def test_split_horizontal_header_is_collapsed(self):
+        page = {
+            "elements": [{
+                "elementType": "table",
+                "rows": [
+                    [{"text": "主体"}],
+                    [{"text": "定位"}],
+                    [{"text": "业务"}],
+                    [{"text": "协同"}],
+                    [{"text": "中国电子"}, {"text": "统筹"}, {"text": "规划"}, {"text": "考核"}],
+                ],
+                "rowHeights": [1],
+                "columnWidths": [0.25, 0.25, 0.25, 0.25],
+            }]
+        }
+        self.assertTrue(normalize_table_tracks(page))
+        table = page["elements"][0]
+        self.assertEqual(len(table["rows"]), 2)
+        self.assertEqual(
+            [cell["text"] for cell in table["rows"][0]],
+            ["主体", "定位", "业务", "协同"],
+        )
+        self.assertEqual(table["rowHeights"], [0.5, 0.5])
+
 
 if __name__ == "__main__":
     unittest.main()

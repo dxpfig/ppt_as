@@ -16,7 +16,7 @@
 		"build:pptd": "pnpm --filter @ppt-as/pptd-runtime build",
 		"dev:pptd": "pnpm build:pptd && .venv/bin/python experiments/pptd-v2/server.py --input experiments/pptd-v2/advanced-fixture/advanced.pptd --workspace runtime/pptd-workspace --host 0.0.0.0 --port 8891",
 		"test:pptd": "pnpm --filter @ppt-as/pptd-runtime test && .venv/bin/python -m unittest discover -s pptd_engine/tests",
-		"test:studio": ".venv/bin/python -m unittest agent_service.test_pptd_store agent_service.test_pptd_exports agent_service.test_pptd_generation agent_service.test_generation_events agent_service.test_model_context agent_service.test_generation_context agent_service.test_pptd_jobs agent_service.test_research agent_service.test_work_history agent_service.test_visual_review agent_service.test_visual_repair agent_service.test_visual_completion agent_service.test_visual_pipeline agent_service.test_kimi_agent"
+		"test:studio": ".venv/bin/python -m unittest agent_service.test_pptd_store agent_service.test_pptd_exports agent_service.test_pptd_generation agent_service.test_generation_events agent_service.test_model_context agent_service.test_generation_context agent_service.test_pptd_jobs agent_service.test_pptd_compat agent_service.test_research agent_service.test_work_history agent_service.test_visual_review agent_service.test_visual_repair agent_service.test_visual_completion agent_service.test_visual_pipeline agent_service.test_layout_autofit agent_service.test_kimi_agent"
 	},
 	"lint-staged": {
 		"frontend/**/*.{ts,tsx}": [

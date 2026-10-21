@@ -52,7 +52,8 @@ PALETTE = ["#1783FE", "#67B8A6", "#C9A869", "#8A84C7", "#8C98A8"]
 SHAPES = {s.xml_value: s for s in MSO_AUTO_SHAPE_TYPE if s.xml_value}
 TEXT_KEYS = {
     "color", "fontSize", "fontFamily", "bold", "italic", "lineHeight",
-    "lineHeightPx", "letterSpacing", "marginTop", "text", "style", "textStyle", "align", "wrap",
+    "lineHeightPx", "letterSpacing", "marginTop", "inset", "text", "style", "textStyle",
+    "align", "wrap", "shadow",
 }
 ALIGN = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT,
          "justify": PP_ALIGN.JUSTIFY, "distributed": PP_ALIGN.DISTRIBUTE}
@@ -516,7 +517,8 @@ class RichText(HTMLParser):
     def css(self, value: str, tag: str) -> dict:
         result: dict = {}
         mapping = {"color": "color", "font-size": "fontSize", "font-family": "fontFamily",
-                   "text-align": "paragraphAlign", "margin-top": "marginTop"}
+                   "letter-spacing": "letterSpacing", "text-align": "paragraphAlign",
+                   "margin-top": "marginTop"}
         for bit in value.split(";"):
             if ":" not in bit:
                 continue
@@ -527,7 +529,11 @@ class RichText(HTMLParser):
                 if tag == "p" and key not in {"text-align", "margin-top"}:
                     self.report.issue(self.loc, f"rich-text.{tag}.{key}", "Not a supported paragraph style in this probe.")
                     continue
-                result[mapping[key]] = float(val.removesuffix("px")) if key in {"font-size", "margin-top"} else val.strip("\"'")
+                result[mapping[key]] = (
+                    float(val.removesuffix("px"))
+                    if key in {"font-size", "letter-spacing", "margin-top"}
+                    else val.strip("\"'")
+                )
             else:
                 self.report.issue(self.loc, f"rich-text.{tag}.{key}", "CSS property omitted.")
         return result
@@ -539,7 +545,10 @@ class RichText(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = dict(attrs)
         style = self.css(attr.get("style") or "", tag)
-        semantic = {"strong": {"bold": True}, "em": {"italic": True}, "u": {"underline": True}}
+        semantic = {
+            "strong": {"bold": True}, "em": {"italic": True}, "u": {"underline": True},
+            "s": {"strike": True}, "sup": {"baseline": 30000}, "sub": {"baseline": -25000},
+        }
         if tag == "p":
             self.start_paragraph(style)
         elif tag == "br":
@@ -724,6 +733,48 @@ class Exporter:
             target._get_or_add_ln().set("w", "0")
         target.dash_style = DASH[border.get("style", "solid")]
 
+    def shadow(self, shape: Any, spec: dict | None, loc: str) -> None:
+        """Write PPTD's one-layer outer shadow as native DrawingML."""
+        if not spec:
+            return
+        blur = spec.get("blur", 0)
+        offset = spec.get("offset", [0, 0])
+        if (
+            type(blur) not in (int, float)
+            or not math.isfinite(blur)
+            or blur < 0
+            or not isinstance(offset, list)
+            or len(offset) != 2
+            or any(type(value) not in (int, float) or not math.isfinite(value) for value in offset)
+        ):
+            raise ValueError("Shadow requires a non-negative blur and a two-number offset")
+        shape.shadow.inherit = False
+        properties = shape._element.spPr
+        effects = properties.find("{" + NS["a"] + "}effectLst")
+        if effects is None:
+            effects = etree.SubElement(properties, "{" + NS["a"] + "}effectLst")
+        for child in list(effects):
+            effects.remove(child)
+        distance = math.hypot(*offset)
+        angle = round(math.degrees(math.atan2(offset[1], offset[0])) % 360 * 60000)
+        outer = etree.SubElement(
+            effects,
+            "{" + NS["a"] + "}outerShdw",
+            blurRad=str(round(blur * 12700)),
+            dist=str(round(distance * 12700)),
+            dir=str(angle),
+            algn="ctr",
+            rotWithShape="0",
+        )
+        value = self.resolved_color(spec.get("color", "#00000080"))
+        color = etree.SubElement(outer, "{" + NS["a"] + "}srgbClr", val=value[1:7].upper())
+        if len(value) == 9 and value[7:9].upper() != "FF":
+            etree.SubElement(
+                color,
+                "{" + NS["a"] + "}alpha",
+                val=str(round(int(value[7:9], 16) / 255 * 100000)),
+            )
+
     def font(self, font: Any, style: dict, loc: str, text="") -> None:
         names = style.get("fontFamily", "MiSans")
         names = {"latin": names, "ea": names} if isinstance(names, str) else names
@@ -742,6 +793,15 @@ class Exporter:
         font.bold = style.get("bold", False)
         font.italic = style.get("italic", False)
         font.underline = style.get("underline", False)
+        if "baseline" in style:
+            baseline = style["baseline"]
+            if type(baseline) is not int or not -400000 <= baseline <= 400000:
+                raise ValueError(
+                    "Text baseline must be an integer in the DrawingML range -400000..400000"
+                )
+            font._rPr.set("baseline", str(baseline))
+        if style.get("strike"):
+            font._rPr.set("strike", "sngStrike")
         if 'letterSpacing' in style:
             spacing = style['letterSpacing']
             if type(spacing) not in (int, float) or not math.isfinite(spacing) or not -4000 <= spacing <= 4000:
@@ -759,7 +819,14 @@ class Exporter:
             raise ValueError("Text must be a string; quote YAML 1.1 implicit values such as on/off/yes/no")
         self.report.extras(base, TEXT_KEYS, loc)
         tf.clear()
-        tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+        inset = base.get("inset", [0, 0, 0, 0])
+        if not (
+            isinstance(inset, list)
+            and len(inset) == 4
+            and all(type(value) in (int, float) and math.isfinite(value) and value >= 0 for value in inset)
+        ):
+            raise ValueError("Text inset must contain four non-negative finite numbers")
+        tf.margin_left, tf.margin_top, tf.margin_right, tf.margin_bottom = map(Pt, inset)
         tf.word_wrap = content.get("wrap", True)
         align = base.get("align", ["left", "top"])
         tf.vertical_anchor = VALIGN[align[1]]
@@ -877,9 +944,9 @@ class Exporter:
         common = {"elementId", "elementType", "bounds"}
         fields = {
             "text": {"content", "rotation"},
-            "shape": {"shapeName", "fill", "border", "rotation", "adjustments", "viewBox", "path"},
-            "line": {"viewBox", "points", "border", "rotation", "curve"},
-            "image": {"src", "fit", "crop", "rotation", "border"},
+            "shape": {"shapeName", "fill", "border", "rotation", "adjustments", "viewBox", "path", "shadow"},
+            "line": {"viewBox", "points", "border", "rotation", "curve", "shadow"},
+            "image": {"src", "fit", "crop", "rotation", "border", "shadow"},
             "table": {"rows", "columnWidths", "rowHeights", "style", "fill"},
             "chart": set(e),
             "icon": set(e),
@@ -989,7 +1056,12 @@ class Exporter:
         else:
             raise ValueError(f"Element type {kind!r} is not mapped; no raster substitute is created")
         shape.name = e["elementId"]
-        if kind in {"text", "shape", "line", "image", "icon"} and not e.get("shadow"):
+        element_shadow = e.get("shadow")
+        if kind == "text":
+            element_shadow = e.get("content", {}).get("shadow")
+        if element_shadow and kind in {"text", "shape", "line", "image"}:
+            self.shadow(shape, element_shadow, loc)
+        elif kind in {"text", "shape", "line", "image", "icon"} and not element_shadow:
             # The default Office theme can attach a shadow even when PPTD's
             # shadow field is absent. Public API explicitly disables inheritance.
             shape.shadow.inherit = False
@@ -999,7 +1071,7 @@ class Exporter:
             # removes that reference without changing geometry/fills/text.
             for effect_ref in shape._element.xpath("./p:style/a:effectRef"):
                 effect_ref.set("idx", "0")
-                self.report.note("OOXML compatibility patch: p:style/a:effectRef/@idx is explicitly set to 0 (no theme effect), in addition to public shadow.inherit=False. LibreOfficeDev 26.8 otherwise renders default shape/line shadows despite empty a:effectLst. Explicit PPTD shadow remains unsupported.")
+                self.report.note("OOXML compatibility patch: p:style/a:effectRef/@idx is explicitly set to 0 (no theme effect), in addition to public shadow.inherit=False. LibreOfficeDev 26.8 otherwise renders default shape/line shadows despite empty a:effectLst.")
         if "rotation" in e:
             shape.rotation = e["rotation"]
         return shape
@@ -1065,11 +1137,13 @@ class Exporter:
             asset.check_coverage("".join(chars)); assets.append(asset)
             if asset.synthesis: self.report.note(asset.synthesis)
         if self.font_substitutions:
-            substitutions = [f'{source} -> {target}: the source family is not installed; the open equivalent is embedded'
-                             for source, target in sorted(self.font_substitutions.items())]
+            substitutions = [
+                f'字体替换：{source} 未安装，已改用开源等价字体 {target} 并随文件内嵌。'
+                for source, target in sorted(self.font_substitutions.items())
+            ]
             self.report.data["fontSubstitutions"] = substitutions
             for item in substitutions:
-                self.report.note("Font substitution: " + item)
+                self.report.note(item)
         self.prs.save(dest)
         self.report.data["fonts"] = embed_fonts(dest, assets)
         from .source_archive import embed_source
@@ -1126,12 +1200,13 @@ class Importer:
     def __init__(self, source: Path, output: Path):
         self.source, self.output = source.resolve(), output.resolve()
         self.prs = Presentation(self.source)
+        self.current_slide = None
         self.report = Report("PPTX-to-PPTD-v2", source)
         self.report.note("The caller supplies the --import-pptx source; its path and SHA-256 are recorded. The experiment uses the project's independently existing design-layouts/presentation.pptx.")
         self.report.data["sourceIsExportOutput"] = self.source == (self.output.parent / "export.pptx").resolve()
         self.report.note("PPTD has no text-bearing shape: source shapes containing text are split into native shape + separate text elements.")
-        self.report.issue("presentation", "theme-and-master-inheritance", "Office master/layout inheritance, theme fonts/colors, paragraph defaults and effects are not fully resolved. Only exposed direct formatting is mapped; defaults may differ visually.")
         self.media_count = 0
+        self.theme_fonts: dict[str, dict[str, str]] = {}
         self.color_map, self.scheme_colors = self.load_scheme_palette()
 
     def load_scheme_palette(self) -> tuple[dict, dict]:
@@ -1167,6 +1242,21 @@ class Importer:
                     value = system.get("lastClr")
                 if value and re.fullmatch(r"[0-9a-fA-F]{6}", value):
                     scheme[name] = "#" + value.upper()
+            font_scheme = root.find(".//{" + NS["a"] + "}fontScheme")
+            if font_scheme is not None:
+                for family in ("major", "minor"):
+                    family_node = font_scheme.find("{" + NS["a"] + "}" + family + "Font")
+                    if family_node is None:
+                        continue
+                    fonts = {}
+                    for script in ("latin", "ea", "cs"):
+                        node = family_node.find("{" + NS["a"] + "}" + script)
+                        if node is not None and node.get("typeface"):
+                            fonts[script] = node.get("typeface")
+                    for node in family_node.findall("{" + NS["a"] + "}font"):
+                        if node.get("script") and node.get("typeface"):
+                            fonts[node.get("script").lower()] = node.get("typeface")
+                    self.theme_fonts[family] = fonts
         except Exception as exception:  # pragma: no cover - defensive boundary
             self.report.issue("presentation", "theme-color",
                               f"Theme palette could not be read ({exception}); scheme colours stay unresolved.")
@@ -1174,7 +1264,176 @@ class Importer:
         if scheme:
             self.report.note("Scheme colours (a:schemeClr) are resolved through the master colour map and theme palette. "
                              "DrawingML colour modifiers (lumMod/lumOff/tint/shade) are not applied.")
+        if self.theme_fonts:
+            self.report.note("Theme major/minor Latin and East Asian fonts are resolved for inherited paragraph text.")
         return color_map, scheme
+
+    def _theme_font(self, typeface: str | None) -> str | None:
+        if not typeface:
+            return None
+        match = re.fullmatch(r"\+(mj|mn)-(lt|ea|cs)", typeface)
+        if not match:
+            return typeface
+        family = "major" if match.group(1) == "mj" else "minor"
+        script = {"lt": "latin", "ea": "ea", "cs": "cs"}[match.group(2)]
+        return self.theme_fonts.get(family, {}).get(script)
+
+    def _xml_color(self, container: Any, loc: str) -> str | None:
+        """Resolve one DrawingML colour node, including direct alpha."""
+        if container is None:
+            return None
+        container_name = etree.QName(container).localname
+        if container_name in {"srgbClr", "schemeClr", "sysClr"}:
+            solid = container
+        elif container_name == "solidFill":
+            solid = container
+        else:
+            solid = next(
+                (
+                    container.find("{" + NS["a"] + "}" + name)
+                    for name in ("solidFill", "srgbClr", "schemeClr", "sysClr")
+                    if container.find("{" + NS["a"] + "}" + name) is not None
+                ),
+                None,
+            )
+        if solid is None:
+            return None
+        rgb = solid if solid.tag == "{" + NS["a"] + "}srgbClr" else solid.find("{" + NS["a"] + "}srgbClr")
+        scheme = solid if solid.tag == "{" + NS["a"] + "}schemeClr" else solid.find("{" + NS["a"] + "}schemeClr")
+        system = solid if solid.tag == "{" + NS["a"] + "}sysClr" else solid.find("{" + NS["a"] + "}sysClr")
+        value = None
+        color_node = None
+        if rgb is not None and rgb.get("val"):
+            value = "#" + rgb.get("val").upper()
+            color_node = rgb
+        elif scheme is not None and scheme.get("val"):
+            slot = scheme.get("val")
+            resolved = self.color_map.get(slot, slot) if slot in CLRMAP_SLOTS else slot
+            value = self.scheme_colors.get(resolved) or self.scheme_colors.get(slot)
+            color_node = scheme
+        elif system is not None and system.get("lastClr"):
+            value = "#" + system.get("lastClr").upper()
+            color_node = system
+        if value and color_node is not None:
+            alpha = color_node.find("{" + NS["a"] + "}alpha")
+            if alpha is not None:
+                try:
+                    amount = max(0, min(100000, int(alpha.get("val", "100000"))))
+                    value += f"{round(amount / 100000 * 255):02X}"
+                except (TypeError, ValueError):
+                    self.report.issue(loc, "opacity", "A malformed DrawingML alpha value was ignored.")
+            if any(color_node.find("{" + NS["a"] + "}" + name) is not None
+                   for name in ("lumMod", "lumOff", "tint", "shade")):
+                self.report.note("DrawingML theme colour modifiers (lumMod/lumOff/tint/shade) remain approximated by the base theme colour.")
+            return value
+        return None
+
+    def _font_style(self, node: Any, theme_family: str = "minor") -> dict:
+        """Read an a:defRPr node into PPTD's text-style keys."""
+        if node is None:
+            return {}
+        style: dict[str, Any] = {}
+        latin_node = node.find("{" + NS["a"] + "}latin")
+        east_asian_node = node.find("{" + NS["a"] + "}ea")
+        latin = self._theme_font(latin_node.get("typeface") if latin_node is not None else None)
+        east_asian = self._theme_font(
+            east_asian_node.get("typeface") if east_asian_node is not None else None
+        )
+        if latin:
+            style["fontFamily"] = latin
+        if east_asian:
+            # Kept internal so mixed-script runs can choose the correct face.
+            style["fontFamilyEastAsian"] = east_asian
+        elif self.theme_fonts.get(theme_family, {}).get("hans"):
+            style["fontFamilyEastAsian"] = self.theme_fonts[theme_family]["hans"]
+        if node.get("sz"):
+            style["fontSize"] = round(float(node.get("sz")) / 100, 4)
+        for key in ("b", "i"):
+            if node.get(key) is not None:
+                style["bold" if key == "b" else "italic"] = node.get(key) in {"1", "true"}
+        if node.get("spc") is not None:
+            style["letterSpacing"] = round(float(node.get("spc")) / 100, 4)
+        color = self._xml_color(node, "presentation")
+        if color:
+            style["color"] = color
+        return style
+
+    def _list_style(self, lst_style: Any, level: int, theme_family: str = "minor") -> dict:
+        """Resolve one list level, including paragraph alignment and spacing."""
+        if lst_style is None:
+            return {}
+        paragraph = lst_style.find("{" + NS["a"] + "}" + f"lvl{level + 1}pPr")
+        if paragraph is None:
+            return {}
+        style = self._font_style(
+            paragraph.find("{" + NS["a"] + "}defRPr"),
+            theme_family,
+        )
+        align = {"l": "left", "ctr": "center", "r": "right", "just": "justify",
+                 "dist": "distributed"}.get(paragraph.get("algn"))
+        if align:
+            style["paragraphAlign"] = align
+        before = paragraph.find("{" + NS["a"] + "}spcBef/{" + NS["a"] + "}spcPts")
+        if before is not None and before.get("val") is not None:
+            style["marginTop"] = round(float(before.get("val")) / 100, 4)
+        line = paragraph.find("{" + NS["a"] + "}lnSpc/{" + NS["a"] + "}spcPct")
+        if line is not None and line.get("val") is not None:
+            style["lineHeight"] = round(float(line.get("val")) / 100000, 4)
+        return style
+
+    def _placeholder(self, container: Any, idx: int) -> Any | None:
+        for placeholder in getattr(container, "placeholders", []):
+            if placeholder.placeholder_format.idx == idx:
+                return placeholder
+        return None
+
+    def default_text_style(self, shape: Any | None, level: int) -> dict:
+        """Resolve theme, master, layout and slide placeholder defaults.
+
+        PowerPoint commonly leaves placeholder runs unformatted because their
+        44 pt title or 32 pt body typography lives in the master. Reading only
+        direct rPr values made those decks import as default 18 pt body copy.
+        """
+        master = self.prs.slide_masters[0]
+        placeholder_type = ""
+        idx = -1
+        if shape is not None and getattr(shape, "is_placeholder", False):
+            placeholder_type = str(shape.placeholder_format.type)
+            idx = shape.placeholder_format.idx
+        title_like = any(name in placeholder_type for name in ("TITLE", "CENTER_TITLE", "VERTICAL_TITLE"))
+        body_like = any(name in placeholder_type for name in ("BODY", "OBJECT", "SUBTITLE"))
+        style_name = "titleStyle" if title_like else "bodyStyle" if body_like else "otherStyle"
+        theme_family = "major" if title_like else "minor"
+        style = {}
+        tx_styles = master._element.find("{" + NS["p"] + "}txStyles")
+        if tx_styles is not None:
+            style.update(self._list_style(
+                tx_styles.find("{" + NS["p"] + "}" + style_name),
+                level,
+                theme_family,
+            ))
+        if idx >= 0:
+            for container in (
+                master,
+                getattr(self.current_slide, "slide_layout", None),
+                self.current_slide,
+            ):
+                placeholder = self._placeholder(container, idx) if container is not None else None
+                if placeholder is None:
+                    continue
+                list_style = placeholder._element.find(
+                    "{" + NS["p"] + "}txBody/{" + NS["a"] + "}lstStyle"
+                )
+                style.update(self._list_style(list_style, level, theme_family))
+        if "fontFamily" not in style:
+            family = self.theme_fonts.get(theme_family, {})
+            if family.get("latin"):
+                style["fontFamily"] = family["latin"]
+            if family.get("ea"):
+                style["fontFamilyEastAsian"] = family["ea"]
+            elif family.get("hans"):
+                style["fontFamilyEastAsian"] = family["hans"]
+        return style
 
     def scheme_color(self, theme_color: Any) -> str | None:
         """Resolve an MSO_THEME_COLOR through a:clrMap and the theme palette."""
@@ -1190,15 +1449,56 @@ class Importer:
         return self.scheme_colors.get(resolved) or self.scheme_colors.get(slot)
 
     def color(self, color: Any, loc: str) -> str | None:
+        value = None
         if color.type == MSO_COLOR_TYPE.RGB:
-            return "#" + str(color.rgb)
-        if color.type == MSO_COLOR_TYPE.SCHEME:
+            value = "#" + str(color.rgb)
+        elif color.type == MSO_COLOR_TYPE.SCHEME:
             resolved = self.scheme_color(color.theme_color)
             if resolved:
-                return resolved
+                value = resolved
         if color.type is not None:
-            self.report.issue(loc, "theme-color", "Color is not an explicit sRGB color; inherited/theme color omitted.")
-        return None
+            if value is None:
+                self.report.issue(loc, "theme-color", "Color is not an explicit sRGB color; inherited/theme color omitted.")
+        color_node = getattr(getattr(color, "_color", None), "_xClr", None)
+        if value and color_node is not None:
+            alpha = color_node.find("{" + NS["a"] + "}alpha")
+            if alpha is not None:
+                try:
+                    amount = max(0, min(100000, int(alpha.get("val", "100000"))))
+                    value += f"{round(amount / 100000 * 255):02X}"
+                except (TypeError, ValueError):
+                    self.report.issue(loc, "opacity", "A malformed DrawingML alpha value was ignored.")
+        return value
+
+    def shadow(self, shape: Any, loc: str) -> dict | None:
+        """Map one native Office outer shadow to PPTD's Shadow shape."""
+        effects = shape._element.xpath("./p:spPr/a:effectLst/* | ./p:spPr/a:effectDag/*")
+        if not effects:
+            return None
+        outer = next((node for node in effects if etree.QName(node).localname == "outerShdw"), None)
+        unsupported = [etree.QName(node).localname for node in effects
+                       if etree.QName(node).localname != "outerShdw"]
+        if unsupported:
+            self.report.issue(
+                loc,
+                "effects",
+                "Unsupported Office effects are omitted: " + ", ".join(sorted(set(unsupported))) + ".",
+            )
+        if outer is None:
+            return None
+        try:
+            blur = round(float(outer.get("blurRad") or 0) / 12700, 4)
+            distance = float(outer.get("dist") or 0) / 12700
+            angle = math.radians(float(outer.get("dir") or 0) / 60000)
+            offset = [round(math.cos(angle) * distance, 4), round(math.sin(angle) * distance, 4)]
+        except (TypeError, ValueError):
+            self.report.issue(loc, "effects", "An outer shadow with malformed geometry was omitted.")
+            return None
+        color = self._xml_color(outer, loc)
+        if not color:
+            self.report.issue(loc, "effects", "An outer shadow with an unresolved colour was omitted.")
+            return None
+        return {"blur": blur, "color": color, "offset": offset}
 
     def fill(self, fill: Any, loc: str) -> dict | None:
         if fill.type == MSO_FILL_TYPE.SOLID:
@@ -1288,19 +1588,29 @@ class Importer:
         color = self.color(font.color, loc)
         if color:
             result["color"] = color
+        spacing = font._rPr.get("spc") if getattr(font, "_rPr", None) is not None else None
+        if spacing is not None:
+            result["letterSpacing"] = round(float(spacing) / 100, 4)
         return result
 
-    def text(self, tf: Any, loc: str) -> dict:
+    def text(self, tf: Any, loc: str, shape: Any | None = None) -> dict:
         paragraphs = []
         for p in tf.paragraphs:
-            para_style = self.font(p.font, loc)
+            defaults = self.default_text_style(shape, p.level)
+            para_style = {**defaults, **self.font(p.font, loc)}
             styles = []
             if p.alignment in ALIGN.values():
                 styles.append("text-align:" + next(k for k, v in ALIGN.items() if v == p.alignment))
+            elif para_style.get("paragraphAlign"):
+                styles.append("text-align:" + para_style["paragraphAlign"])
             if p.space_before:
                 styles.append(f"margin-top:{p.space_before.pt:g}px")
+            elif para_style.get("marginTop"):
+                styles.append(f"margin-top:{para_style['marginTop']:g}px")
             if p.line_spacing is not None:
                 styles.append("line-height:" + (f"{p.line_spacing.pt:g}px" if hasattr(p.line_spacing, "pt") else str(p.line_spacing)))
+            elif para_style.get("lineHeight"):
+                styles.append(f"line-height:{para_style['lineHeight']:g}")
             bits = []
             runs = {run._r: run for run in p.runs}
             paragraph_open = '<p' + (' style="' + ";".join(styles) + '"' if styles else "") + '>'
@@ -1318,7 +1628,8 @@ class Importer:
                         self.report.issue(loc, "dynamic-field", "Office field converted to its cached text value.")
                     continue
                 run = runs[child]
-                style = {**para_style, **self.font(run.font, loc)}
+                run_style = self.font(run.font, loc)
+                style = {**para_style, **run_style}
                 ea = run._r.xpath("./a:rPr/a:ea/@typeface")
                 if ea and ea[0] and ea[0] != style.get("fontFamily"):
                     if any(is_east_asian(char) for char in run.text):
@@ -1330,10 +1641,21 @@ class Importer:
                         style["fontFamily"] = ea[0]
                     else:
                         self.report.issue(loc, "mixed-script-font", "Different East Asian and Latin fonts in one inline run; the Latin face is used for this Latin run.")
+                elif (
+                    "fontFamily" not in run_style
+                    and any(is_east_asian(char) for char in run.text)
+                    and style.get("fontFamilyEastAsian")
+                ):
+                    style["fontFamily"] = style["fontFamilyEastAsian"]
                 css = []
-                for key, csskey in (("fontFamily", "font-family"), ("fontSize", "font-size"), ("color", "color")):
+                for key, csskey in (
+                    ("fontFamily", "font-family"),
+                    ("fontSize", "font-size"),
+                    ("color", "color"),
+                    ("letterSpacing", "letter-spacing"),
+                ):
                     if key in style:
-                        value = str(style[key]) + ("px" if key == "fontSize" else "")
+                        value = str(style[key]) + ("px" if key in {"fontSize", "letterSpacing"} else "")
                         css.append(f"{csskey}:{escape(value, quote=True)}")
                 bit = escape(run.text)
                 if css:
@@ -1344,14 +1666,23 @@ class Importer:
                     bit = "<em>" + bit + "</em>"
                 if run.font.underline:
                     bit = "<u>" + bit + "</u>"
+                baseline = run._r.xpath("./a:rPr/@baseline")
+                if baseline and int(baseline[0]):
+                    bit = ("<sup>" if int(baseline[0]) > 0 else "<sub>") + bit + (
+                        "</sup>" if int(baseline[0]) > 0 else "</sub>"
+                    )
+                strike = run._r.xpath("./a:rPr/@strike")
+                if strike and strike[0] not in {"noStrike", "0", "false"}:
+                    bit = "<s>" + bit + "</s>"
                 if run.hyperlink.address:
                     bit = '<a href="' + escape(run.hyperlink.address, quote=True) + '">' + bit + "</a>"
                 bits.append(bit)
             paragraphs.append(paragraph_open + "".join(bits) + '</p>')
         result = {"text": "".join(paragraphs), "wrap": tf.word_wrap if tf.word_wrap is not None else True,
                   "align": ["left", next((k for k, v in VALIGN.items() if v == tf.vertical_anchor), "top")]}
-        if any((tf.margin_left, tf.margin_right, tf.margin_top, tf.margin_bottom)):
-            self.report.issue(loc, "text-frame-margins", "Office internal text margins have no exact TextContent field and are omitted.")
+        margins = [tf.margin_left, tf.margin_top, tf.margin_right, tf.margin_bottom]
+        if any(value is not None for value in margins):
+            result["inset"] = [round(value.pt if value is not None else 0, 4) for value in margins]
         return result
 
     def chart(self, shape: Any, base: dict, loc: str) -> dict:
@@ -1543,17 +1874,27 @@ class Importer:
         elif shape.shape_type not in {MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PLACEHOLDER}:
             raise ValueError(f"Source Office shape type {shape.shape_type} not mapped")
         if shape.has_text_frame and shape.text_frame.text:
-            result.append({**base, **rotation, "elementId": base["elementId"] + ("-text" if result else ""), "elementType": "text", "content": self.text(shape.text_frame, loc)})
-        if shape._element.xpath(".//a:effectLst/* | .//a:effectDag/*"):
-            self.report.issue(loc, "effects", "Office visual effects are not imported.")
-        if shape._element.xpath(".//a:rPr[@baseline or @strike or @spc]"):
-            self.report.issue(loc, "advanced-text-format", "Baseline/strike/character spacing are not imported.")
+            result.append({
+                **base,
+                **rotation,
+                "elementId": base["elementId"] + ("-text" if result else ""),
+                "elementType": "text",
+                "content": self.text(shape.text_frame, loc, shape),
+            })
+        shadow = self.shadow(shape, loc)
+        if shadow:
+            text_only = shape.shape_type in {MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PLACEHOLDER}
+            for item in result:
+                if text_only and item["elementType"] == "text":
+                    item["content"]["shadow"] = shadow
+                elif not text_only and item["elementType"] != "text":
+                    item["shadow"] = shadow
         if shape._element.xpath(".//a:pPr/a:buChar | .//a:pPr/a:buAutoNum"):
             self.report.issue(loc, "list-markers", "Source bullet/numbering markers are not imported.")
         if shape.shape_type != MSO_SHAPE_TYPE.LINE and shape._element.xpath(".//a:xfrm[@flipH='1' or @flipH='true' or @flipV='1' or @flipV='true']"):
             self.report.issue(loc, "flip", "Source reflection is not imported.")
-        if shape._element.xpath(".//a:alpha"):
-            self.report.issue(loc, "opacity", "Source alpha/opacity is not imported.")
+        if shape._element.xpath(".//a:alphaModFix | .//a:alphaMod | .//a:alphaOff"):
+            self.report.issue(loc, "opacity", "Non-multiplying Office alpha effects are not imported; direct alpha is preserved.")
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and shape._element.xpath(".//a:prstGeom[@prst!='rect'] | .//a:custGeom"):
             self.report.issue(loc, "cropShape", "Source image mask/crop shape is not imported.")
         if shape.shape_type == MSO_SHAPE_TYPE.LINE and shape._element.xpath(".//a:prstGeom[@prst!='line'] | .//a:custGeom"):
@@ -1572,6 +1913,7 @@ class Importer:
         source_count = Counter()
         output_count = Counter()
         for si, slide in enumerate(self.prs.slides):
+            self.current_slide = slide
             page = {"elements": []}
             bg = self.fill(slide.background.fill, f"slide-{si + 1}.background")
             if bg:
