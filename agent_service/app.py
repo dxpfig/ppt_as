@@ -12,7 +12,7 @@ import logging
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, Body
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse, JSONResponse
 
-from . import agents, images as image_service, telemetry, template_reference, kimi_agent, page_actions, orchestrator, model_gateway, provider_registry
+from . import agents, images as image_service, telemetry, template_reference, kimi_agent, kimi_workspace, page_actions, orchestrator, model_gateway, provider_registry
 from .models import ImageSearchRequest, JobRequest, Project
 from .pptd_store import DocumentStore, RevisionConflict
 from . import export_service as pptd_exports, pptd_generation, visual_pipeline
@@ -773,6 +773,29 @@ async def job_events(identifier: str, request: Request):
         ),
         media_type='text/event-stream',
         headers={'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'},
+    )
+
+
+@app.get(PREFIX + '/jobs/{identifier}/draft-previews/{filename}')
+async def job_draft_preview(identifier: str, filename: str):
+    if not re.fullmatch(r'page-[1-9][0-9]*\.png', filename):
+        raise HTTPException(404, '未找到页面预览。')
+    job = read(job_path(identifier))
+    workspace = kimi_workspace.workspace(
+        ROOT,
+        key(job.get('projectId', '')),
+        key(identifier),
+    )
+    path = workspace / 'draft-previews' / filename
+    if not path.is_file():
+        raise HTTPException(404, '页面预览尚未生成。')
+    return FileResponse(
+        path,
+        media_type='image/png',
+        headers={
+            'Cache-Control': 'private, max-age=60',
+            'X-Content-Type-Options': 'nosniff',
+        },
     )
 
 

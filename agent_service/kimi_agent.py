@@ -74,6 +74,7 @@ from .kimi_plan import (
     plan_requirements,
     write_plan_deck as _write_plan_deck,
 )
+from .kimi_preview import DraftPreviewPublisher
 from .kimi_workspace import (
     batch_page_target as _batch_page_target,
     collect_assets as _collect_assets,
@@ -644,9 +645,16 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             covered=0,
             total=len(planned_paths),
         )
-        for batch_index in range(batch_limit):
-            continuation = None
-            if source_entry is not None:
+        preview_publisher = DraftPreviewPublisher(
+            workspace,
+            source_entry,
+            job_id,
+            on_event=emit,
+        )
+        await preview_publisher.start()
+        try:
+            for batch_index in range(batch_limit):
+                continuation = None
                 _, paths, existing, missing, invalid = kimi_workspace.deck_status(source_entry)
                 pending = [path for path in paths if path not in existing]
                 if not pending:
@@ -673,60 +681,62 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                     covered=len(existing),
                     total=len(paths),
                 )
-            agent = _make_agent(model, workspace, project_id, batch_iters)
-            message = Msg(
-                name="user",
-                role="user",
-                content=[{
-                    "type": "text",
-                    "text": _execution_message(
-                        request,
-                        template_info,
-                        reference_info,
-                        plan,
-                        continuation,
-                    ),
-                }],
-            )
-            model._ppt_event_phase = 'pages'
-            reply = kimi_workspace.reply_text(await _reply_with_progress(
-                agent,
-                message,
-                emit=emit,
-                phase='pages',
-                activity='逐页创作',
-                max_steps=batch_iters,
-            ))
-            source_entry = kimi_workspace.find_entry(workspace)
-            _, paths, existing, _, _ = kimi_workspace.deck_status(source_entry)
-            pending = [path for path in paths if path not in existing]
-            await emit(
-                "pages",
-                "started",
-                f"Kimi 本段完成：{len(existing)}/{len(paths)} 页已写入。",
-                covered=len(existing),
-                total=len(paths),
-            )
-            if not pending:
-                break
-        if source_entry is None:
-            raise ValueError("PPT 专家没有在 deck/ 目录产出新的 .pptd 交付物。")
-        _, planned_paths, existing_paths, _, invalid_paths = kimi_workspace.deck_status(source_entry)
-        pending_paths = [path for path in planned_paths if path not in existing_paths]
-        if pending_paths:
-            missing_detail = ", ".join(pending_paths[:6])
-            if len(pending_paths) > 6:
-                missing_detail += f" 等 {len(pending_paths)} 页"
-            invalid_detail = ""
-            if invalid_paths:
-                invalid_detail = "；YAML 问题：" + "；".join(
-                    issue["message"] for issue in invalid_paths[:6]
+                agent = _make_agent(model, workspace, project_id, batch_iters)
+                message = Msg(
+                    name="user",
+                    role="user",
+                    content=[{
+                        "type": "text",
+                        "text": _execution_message(
+                            request,
+                            template_info,
+                            reference_info,
+                            plan,
+                            continuation,
+                        ),
+                    }],
                 )
-            raise ValueError(
-                f"PPT 专家连续 {batch_limit} 段仍未写完全部页面："
-                f"{len(existing_paths)}/{len(planned_paths)} 页可解析，"
-                f"待完成 {missing_detail}{invalid_detail}"
-            )
+                model._ppt_event_phase = 'pages'
+                reply = kimi_workspace.reply_text(await _reply_with_progress(
+                    agent,
+                    message,
+                    emit=emit,
+                    phase='pages',
+                    activity='逐页创作',
+                    max_steps=batch_iters,
+                ))
+                source_entry = kimi_workspace.find_entry(workspace)
+                _, paths, existing, _, _ = kimi_workspace.deck_status(source_entry)
+                pending = [path for path in paths if path not in existing]
+                await emit(
+                    "pages",
+                    "started",
+                    f"Kimi 本段完成：{len(existing)}/{len(paths)} 页已写入。",
+                    covered=len(existing),
+                    total=len(paths),
+                )
+                if not pending:
+                    break
+            if source_entry is None:
+                raise ValueError("PPT 专家没有在 deck/ 目录产出新的 .pptd 交付物。")
+            _, planned_paths, existing_paths, _, invalid_paths = kimi_workspace.deck_status(source_entry)
+            pending_paths = [path for path in planned_paths if path not in existing_paths]
+            if pending_paths:
+                missing_detail = ", ".join(pending_paths[:6])
+                if len(pending_paths) > 6:
+                    missing_detail += f" 等 {len(pending_paths)} 页"
+                invalid_detail = ""
+                if invalid_paths:
+                    invalid_detail = "；YAML 问题：" + "；".join(
+                        issue["message"] for issue in invalid_paths[:6]
+                    )
+                raise ValueError(
+                    f"PPT 专家连续 {batch_limit} 段仍未写完全部页面："
+                    f"{len(existing_paths)}/{len(planned_paths)} 页可解析，"
+                    f"待完成 {missing_detail}{invalid_detail}"
+                )
+        finally:
+            await preview_publisher.stop()
         document: dict = {}
         pages: list[dict] = []
         entry: Path | None = None

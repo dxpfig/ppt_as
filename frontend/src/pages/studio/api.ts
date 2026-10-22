@@ -105,11 +105,14 @@ export type StudioJob = {
 		status: 'draft';
 		completedPages: number;
 		totalPages: number;
+		latestIndex?: number;
 		pages: {
 			path: string;
 			index: number;
 			title: string;
-			status: 'ready' | 'pending';
+			status: 'ready' | 'pending' | 'rendering' | 'failed';
+			previewUrl?: string | null;
+			error?: string | null;
 		}[];
 	};
 	diagnostic?: {

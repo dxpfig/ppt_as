@@ -39,7 +39,12 @@ import { StudioExportBar } from './StudioExportBar';
 import { formatCharacters } from './studioFormat';
 import { StudioHeader } from './StudioHeader';
 import { StudioMaterialsPanel } from './StudioMaterialsPanel';
-import { StudioEmptyState, StudioLegacyPreview, StudioVersionHistory } from './StudioPreviewStates';
+import {
+	StudioDraftPreview,
+	StudioEmptyState,
+	StudioLegacyPreview,
+	StudioVersionHistory,
+} from './StudioPreviewStates';
 import { usePptdStudio } from './usePptdStudio';
 import { useMediaQuery, usePageWheel, usePresentation } from './usePreviewNavigation';
 import { WorkHistory } from './WorkHistory';
@@ -184,6 +189,9 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 	const pageIndex = currentPage ? pages.indexOf(currentPage) : 0;
 	const versions = document?.versions ?? project.pptd?.versions ?? [];
 	const pageAction = job?.status === 'completed' ? job.result?.pageAction : undefined;
+	const liveDraft = job?.draftPreview?.pages.some((page) => page.previewUrl)
+		? job.draftPreview
+		: null;
 	const pageActionJob = !!job?.kind?.startsWith('page-');
 	const template = studio.templates.find((item) => item.id === templateId);
 	const referenceText = composeReferenceText(preferences.references, referenceAttachments);
@@ -821,6 +829,7 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 					)}
 					{project.pptd ? (
 						<>
+							{liveDraft && <StudioDraftPreview draft={liveDraft} compact />}
 							<div className="pptd-preview-stage">
 								<nav
 									ref={pageListRef}
@@ -951,6 +960,8 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							onSelect={setLegacyIndex}
 							onMigrate={() => void studio.migrate()}
 						/>
+					) : liveDraft ? (
+						<StudioDraftPreview draft={liveDraft} />
 					) : (
 						<StudioEmptyState
 							loading={studio.loading}

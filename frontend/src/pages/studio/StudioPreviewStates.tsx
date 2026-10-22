@@ -1,4 +1,5 @@
-import { ArrowUpRight, Layers, X } from 'lucide-react';
+import { ArrowUpRight, Layers, LoaderCircle, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 import type { StudioJob } from './api';
 import type { PptdVersion, Project } from './model';
@@ -118,6 +119,103 @@ export function StudioEmptyState({
 				</button>
 			)}
 		</div>
+	);
+}
+
+export function StudioDraftPreview({
+	draft,
+	compact = false,
+}: {
+	draft: NonNullable<StudioJob['draftPreview']>;
+	compact?: boolean;
+}) {
+	const readyPages = draft.pages.filter((page) => page.status === 'ready' && page.previewUrl);
+	const latest = readyPages.at(-1);
+	const [selectedPath, setSelectedPath] = useState(latest?.path ?? '');
+	useEffect(() => {
+		if (!latest) return;
+		setSelectedPath((current) =>
+			readyPages.some((page) => page.path === current) ? current : latest.path,
+		);
+	}, [latest, readyPages]);
+	const selected =
+		readyPages.find((page) => page.path === selectedPath) ?? latest ?? draft.pages[0];
+	const rendering = draft.pages.find((page) => page.status === 'rendering');
+	return (
+		<section
+			className={`pptd-live-draft ${compact ? 'is-compact' : ''}`}
+			aria-label="逐页生成预览"
+		>
+			<header>
+				<div>
+					<strong>逐页实际预览</strong>
+					<span>
+						{draft.completedPages}/{draft.totalPages} 页可浏览
+						{rendering ? ` · 正在渲染第 ${rendering.index + 1} 页` : ''}
+					</span>
+				</div>
+				{selected?.previewUrl && (
+					<a href={selected.previewUrl} target="_blank" rel="noreferrer">
+						打开原图
+						<ArrowUpRight size={13} />
+					</a>
+				)}
+			</header>
+			<div className="pptd-live-draft-stage">
+				{selected?.previewUrl ? (
+					<img
+						src={selected.previewUrl}
+						alt={`第 ${selected.index + 1} 页实际渲染预览`}
+					/>
+				) : (
+					<div className="pptd-live-draft-waiting">
+						<LoaderCircle size={24} className="pptd-spin" />
+						<span>正在生成并渲染第一页…</span>
+					</div>
+				)}
+				{selected && (
+					<div className="pptd-live-draft-caption">
+						<strong>
+							{String(selected.index + 1).padStart(2, '0')} · {selected.title}
+						</strong>
+						<span>
+							{selected.status === 'ready'
+								? '浏览器实际渲染'
+								: selected.status === 'rendering'
+									? '正在渲染'
+									: selected.status === 'failed'
+										? selected.error || '预览失败'
+										: '等待生成'}
+						</span>
+					</div>
+				)}
+			</div>
+			<nav className="pptd-live-draft-pages" aria-label="已生成页面预览">
+				{draft.pages.map((page) => (
+					<button
+						type="button"
+						key={page.path}
+						className={selected?.path === page.path ? 'is-active' : ''}
+						onClick={() => page.previewUrl && setSelectedPath(page.path)}
+						disabled={!page.previewUrl}
+						aria-label={`第 ${page.index + 1} 页 ${page.title}`}
+					>
+						{page.previewUrl ? (
+							<img src={page.previewUrl} alt="" loading="lazy" />
+						) : (
+							<span>
+								{page.status === 'rendering' ? (
+									<LoaderCircle size={16} className="pptd-spin" />
+								) : (
+									page.index + 1
+								)}
+							</span>
+						)}
+						<small>{page.index + 1}</small>
+					</button>
+				))}
+			</nav>
+		</section>
 	);
 }
 

@@ -12,10 +12,19 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from agent_service import kimi_agent
+from agent_service import kimi_agent, kimi_preview
 
 
 class KimiAgentUnitTests(unittest.TestCase):
+    def setUp(self):
+        preview_render = patch.object(
+            kimi_preview,
+            '_render_pages',
+            return_value=None,
+        )
+        preview_render.start()
+        self.addCleanup(preview_render.stop)
+
     def test_system_prompt_layers_skill_and_adapter(self):
         prompt = kimi_agent.kimi_system_prompt(Path("/tmp/kimi-ws"))
         self.assertIn("name: kimi-slides", prompt)

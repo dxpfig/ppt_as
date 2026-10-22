@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 import re
 import time
+from urllib.parse import quote
 from uuid import uuid4
 
 from .contracts import JobRecord
 from .job_execution import checkpoint_execution, record_event, stage_metrics
+from .kimi_workspace import workspace as kimi_workspace_path
 from .orchestrator import transition_allowed
 
 
@@ -52,6 +54,69 @@ class JobStore:
     def _draft_preview(self, identifier: str, job: dict) -> dict | None:
         if job.get('status') not in ('queued', 'running', 'interrupted'):
             return None
+        manifest_path = (
+            kimi_workspace_path(self.root, job.get('projectId', ''), identifier)
+            / '.draft-preview.json'
+        )
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                manifest = None
+            if isinstance(manifest, dict):
+                pages = []
+                for item in manifest.get('pages') or []:
+                    if not isinstance(item, dict):
+                        continue
+                    preview_file = item.get('previewFile')
+                    if (
+                        preview_file is not None
+                        and not re.fullmatch(r'page-[1-9][0-9]*\.png', str(preview_file))
+                    ):
+                        preview_file = None
+                    try:
+                        page_index = max(0, int(item.get('index') or 0))
+                    except (TypeError, ValueError):
+                        page_index = 0
+                    pages.append(
+                        {
+                            'path': str(item.get('path') or ''),
+                            'index': page_index,
+                            'title': str(item.get('title') or '未命名页面')[:120],
+                            'status': item.get('status')
+                            if item.get('status') in (
+                                'pending', 'rendering', 'ready', 'failed'
+                            )
+                            else 'pending',
+                            'previewUrl': (
+                                f'/api/studio/jobs/{quote(identifier)}/draft-previews/'
+                                f'{quote(str(preview_file))}?v='
+                                f'{quote(str(item.get("renderHash") or "0"))}'
+                                if preview_file
+                                else None
+                            ),
+                            'error': str(item.get('error'))[:300]
+                            if item.get('error')
+                            else None,
+                        }
+                    )
+                if pages:
+                    return {
+                        'status': 'draft',
+                        'completedPages': sum(
+                            page['status'] == 'ready' for page in pages
+                        ),
+                        'totalPages': len(pages),
+                        'latestIndex': max(
+                            (
+                                page['index']
+                                for page in pages
+                                if page['status'] == 'ready'
+                            ),
+                            default=-1,
+                        ),
+                        'pages': pages,
+                    }
         checkpoint_path = self.root / 'checkpoints' / f'{self._identifier(identifier)}.json'
         if not checkpoint_path.is_file():
             return None
