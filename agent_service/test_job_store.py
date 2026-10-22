@@ -31,6 +31,38 @@ class JobStoreTests(unittest.TestCase):
             self.assertEqual(store.read('job')['events'][-1]['stage'], 5)
             self.assertFalse(list(store.directory.glob('*.tmp')))
 
+    def test_public_event_history_keeps_enough_repair_cycles_for_diagnosis(self):
+        state = initial_execution()
+        for index in range(550):
+            state = record_event(
+                state,
+                {
+                    'phase': 'validate',
+                    'status': 'waiting',
+                    'message': f'修复事件 {index}',
+                },
+                now=index,
+            )
+        self.assertEqual(len(state['events']), 500)
+        self.assertEqual(state['events'][0]['message'], '修复事件 50')
+        self.assertEqual(state['events'][-1]['message'], '修复事件 549')
+
+    def test_repair_progress_reflects_resolved_issues_not_agent_steps(self):
+        state = initial_execution()
+        state = record_event(
+            state,
+            {
+                'phase': 'validate',
+                'status': 'waiting',
+                'message': '问题数没有变化',
+                'issueCount': 64,
+                'progress': 0,
+            },
+        )
+        node = next(item for item in state['nodes'] if item['id'] == 'validate')
+        self.assertEqual(node['progress'], 0)
+        self.assertEqual(state['events'][-1]['progress'], 0)
+
     def test_terminal_job_cannot_return_to_running(self):
         with TemporaryDirectory() as temporary:
             store = JobStore(Path(temporary))

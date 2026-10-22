@@ -363,9 +363,9 @@ class KimiAgentUnitTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters: Agent(ws)), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
              patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_issues", return_value=[]), \
+             patch.object(kimi_agent, "final_layout_report", return_value=([], {})), \
              patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
             import asyncio
             result = asyncio.run(run(
@@ -454,9 +454,9 @@ class KimiAgentUnitTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters: Agent(ws)), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
              patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_issues", side_effect=layout), \
+             patch.object(kimi_agent, "final_layout_report", side_effect=lambda *args, **kwargs: (layout(*args, **kwargs), {})), \
              patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
             import asyncio
             result = asyncio.run(kimi_agent.run_kimi(
@@ -469,6 +469,388 @@ class KimiAgentUnitTests(unittest.TestCase):
         self.assertEqual(result["warnings"], [])
         self.assertEqual(len(result["pages"]), 4)
         self.assertEqual(result["revision"], 1)
+
+    def test_layout_agent_without_page_changes_stops_before_another_render(self):
+        class Client:
+            async def close(self):
+                pass
+
+        model = SimpleNamespace(
+            model="fake", max_retries=0, budget_enabled=True, client=Client()
+        )
+        calls = {"repairs": 0}
+        plan = {
+            "deckTitle": "零修改测试",
+            "pages": [
+                {
+                    "path": f"pages/{index}.page",
+                    "title": title,
+                    "readerTask": "说明",
+                    "content": "内容",
+                    "visualPlan": "文本",
+                    "sourceSections": [],
+                }
+                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
+            ],
+        }
+        page_markup = (
+            "elements:\n"
+            "- elementId: title-{index}\n"
+            "  elementType: text\n"
+            "  bounds: [40, 40, 400, 60]\n"
+            "  content:\n"
+            "    text: 页面内容\n"
+            "    wrap: true\n"
+            "    align: [left, top]\n"
+        )
+
+        class Agent:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            async def reply(self, message):
+                text = message.get_text_content()
+                if "当前阶段只做完整内容规划" in text:
+                    target = self.workspace / "deck" / "plan.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+                    )
+                    return None
+                if "本轮只处理这些页面" in text:
+                    calls["repairs"] += 1
+                    return None
+                payload = json.loads(text)
+                for index, path in enumerate(
+                    payload["continuation"]["batchPages"], 1
+                ):
+                    target = self.workspace / "deck" / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        page_markup.format(index=index), encoding="utf-8"
+                    )
+                return None
+
+        events = []
+        request = SimpleNamespace(
+            prompt="生成演示",
+            audience="团队",
+            pageCount=None,
+            references="",
+            attachments=[],
+            scenario="auto",
+            templateId=None,
+        )
+        issue = {
+            "page": "pages/1.page",
+            "location": "pages/1.page#title-1",
+            "elementId": "title-1",
+            "code": "text-overflow",
+            "message": "需要修复",
+        }
+        checks = {"count": 0}
+
+        def report(*_args, **_kwargs):
+            checks["count"] += 1
+            return [issue], {}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(kimi_agent, "make_model", return_value=model), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
+             patch.object(kimi_agent, "_render_pages", return_value=None), \
+             patch.object(kimi_agent, "final_layout_report", side_effect=report):
+            import asyncio
+            result = asyncio.run(kimi_agent.run_kimi(
+                request,
+                data_root=Path(tmp),
+                progress=lambda *_: None,
+                on_event=lambda event: events.append(event),
+                project_id="layout-noop",
+                job_id="job-layout-noop",
+            ))
+
+        self.assertEqual(calls["repairs"], 1)
+        self.assertEqual(checks["count"], 1)
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertTrue(any(
+            "没有修改任何页面" in event["message"] for event in events
+        ))
+
+    def test_identical_layout_findings_stop_before_a_second_agent_round(self):
+        class Client:
+            async def close(self):
+                pass
+
+        model = SimpleNamespace(
+            model="fake", max_retries=0, budget_enabled=True, client=Client()
+        )
+        calls = {"repairs": 0, "checks": 0}
+        plan = {
+            "deckTitle": "重复问题测试",
+            "pages": [
+                {
+                    "path": f"pages/{index}.page",
+                    "title": title,
+                    "readerTask": "说明",
+                    "content": "内容",
+                    "visualPlan": "文本",
+                    "sourceSections": [],
+                }
+                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
+            ],
+        }
+        page_markup = (
+            "elements:\n"
+            "- elementId: title-{index}\n"
+            "  elementType: text\n"
+            "  bounds: [40, 40, {width}, 60]\n"
+            "  content:\n"
+            "    text: 页面内容\n"
+            "    wrap: true\n"
+            "    align: [left, top]\n"
+        )
+
+        class Agent:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            async def reply(self, message):
+                text = message.get_text_content()
+                if "当前阶段只做完整内容规划" in text:
+                    target = self.workspace / "deck" / "plan.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+                    )
+                    return None
+                if "本轮只处理这些页面" in text:
+                    calls["repairs"] += 1
+                    target = self.workspace / "deck" / "pages" / "1.page"
+                    target.write_text(
+                        page_markup.format(index=1, width=401), encoding="utf-8"
+                    )
+                    return None
+                payload = json.loads(text)
+                for index, path in enumerate(
+                    payload["continuation"]["batchPages"], 1
+                ):
+                    target = self.workspace / "deck" / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        page_markup.format(index=index, width=400),
+                        encoding="utf-8",
+                    )
+                return None
+
+        issue = {
+            "page": "pages/1.page",
+            "location": "pages/1.page#title-1",
+            "elementId": "title-1",
+            "code": "text-overflow",
+            "message": "需要修复",
+        }
+
+        def report(*_args, **_kwargs):
+            calls["checks"] += 1
+            return [issue], {}
+
+        request = SimpleNamespace(
+            prompt="生成演示",
+            audience="团队",
+            pageCount=None,
+            references="",
+            attachments=[],
+            scenario="auto",
+            templateId=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(kimi_agent, "make_model", return_value=model), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
+             patch.object(kimi_agent, "_render_pages", return_value=None), \
+             patch.object(kimi_agent, "final_layout_report", side_effect=report):
+            import asyncio
+            result = asyncio.run(kimi_agent.run_kimi(
+                request,
+                data_root=Path(tmp),
+                progress=lambda *_: None,
+                project_id="layout-stalled",
+                job_id="job-layout-stalled",
+            ))
+
+        self.assertEqual(calls["repairs"], 1)
+        self.assertEqual(calls["checks"], 2)
+        self.assertEqual(len(result["warnings"]), 1)
+
+    def test_measured_overflow_autofits_without_calling_the_agent(self):
+        class Client:
+            async def close(self):
+                pass
+
+        model = SimpleNamespace(
+            model="fake", max_retries=0, budget_enabled=True, client=Client()
+        )
+        calls = {"repairs": 0, "checks": 0}
+        plan = {
+            "deckTitle": "自适应测试",
+            "pages": [
+                {
+                    "path": f"pages/{index}.page",
+                    "title": title,
+                    "readerTask": "说明",
+                    "content": "内容",
+                    "visualPlan": "文本",
+                    "sourceSections": [],
+                }
+                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
+            ],
+        }
+        page_markup = (
+            "elements:\n"
+            "- elementId: title-1\n"
+            "  elementType: text\n"
+            "  bounds: [40, 40, 400, 60]\n"
+            "  content:\n"
+            "    text: '<p><span style=\"font-size:12px\">页面内容</span></p>'\n"
+            "    wrap: true\n"
+            "    align: [left, top]\n"
+        )
+
+        class Agent:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            async def reply(self, message):
+                text = message.get_text_content()
+                if "当前阶段只做完整内容规划" in text:
+                    target = self.workspace / "deck" / "plan.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
+                    )
+                    return None
+                if "本轮只处理这些页面" in text:
+                    calls["repairs"] += 1
+                    return None
+                payload = json.loads(text)
+                for path in payload["continuation"]["batchPages"]:
+                    target = self.workspace / "deck" / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(page_markup, encoding="utf-8")
+                return None
+
+        issue = {
+            "page": "pages/1.page",
+            "location": "pages/1.page#title-1",
+            "elementId": "title-1",
+            "code": "text-overflow",
+            "message": "文字溢出",
+        }
+        layouts = {
+            "pages/1.page": {
+                "elements": [
+                    {
+                        "elementId": "title-1",
+                        "availableSize": [100, 50],
+                        "measuredTextSize": [100, 100],
+                    }
+                ]
+            }
+        }
+
+        def report(*_args, **_kwargs):
+            calls["checks"] += 1
+            return ([issue], layouts) if calls["checks"] == 1 else ([], {})
+
+        request = SimpleNamespace(
+            prompt="生成演示",
+            audience="团队",
+            pageCount=None,
+            references="",
+            attachments=[],
+            scenario="auto",
+            templateId=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(kimi_agent, "make_model", return_value=model), \
+             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
+             patch.object(kimi_agent, "_render_pages", return_value=None), \
+             patch.object(kimi_agent, "final_layout_report", side_effect=report):
+            import asyncio
+            result = asyncio.run(kimi_agent.run_kimi(
+                request,
+                data_root=Path(tmp),
+                progress=lambda *_: None,
+                project_id="layout-autofit",
+                job_id="job-layout-autofit",
+            ))
+
+        self.assertEqual(calls["repairs"], 0)
+        self.assertEqual(calls["checks"], 2)
+        self.assertEqual(result["warnings"], [])
+        text = result["pages"][0]["data"]["elements"][0]["content"]["text"]
+        self.assertIn("font-size:8.5px", text)
+
+    def test_repair_attempts_survive_workspace_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = kimi_agent._workspace(root, "project", "parent")
+            parent.mkdir(parents=True)
+            kimi_agent._save_repair_state(parent, {
+                "attempts": {"pages/1.page": 2},
+                "noops": {"pages/1.page": 1},
+                "autofitAttempts": 1,
+                "baselineIssueCount": 4,
+                "issueCount": 4,
+                "issueFingerprint": "same",
+            })
+            kimi_agent.restore_workspace(root, "project", "child", "parent")
+            child = kimi_agent._workspace(root, "project", "child")
+            state = kimi_agent._load_repair_state(child)
+        self.assertEqual(state["attempts"]["pages/1.page"], 2)
+        self.assertEqual(state["noops"]["pages/1.page"], 1)
+        self.assertEqual(state["autofitAttempts"], 1)
+        self.assertEqual(state["issueFingerprint"], "same")
+
+    def test_model_retry_is_visible_and_has_no_fake_progress(self):
+        class Error(Exception):
+            status_code = 529
+
+        attempts = {"count": 0}
+
+        async def api(*_args, **_kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise Error("provider overloaded")
+            return "ok"
+
+        model = SimpleNamespace(
+            _call_api=api,
+            retry_delay=1.5,
+            _ppt_event_phase="validate",
+        )
+        events = []
+
+        async def emit(phase, status, message, **fields):
+            events.append({
+                "phase": phase,
+                "status": status,
+                "message": message,
+                **fields,
+            })
+
+        async def run():
+            kimi_agent._observe_model_retries(model, emit)
+            with self.assertRaises(Error):
+                await model._call_api()
+            self.assertEqual(await model._call_api(), "ok")
+
+        import asyncio
+        asyncio.run(run())
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "retrying")
+        self.assertIn("HTTP 529", events[0]["message"])
+        self.assertNotIn("progress", events[0])
+        self.assertNotIn("overloaded", events[0]["message"])
 
     def test_find_entry_requires_new_deck(self):
         with tempfile.TemporaryDirectory() as tmp:

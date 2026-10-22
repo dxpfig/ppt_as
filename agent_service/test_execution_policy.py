@@ -24,6 +24,7 @@ class ExecutionPolicyTests(unittest.TestCase):
                 'PPT_KIMI_MAX_ITERS': '12',
                 'PPT_KIMI_PLAN_ITERS': '24',
                 'PPT_KIMI_BATCH_PAGES': '3',
+                'PPT_KIMI_LAYOUT_ITERS': '8',
             },
             clear=False,
         ):
@@ -32,6 +33,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(policy.page_batch_size, 3)
         self.assertEqual(policy.max_iterations, 12)
         self.assertEqual(policy.planning_iterations, 12)
+        self.assertEqual(policy.layout_iterations, 8)
         self.assertEqual(policy.visual_review, 'full')
         self.assertFalse(policy.export_after_review)
 

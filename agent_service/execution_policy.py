@@ -46,6 +46,7 @@ class ExecutionPolicy:
     repair_rounds: int
     layout_page_attempts: int
     layout_page_batch: int
+    layout_iterations: int
     visual_repair_page_batch: int
     visual_review_concurrency: int
     layout_autofit_budget: int
@@ -83,6 +84,7 @@ def quick_policy() -> ExecutionPolicy:
         repair_rounds=_integer('PPTD_REPAIR_BUDGET', 8, 2, 30),
         layout_page_attempts=0,
         layout_page_batch=1,
+        layout_iterations=1,
         visual_repair_page_batch=_integer('PPTD_VISUAL_REPAIR_PAGE_BATCH', 4, 1, 20),
         visual_review_concurrency=_integer('PPTD_VISUAL_REVIEW_CONCURRENCY', 3, 1, 6),
         layout_autofit_budget=_integer('PPTD_LAYOUT_AUTOFIT_BUDGET', 2, 0, 10),
@@ -114,6 +116,7 @@ def expert_policy() -> ExecutionPolicy:
             10,
         ),
         layout_page_batch=_integer('PPT_KIMI_LAYOUT_PAGE_BATCH', 4, 1, 20),
+        layout_iterations=_integer('PPT_KIMI_LAYOUT_ITERS', 10, 4, 40),
         visual_repair_page_batch=_integer('PPTD_VISUAL_REPAIR_PAGE_BATCH', 4, 1, 20),
         visual_review_concurrency=_integer('PPTD_VISUAL_REVIEW_CONCURRENCY', 3, 1, 6),
         layout_autofit_budget=_integer('PPTD_LAYOUT_AUTOFIT_BUDGET', 2, 0, 10),

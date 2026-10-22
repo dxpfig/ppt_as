@@ -166,6 +166,7 @@ export type ExecutionNode = {
 	startedAt?: number;
 	endedAt?: number;
 	summary?: string;
+	progress?: number;
 };
 export type ExecutionPage = {
 	path: string;
@@ -191,6 +192,7 @@ export type ExecutionEvent = {
 	issueCount?: number;
 	covered?: number;
 	total?: number;
+	progress?: number;
 };
 export type VisualExecution = {
 	attempt?: number;

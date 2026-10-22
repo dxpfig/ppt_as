@@ -335,6 +335,9 @@ export function PptdJobStatus({
 							{selected.status !== 'running' && selected.startedAt && selected.endedAt
 								? ` · 用时 ${duration(selected.endedAt - selected.startedAt)}`
 								: ''}
+							{typeof selected.progress === 'number'
+								? ` · 实际修复进度 ${selected.progress}%`
+								: ''}
 						</span>
 					</div>
 					<p className="pptd-execution-summary">{summary}</p>

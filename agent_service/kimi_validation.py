@@ -229,23 +229,29 @@ def _contrast_issues(document: dict, pages: list[dict], rendered: Path | None) -
     return issues
 
 
-def final_layout_issues(entry: Path, document: dict, pages: list[dict], rendered: Path | None = None) -> list[dict]:
-    """All located defects the finished deck must clear before it ships.
+def final_layout_report(
+    entry: Path,
+    document: dict,
+    pages: list[dict],
+    rendered: Path | None = None,
+) -> tuple[list[dict], dict]:
+    """Return final located defects together with browser measurements.
 
     Unresolved font families are reported separately: the company template
     itself asks for 微软雅黑 and 思源黑体, so a missing local face is a
     substitution note, not something the model should fix by leaving the
     template's design.
-
-    ``rendered`` is an existing render directory from ``_render_pages``; when it
-    is omitted this renders the deck itself and cleans up after.
     """
-    issues = [issue for issue in _browser_layout_issues(entry) if issue.get("code") != "font-unresolved"]
+    browser_issues, layouts = _browser_layout_report(entry)
+    issues = [
+        issue for issue in browser_issues
+        if issue.get("code") != "font-unresolved"
+    ]
     temporary = rendered is None
     if temporary:
         rendered = _render_pages(entry)
     if rendered is None:
-        return issues
+        return issues, layouts
     try:
         issues.extend(_contrast_issues(document, pages, rendered))
     finally:
@@ -258,7 +264,18 @@ def final_layout_issues(entry: Path, document: dict, pages: list[dict], rendered
             continue
         seen.add(key)
         unique.append(issue)
-    return unique
+    return unique, layouts
+
+
+def final_layout_issues(
+    entry: Path,
+    document: dict,
+    pages: list[dict],
+    rendered: Path | None = None,
+) -> list[dict]:
+    """Return only the defects from :func:`final_layout_report`."""
+    issues, _ = final_layout_report(entry, document, pages, rendered)
+    return issues
 
 
 def _slide_artifact_dir(rendered: Path, artifact_dir: Path) -> Path:

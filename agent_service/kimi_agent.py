@@ -8,15 +8,25 @@ and close the ``kimi-slides check`` / ``screenshot`` loop before finishing.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from agentscope.agent import Agent, ContextConfig, ReActConfig
+from agentscope.event import (
+    ExceedMaxItersEvent,
+    ModelCallStartEvent,
+    ReplyStartEvent,
+    ThinkingBlockStartEvent,
+    ToolCallStartEvent,
+    ToolResultEndEvent,
+)
 from agentscope.message import Msg
 from agentscope.middleware import TracingMiddleware
 from agentscope.permission import PermissionBehavior, PermissionDecision, PermissionMode
@@ -25,8 +35,10 @@ from agentscope.tool import Bash, Edit, FunctionTool, Glob, Grep, Read, Toolkit,
 
 from .model_gateway import make_model, timeout_setting
 from .execution_policy import expert_policy
+from .layout_autofit import autofit_state
 from .pptd_compat import normalize_pages
 from .pptd_validation import normalize_table_tracks, validate_document
+from .repair_coordinator import issue_fingerprint
 from .kimi_validation import (
     _browser_layout_issues,
     _browser_layout_report,
@@ -35,7 +47,7 @@ from .kimi_validation import (
     _render_pages,
     _renderer_ready,
     _slide_artifact_dir,
-    final_layout_issues,
+    final_layout_report,
     visual_overview_issues,
 )
 from .kimi_template import (
@@ -79,6 +91,7 @@ from .kimi_workspace import (
     restore_workspace,
     workspace as _workspace,
     write_deck as _write_deck,
+    write_pages as _write_pages,
 )
 from .kimi_prompts import (
     execution_message as _execution_message,
@@ -238,18 +251,28 @@ def _cli_tool(workspace: Path) -> FunctionTool:
     )
 
 
-def _make_agent(model, workspace: Path, session_id: str | None, max_iters: int):
-    toolkit = Toolkit(
-        tools=[
-            Read(),
-            Write(),
-            Edit(),
-            Grep(),
-            Glob(),
-            Bash(cwd=str(workspace)),
-            _cli_tool(workspace),
-        ]
-    )
+def _make_agent(
+    model,
+    workspace: Path,
+    session_id: str | None,
+    max_iters: int,
+    *,
+    allowed_tools: tuple[str, ...] | None = None,
+):
+    available = {
+        'Read': Read(),
+        'Write': Write(),
+        'Edit': Edit(),
+        'Grep': Grep(),
+        'Glob': Glob(),
+        'Bash': Bash(cwd=str(workspace)),
+        'kimi_slides': _cli_tool(workspace),
+    }
+    selected = list(available) if allowed_tools is None else list(allowed_tools)
+    unknown = set(selected) - set(available)
+    if unknown:
+        raise ValueError(f'未知的 PPT 专家工具：{", ".join(sorted(unknown))}')
+    toolkit = Toolkit(tools=[available[name] for name in selected])
     state = AgentState(session_id=session_id) if session_id else AgentState()
     state.permission_context.mode = PermissionMode.BYPASS
     return Agent(
@@ -270,6 +293,192 @@ def _make_agent(model, workspace: Path, session_id: str | None, max_iters: int):
             compression_fallback_to_truncation=False,
         ),
     )
+
+
+async def _reply_with_progress(
+    agent,
+    message,
+    *,
+    emit,
+    phase: str,
+    activity: str,
+    max_steps: int,
+):
+    """Expose model and tool activity without pretending steps equal progress."""
+    if not hasattr(agent, 'reply_stream'):
+        return await agent.reply(message)
+    final = None
+    model_calls = 0
+    tool_names: dict[str, str] = {}
+    async for item in agent.reply_stream(message, yield_final_msg=True):
+        if isinstance(item, Msg):
+            final = item
+        elif isinstance(item, ReplyStartEvent):
+            await emit(phase, 'waiting', f'{activity}：正在分析当前上下文')
+        elif isinstance(item, ThinkingBlockStartEvent):
+            await emit(phase, 'waiting', f'{activity}：模型正在判断下一步')
+        elif isinstance(item, ModelCallStartEvent):
+            model_calls += 1
+            await emit(
+                phase,
+                'waiting',
+                f'{activity}：模型请求 {model_calls}/{max_steps}',
+            )
+        elif isinstance(item, ToolCallStartEvent):
+            tool_names[item.tool_call_id] = item.tool_call_name
+            label = {
+                'Read': '正在读取文件',
+                'Write': '正在写入页面文件',
+                'Edit': '正在修改页面文件',
+                'Grep': '正在检索文件内容',
+                'Glob': '正在定位文件',
+                'Bash': '正在运行命令',
+                'kimi_slides': '正在运行 PPT 检查或截图工具',
+            }.get(item.tool_call_name, f'正在执行工具 {item.tool_call_name}')
+            await emit(phase, 'started', f'{activity}：{label}')
+        elif isinstance(item, ToolResultEndEvent):
+            name = tool_names.get(item.tool_call_id, '工具')
+            await emit(
+                phase,
+                'waiting',
+                f'{activity}：{name} 执行完成，模型正在判断下一步',
+            )
+        elif isinstance(item, ExceedMaxItersEvent):
+            await emit(
+                phase,
+                'waiting',
+                f'{activity}：本轮 {max_steps} 步预算已用完，正在整理结果',
+            )
+    if final is None:
+        raise ValueError(f'{activity}没有返回可用的 Agent 结果。')
+    return final
+
+
+def _http_status(error: BaseException) -> int | None:
+    for owner in (error, getattr(error, 'response', None)):
+        value = getattr(owner, 'status_code', None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _retry_delay() -> float:
+    try:
+        value = float(os.getenv('PPT_LLM_RETRY_DELAY_SECONDS', '1.5'))
+    except ValueError:
+        return 1.5
+    return value if 0.5 <= value <= 15 else 1.5
+
+
+def _observe_model_retries(model, emit) -> None:
+    """Surface hidden provider retries without leaking provider response bodies."""
+    original = getattr(model, '_call_api', None)
+    if original is None or getattr(model, '_ppt_retry_observed', False):
+        return
+    retries = 0
+
+    async def observed(*args, **kwargs):
+        nonlocal retries
+        try:
+            return await original(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            status = _http_status(error)
+            if status in {429, 500, 502, 503, 504, 529}:
+                retries += 1
+                delay = max(1.0, float(getattr(model, 'retry_delay', 1.0)))
+                await emit(
+                    getattr(model, '_ppt_event_phase', 'validate'),
+                    'retrying',
+                    f'模型服务暂时繁忙（HTTP {status}），'
+                    f'{delay:g} 秒后重试（第 {retries} 次）',
+                )
+            raise
+
+    model._call_api = observed
+    model._ppt_retry_observed = True
+
+
+REPAIR_STATE_FILE = '.repair-state.json'
+
+
+def _repair_state_path(workspace: Path) -> Path:
+    return workspace / REPAIR_STATE_FILE
+
+
+def _load_repair_state(workspace: Path) -> dict:
+    default = {
+        'version': 1,
+        'attempts': {},
+        'noops': {},
+        'autofitAttempts': 0,
+        'baselineIssueCount': 0,
+        'issueCount': 0,
+        'issueFingerprint': '',
+    }
+    path = _repair_state_path(workspace)
+    if not path.is_file():
+        return default
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return default
+    if not isinstance(value, dict):
+        return default
+
+    def counters(name: str) -> dict[str, int]:
+        source = value.get(name)
+        if not isinstance(source, dict):
+            return {}
+        return {
+            str(key): number
+            for key, number in source.items()
+            if isinstance(number, int) and number >= 0
+        }
+
+    for name in ('autofitAttempts', 'baselineIssueCount', 'issueCount'):
+        number = value.get(name)
+        default[name] = number if isinstance(number, int) and number >= 0 else 0
+    default['attempts'] = counters('attempts')
+    default['noops'] = counters('noops')
+    fingerprint = value.get('issueFingerprint')
+    default['issueFingerprint'] = fingerprint if isinstance(fingerprint, str) else ''
+    return default
+
+
+def _save_repair_state(workspace: Path, state: dict) -> None:
+    path = _repair_state_path(workspace)
+    value = {
+        **state,
+        'version': 1,
+        'updatedAt': time.time(),
+    }
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    temporary.replace(path)
+
+
+def _repair_progress(state: dict, issue_count: int) -> int | None:
+    baseline = max(int(state.get('baselineIssueCount') or 0), issue_count)
+    if baseline <= 0:
+        return None
+    return max(0, min(95, round((baseline - issue_count) / baseline * 100)))
+
+
+def _page_sources(entry: Path, paths: list[str]) -> list[dict]:
+    sources = []
+    for path in paths:
+        target = entry.parent / path
+        try:
+            text = target.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue
+        sources.append({'path': path, 'source': text})
+    return sources
 
 
 def _run_cli(command: str, args: list[str], cwd: Path) -> str:
@@ -313,6 +522,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     repair_rounds = policy.repair_rounds
     layout_page_attempts = policy.layout_page_attempts
     layout_page_batch = policy.layout_page_batch
+    layout_iterations = policy.layout_iterations
     template_path = kimi_workspace.prepare_template(
         data_root,
         getattr(request, "templateId", None),
@@ -325,6 +535,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
     # The agentic loop performs many independent model calls. Give transient
     # overloads a bounded retry window without changing prompt/context behavior.
     model.max_retries = max(int(getattr(model, 'max_retries', 0) or 0), 3)
+    model.retry_delay = _retry_delay()
     # The agentic ReAct loop makes many short model calls. Per-call remote token
     # counting is both slow and rate-limit-prone, and AgentScope's own context
     # compression already bounds the loop. Disable the deterministic-pipeline
@@ -336,6 +547,8 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             result = on_event({"phase": phase, "status": status, "message": message, **fields})
             if asyncio.iscoroutine(result):
                 await result
+
+    _observe_model_retries(model, emit)
 
     try:
         reference_info = await asyncio.to_thread(
@@ -388,11 +601,19 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                         + planning_text
                     )
                 planning_agent = _make_agent(model, workspace, project_id, plan_iters)
-                await planning_agent.reply(Msg(
-                    name="user",
-                    role="user",
-                    content=[{"type": "text", "text": planning_text}],
-                ))
+                model._ppt_event_phase = 'plan'
+                await _reply_with_progress(
+                    planning_agent,
+                    Msg(
+                        name="user",
+                        role="user",
+                        content=[{"type": "text", "text": planning_text}],
+                    ),
+                    emit=emit,
+                    phase='plan',
+                    activity='PPT 内容策划',
+                    max_steps=plan_iters,
+                )
                 plan = kimi_plan.load_plan(plan_path)
                 if plan:
                     last_issues = kimi_plan.audit_plan(plan, requirements)
@@ -467,7 +688,15 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                     ),
                 }],
             )
-            reply = kimi_workspace.reply_text(await agent.reply(message))
+            model._ppt_event_phase = 'pages'
+            reply = kimi_workspace.reply_text(await _reply_with_progress(
+                agent,
+                message,
+                emit=emit,
+                phase='pages',
+                activity='逐页创作',
+                max_steps=batch_iters,
+            ))
             source_entry = kimi_workspace.find_entry(workspace)
             _, paths, existing, _, _ = kimi_workspace.deck_status(source_entry)
             pending = [path for path in paths if path not in existing]
@@ -529,12 +758,25 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             repair_agent = _make_agent(
                 model, workspace, project_id, min(batch_iters, 14)
             )
-            reply = kimi_workspace.reply_text(await repair_agent.reply(message))
+            model._ppt_event_phase = 'validate'
+            reply = kimi_workspace.reply_text(await _reply_with_progress(
+                repair_agent,
+                message,
+                emit=emit,
+                phase='validate',
+                activity='结构修复',
+                max_steps=min(batch_iters, 14),
+            ))
 
         if entry is None:
             raise ValueError("PPT 专家没有生成可检查的 PPTD 交付稿。")
-        page_attempts: dict[str, int] = {}
-        page_noops: dict[str, int] = {}
+        repair_state = _load_repair_state(workspace)
+        page_attempts = dict(repair_state['attempts'])
+        page_noops = dict(repair_state['noops'])
+        autofit_attempts = repair_state['autofitAttempts']
+        last_issue_count = repair_state['issueCount']
+        last_issue_fingerprint = repair_state['issueFingerprint']
+        model._ppt_event_phase = 'validate'
         while True:
             document, pages = kimi_workspace.load_deck(source_entry)
             _apply_host_transforms(source_entry, document, pages, template_info)
@@ -547,7 +789,13 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             await emit("validate", "started", "正在用真实浏览器排版检查整份交付稿（含封面、致谢与公司元素）。")
             rendered = await asyncio.to_thread(_render_pages, entry)
             try:
-                layout = await asyncio.to_thread(final_layout_issues, entry, document, pages, rendered)
+                layout, layouts = await asyncio.to_thread(
+                    final_layout_report,
+                    entry,
+                    document,
+                    pages,
+                    rendered,
+                )
                 visual = []
                 if not layout:
                     visual = await visual_overview_issues(
@@ -561,9 +809,81 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             layout = layout + visual
             if not layout:
                 outstanding = []
+                repair_state.update(
+                    attempts=page_attempts,
+                    noops=page_noops,
+                    autofitAttempts=autofit_attempts,
+                    issueCount=0,
+                    issueFingerprint='',
+                )
+                _save_repair_state(workspace, repair_state)
                 break
 
             source_paths = list(document.get("pages") or [])
+            if repair_state['baselineIssueCount'] <= 0:
+                repair_state['baselineIssueCount'] = len(layout)
+            current_progress = _repair_progress(repair_state, len(layout))
+
+            if autofit_attempts < policy.layout_autofit_budget:
+                fitted_pages = deepcopy(pages)
+                fitted = autofit_state(
+                    {'pages': fitted_pages},
+                    layouts,
+                    layout,
+                )
+                if any(fitted.values()):
+                    autofit_attempts += 1
+                    _write_pages(source_entry, fitted_pages)
+                    repair_state.update(
+                        attempts=page_attempts,
+                        noops=page_noops,
+                        autofitAttempts=autofit_attempts,
+                        issueCount=len(layout),
+                        issueFingerprint=issue_fingerprint(layout),
+                    )
+                    last_issue_count = len(layout)
+                    last_issue_fingerprint = issue_fingerprint(layout)
+                    _save_repair_state(workspace, repair_state)
+                    await emit(
+                        'validate',
+                        'retrying',
+                        f'已对 {sum(fitted.values())} 个溢出元素执行确定性自适应，'
+                        '正在重新检查；暂不调用修复 Agent。',
+                        issueCount=len(layout),
+                        progress=current_progress,
+                    )
+                    if progress:
+                        progress(70, '确定性排版自适应完成，正在重新检查')
+                    continue
+
+            current_fingerprint = issue_fingerprint(layout)
+            if (
+                last_issue_fingerprint
+                and current_fingerprint == last_issue_fingerprint
+                and len(layout) >= last_issue_count
+            ):
+                outstanding = layout
+                repair_state.update(
+                    attempts=page_attempts,
+                    noops=page_noops,
+                    autofitAttempts=autofit_attempts,
+                    issueCount=len(layout),
+                    issueFingerprint=current_fingerprint,
+                )
+                _save_repair_state(workspace, repair_state)
+                await emit(
+                    'validate',
+                    'waiting',
+                    f'问题集合没有改善（仍为 {len(layout)} 项），'
+                    '已停止重复修复并保留可编辑稿。',
+                    issues=layout[:12],
+                    issueCount=len(layout),
+                    progress=current_progress,
+                )
+                break
+
+            last_issue_count = len(layout)
+            last_issue_fingerprint = current_fingerprint
             issue_pages = []
             for issue in layout:
                 path = kimi_workspace.issue_page(issue)
@@ -575,10 +895,20 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             ]
             if not pending:
                 outstanding = layout
+                repair_state.update(
+                    attempts=page_attempts,
+                    noops=page_noops,
+                    autofitAttempts=autofit_attempts,
+                    issueCount=len(layout),
+                    issueFingerprint=current_fingerprint,
+                )
+                _save_repair_state(workspace, repair_state)
                 await emit(
                     "validate", "waiting",
                     f"仍有 {len(layout)} 项排版问题，已保留可编辑稿；可继续从检查点恢复。",
                     issues=layout[:12],
+                    issueCount=len(layout),
+                    progress=current_progress,
                 )
                 break
 
@@ -587,7 +917,7 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 issue for issue in layout if kimi_workspace.issue_page(issue) in batch
             ]
             page_numbers = [source_paths.index(path) + 1 for path in batch]
-            before = kimi_workspace.page_hashes(source_entry, batch)
+            before = kimi_workspace.page_hashes(source_entry, source_paths)
             for path in batch:
                 page_attempts[path] = page_attempts.get(path, 0) + 1
 
@@ -596,6 +926,8 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 f"排版检查发现 {len(layout)} 项问题；正在修复第 "
                 f"{', '.join(str(number) for number in page_numbers)} 页。",
                 issues=batch_issues[:12],
+                issueCount=len(layout),
+                progress=current_progress,
             )
             if progress:
                 progress(70, f"正在修复第 {', '.join(str(number) for number in page_numbers)} 页的排版问题")
@@ -604,26 +936,80 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
                 f"\n注意：上一轮没有实际修改 {path}，本轮必须修改该页面。"
                 for path in batch if page_noops.get(path)
             )
+            target_sources = _page_sources(source_entry, batch)
             message = Msg(name="user", role="user", content=[{"type": "text", "text": (
                 "宿主的真实浏览器排版检查（渲染最终交付稿，已包含公司模板的封面/致谢与角落元素）发现以下问题：\n"
                 + kimi_workspace.issue_summary(batch_issues, limit=len(batch_issues))
                 + f"\n本轮只处理这些页面：{', '.join(batch)}（页码 {', '.join(str(number) for number in page_numbers)}）。"
                 + f"\n请先运行 `kimi_slides screenshot deck -p {','.join(str(number) for number in page_numbers)} "
                   f"-o {screenshot_dir}` 查看实际渲染效果，再编辑对应的 .page 文件。"
-                + "\n修改后必须重新运行 `kimi_slides check deck --level auto` 和同一页的 screenshot 验证。"
+                + "\n目标页面的当前源码已放在 targetPages 中，不要先用 Grep、Glob 或逐页 Read 探索。"
+                  "截图后必须直接调用 Edit 或 Write；修改后只运行一次本轮页面的 "
+                  "`kimi_slides check deck --level auto`，不要重复读取整个工作区。"
+                + "\n\n目标页面源码：\n"
+                + json.dumps({'targetPages': target_sources}, ensure_ascii=False)
+                + "\n"
                   "保持文字与数据完整，不要改动 template-pptd/ 下的分析素材。"
                 + noop_note
             )}])
             repair_agent = _make_agent(
-                model, workspace, project_id, min(batch_iters, 14)
+                model,
+                workspace,
+                project_id,
+                layout_iterations,
+                allowed_tools=('Read', 'Write', 'Edit', 'kimi_slides'),
             )
-            reply = kimi_workspace.reply_text(await repair_agent.reply(message))
-            after = kimi_workspace.page_hashes(source_entry, batch)
+            model._ppt_event_phase = 'validate'
+            reply = kimi_workspace.reply_text(await _reply_with_progress(
+                repair_agent,
+                message,
+                emit=emit,
+                phase='validate',
+                activity=f"第 {', '.join(str(number) for number in page_numbers)} 页排版修复",
+                max_steps=layout_iterations,
+            ))
+            after = kimi_workspace.page_hashes(source_entry, source_paths)
+            changed_pages = [
+                path for path in source_paths
+                if after[path] != before[path]
+            ]
+            changed_batch = [path for path in batch if path in changed_pages]
+            if not changed_pages:
+                for path in batch:
+                    page_noops[path] = page_noops.get(path, 0) + 1
+                outstanding = layout
+                repair_state.update(
+                    attempts=page_attempts,
+                    noops=page_noops,
+                    autofitAttempts=autofit_attempts,
+                    issueCount=len(layout),
+                    issueFingerprint=current_fingerprint,
+                )
+                _save_repair_state(workspace, repair_state)
+                await emit(
+                    'validate',
+                    'waiting',
+                    '本轮 Agent 没有修改任何页面，已停止自动修复；'
+                    '不会再次执行无意义的整稿检查。',
+                    issues=layout[:12],
+                    issueCount=len(layout),
+                    progress=current_progress,
+                )
+                break
             for path in batch:
-                if after[path] == before[path]:
+                if path not in changed_pages:
                     page_noops[path] = page_noops.get(path, 0) + 1
                 else:
                     page_noops[path] = 0
+            repair_state.update(
+                attempts=page_attempts,
+                noops=page_noops,
+                autofitAttempts=autofit_attempts,
+                issueCount=len(layout),
+                issueFingerprint=current_fingerprint,
+                lastChangedPages=changed_batch,
+            )
+            _save_repair_state(workspace, repair_state)
         from .pptd_store import DocumentStore
 
         store = DocumentStore(data_root)
@@ -632,7 +1018,18 @@ async def run_kimi(request, *, data_root: Path, progress, on_event=None, project
             project_id, document, pages, "AI 生成（PPT 专家）", revision,
             assets=kimi_workspace.collect_assets(entry),
         )
-        await emit("validate", "completed", "结构检查与真实排版检查通过，已提交可编辑文档。")
+        await emit(
+            "validate",
+            "completed",
+            (
+                f'排版检查保留 {len(outstanding)} 项未解决问题，'
+                '已提交可编辑文档供确认。'
+                if outstanding
+                else '结构检查与真实排版检查通过，已提交可编辑文档。'
+            ),
+            issueCount=len(outstanding),
+            progress=100,
+        )
         if outstanding:
             reply = (reply + "\n\n## 排版检查未通过项\n\n"
                      "以下问题已定位到页面与元素；文档仍可编辑预览，请确认或调整后再导出：\n\n"

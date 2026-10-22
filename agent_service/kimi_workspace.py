@@ -289,6 +289,17 @@ def write_deck(
     return target
 
 
+def write_pages(entry: Path, pages: list[dict]) -> None:
+    """Persist page changes back to the agent's editable source deck."""
+    for page in pages:
+        target = entry.parent / str(page["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            yaml.safe_dump(page["data"], allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+
 def issue_summary(issues: list[dict], limit: int = 8) -> str:
     lines = [
         f"- {issue.get('location')}: {issue.get('message')}"

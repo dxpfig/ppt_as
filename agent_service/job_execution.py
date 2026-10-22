@@ -8,6 +8,14 @@ from .orchestrator import STAGES
 PHASES = list(STAGES)
 
 
+def _event_limit() -> int:
+    try:
+        value = int(os.getenv('PPT_EXECUTION_EVENT_LIMIT', '500'))
+    except ValueError:
+        return 500
+    return value if 100 <= value <= 5000 else 500
+
+
 def initial_execution():
     return {'phase': 'context', 'nodes': [{'id': key, 'label': label, 'status': 'pending'} for key, label in PHASES], 'pages': [], 'visualPages': [], 'events': []}
 
@@ -27,12 +35,34 @@ def record_event(execution, event, now=None):
         exporting = next(n for n in state['nodes'] if n['id'] == 'export')
         exporting.update(status='pending', summary='等待检查修复后重新导出')
     # Explicit allowlist: traces and reasoning must never enter the product feed.
-    item = {k: event[k] for k in ('phase', 'status', 'message', 'pagePath', 'pageIndex', 'title', 'attempt', 'scope', 'elementId', 'issueCount', 'covered', 'total') if k in event}
+    item = {
+        k: event[k]
+        for k in (
+            'phase',
+            'status',
+            'message',
+            'pagePath',
+            'pageIndex',
+            'title',
+            'attempt',
+            'scope',
+            'elementId',
+            'issueCount',
+            'covered',
+            'total',
+            'progress',
+        )
+        if k in event
+    }
+    if isinstance(item.get('progress'), (int, float)):
+        item['progress'] = max(0, min(100, round(item['progress'])))
+    else:
+        item.pop('progress', None)
     item['timestamp'] = now
     for key in ('message', 'title', 'pagePath', 'elementId'):
         if key in item:
             item[key] = redact(str(item[key]))[:1500]
-    state['events'] = [*state['events'], item][-100:]
+    state['events'] = [*state['events'], item][-_event_limit():]
     state['phase'] = phase
     status = {'started': 'running', 'waiting': 'running', 'retrying': 'running', 'completed': 'completed', 'failed': 'failed', 'cancelled': 'cancelled'}.get(item.get('status'), 'running')
     if phase == 'visual':
@@ -43,6 +73,8 @@ def record_event(execution, event, now=None):
         state['visual'] = {**previous, **{k: item[k] for k in ('scope', 'attempt', 'covered', 'total', 'issueCount') if k in item}, 'status': status}
     node['summary'] = item.get('message', '')
     node.setdefault('startedAt', now)
+    if 'progress' in item:
+        node['progress'] = item['progress']
     # A single completed parallel page does not complete the whole page stage.
     subtask = item.get('pagePath') or (phase == 'visual' and item.get('scope'))
     node['status'] = 'running' if subtask and status == 'completed' else status
