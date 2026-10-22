@@ -9,10 +9,11 @@ from pathlib import Path
 import shutil
 import time
 
+import yaml
 from pptd_engine.document import load_yaml
 
 from .kimi_validation import _render_pages
-from .kimi_workspace import deck_status, write_deck
+from .kimi_workspace import deck_status
 
 
 MANIFEST_NAME = '.draft-preview.json'
@@ -48,6 +49,51 @@ def _page_titles(workspace: Path, paths: list[str]) -> dict[str, str]:
     return title_map
 
 
+def _media_references(value, result: set[str]) -> None:
+    if isinstance(value, dict):
+        for item in value.values():
+            _media_references(item, result)
+    elif isinstance(value, list):
+        for item in value:
+            _media_references(item, result)
+    elif isinstance(value, str) and value.startswith('media/'):
+        path = Path(value)
+        if '..' not in path.parts:
+            result.add(value)
+
+
+def _write_preview_deck(
+    temporary: Path,
+    entry: Path,
+    document: dict,
+    path: str,
+    page_data: dict,
+) -> Path:
+    preview = temporary / 'deck'
+    preview.mkdir(parents=True, exist_ok=True)
+    media = set()
+    _media_references(page_data, media)
+    for relative in media:
+        source = entry.parent / relative
+        if not source.is_file():
+            continue
+        target = preview / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    target = preview / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        yaml.safe_dump(page_data, allow_unicode=True, sort_keys=False),
+        encoding='utf-8',
+    )
+    mini_entry = preview / entry.name
+    mini_entry.write_text(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
+        encoding='utf-8',
+    )
+    return mini_entry
+
+
 def _render_page(
     workspace: Path,
     entry: Path,
@@ -68,11 +114,12 @@ def _render_page(
     preview_document = deepcopy(document)
     preview_document['pages'] = [path]
     try:
-        mini_entry = write_deck(
-            temporary / 'deck',
+        mini_entry = _write_preview_deck(
+            temporary,
             entry,
             preview_document,
-            [{'path': path, 'data': page_data}],
+            path,
+            page_data,
         )
         rendered = _render_pages(mini_entry)
         image = rendered / 'pages' / 'page-1.png' if rendered else None
