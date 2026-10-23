@@ -24,7 +24,7 @@ from zipfile import ZipFile
 
 from .math import append_math, split_math
 from .icons import add_icon
-from .fonts import FontResolver, canonical_family, embed_fonts, is_east_asian
+from .fonts import FontResolver, canonical_family, embed_fonts, is_east_asian, substitution_note
 
 from lxml import etree
 from PIL import Image
@@ -1138,7 +1138,7 @@ class Exporter:
             if asset.synthesis: self.report.note(asset.synthesis)
         if self.font_substitutions:
             substitutions = [
-                f'字体替换：{source} 未安装，已改用开源等价字体 {target} 并随文件内嵌。'
+                substitution_note(source, target)
                 for source, target in sorted(self.font_substitutions.items())
             ]
             self.report.data["fontSubstitutions"] = substitutions

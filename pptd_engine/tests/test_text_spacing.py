@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 from lxml import etree
 from pptd_engine.pptx import Exporter, NS
-from pptd_engine.fonts import canonical_family
+from pptd_engine.fonts import canonical_family, substitution_note
 
 
 class TextSpacingTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class TextSpacingTests(unittest.TestCase):
 
             substituted = canonical_family('Arial')
             expected = [] if substituted == 'Arial' else [
-                f'字体替换：Arial 未安装，已改用开源等价字体 {substituted} 并随文件内嵌。',
+                substitution_note('Arial', substituted),
             ]
             self.assertEqual(report.get('fontSubstitutions', []), expected)
 

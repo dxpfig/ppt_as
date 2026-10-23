@@ -74,6 +74,15 @@ def canonical_family(family):
     return canonical
 
 
+def substitution_note(source: str, target: str) -> str:
+    """Explain a font substitution in the exporter's user-readable report."""
+    if sys.platform == 'win32':
+        # The proprietary face is installed here but is still substituted onto its
+        # open equivalent, so the note cannot claim that it was missing.
+        return f'字体替换：{source} 已改用开源等价字体 {target} 并随文件内嵌。'
+    return f'字体替换：{source} 未安装，已改用开源等价字体 {target} 并随文件内嵌。'
+
+
 def editable_permission(font):
     flags = font['OS/2'].fsType
     if flags & 0x200:
