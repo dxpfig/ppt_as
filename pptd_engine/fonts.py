@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import io
+import os
 import posixpath
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 from urllib.parse import urlparse
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -49,9 +51,27 @@ ALIASES = {
     'Calibri Light': 'Liberation Sans',
     'Times New Roman': 'Liberation Serif',
 }
+# The open CJK faces ship under different family names per platform, and the
+# proprietary Windows faces ALIASES substitutes away are actually installed
+# there. Both substitutions are therefore platform specific; POSIX keeps the
+# ALIASES table above unchanged.
+WINDOWS_FAMILIES = {
+    'Noto Sans CJK SC': 'Noto Sans SC',
+    'Noto Serif CJK SC': 'Noto Serif SC',
+    'Liberation Sans': 'Arial',
+    'Liberation Serif': 'Times New Roman',
+}
 STIX_MATH_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/stixtwomath/STIXTwoMath-Regular.ttf'
 FONT_SLOT_ORDER = {'font': 0, 'regular': 1, 'bold': 2, 'italic': 3, 'boldItalic': 4}
 GOOGLE_UA = 'Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1985.125 Safari/537.36'
+
+
+def canonical_family(family):
+    """The family name the exporter embeds on this platform."""
+    canonical = ALIASES.get(family, family)
+    if sys.platform == 'win32':
+        canonical = WINDOWS_FAMILIES.get(canonical, canonical)
+    return canonical
 
 
 def editable_permission(font):
@@ -127,6 +147,16 @@ def _family_names(font):
     return {n.toUnicode().casefold() for n in font['name'].names if n.nameID in (1,16)}
 
 
+def _face_score(font, weight, italic):
+    """Rank a face by how well it supplies the requested weight and slant."""
+    axes = {axis.axisTag:axis for axis in font['fvar'].axes} if 'fvar' in font else {}
+    variable_weight = 'wght' in axes and axes['wght'].minValue <= weight <= axes['wght'].maxValue
+    variable_style = ('ital' in axes and axes['ital'].minValue <= int(italic) <= axes['ital'].maxValue) or ('slnt' in axes and (not italic or axes['slnt'].minValue != axes['slnt'].maxValue))
+    actual_weight = font['OS/2'].usWeightClass
+    actual_italic = bool(font['OS/2'].fsSelection & 1)
+    return (0 if variable_style or actual_italic == italic else 10000) + (0 if variable_weight else abs(actual_weight - weight))
+
+
 def _select_collection_face(raw, family, weight, italic):
     """A custom TTC URL identifies a collection, not necessarily its first face."""
     if raw[:4] != b'ttcf':
@@ -138,12 +168,7 @@ def _select_collection_face(raw, family, weight, italic):
         try:
             if family.casefold() not in _family_names(font):
                 continue
-            axes = {axis.axisTag:axis for axis in font['fvar'].axes} if 'fvar' in font else {}
-            variable_weight = 'wght' in axes and axes['wght'].minValue <= weight <= axes['wght'].maxValue
-            variable_style = ('ital' in axes and axes['ital'].minValue <= int(italic) <= axes['ital'].maxValue) or ('slnt' in axes and (not italic or axes['slnt'].minValue != axes['slnt'].maxValue))
-            actual_weight = font['OS/2'].usWeightClass
-            actual_italic = bool(font['OS/2'].fsSelection & 1)
-            score = (0 if variable_style or actual_italic == italic else 10000) + (0 if variable_weight else abs(actual_weight - weight))
+            score = _face_score(font, weight, italic)
             candidates.append((score, index))
         finally:
             font.close()
@@ -194,6 +219,70 @@ def _instance_face(font, weight, italic):
     return font
 
 
+def _windows_font_directories():
+    """Directories that hold installed Windows font files."""
+    directories = []
+    windir = os.environ.get('WINDIR')
+    if windir:
+        directories.append(Path(windir) / 'Fonts')
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        directories.append(Path(local) / 'Microsoft' / 'Windows' / 'Fonts')
+    return directories
+
+
+def _windows_installed_fonts(family):
+    """Registry file names of the installed fonts that may provide the family."""
+    import winreg
+
+    wanted = family.casefold()
+    filenames = []
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            key = winreg.OpenKey(root, r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts')
+        except OSError:
+            continue
+        with key:
+            for index in range(winreg.QueryInfoKey(key)[1]):
+                name, value, _ = winreg.EnumValue(key, index)
+                if wanted in name.casefold():
+                    filenames.append(value)
+    return filenames
+
+
+def _windows_font_match(family, weight, italic):
+    """The fc-match equivalent on Windows: family list, file and face index."""
+    candidates = []
+    seen = set()
+    for filename in _windows_installed_fonts(family):
+        path = None
+        for directory in _windows_font_directories():
+            candidate = directory / filename
+            if candidate.is_file():
+                path = candidate
+                break
+        if path is None or str(path).casefold() in seen:
+            continue
+        seen.add(str(path).casefold())
+        raw = path.read_bytes()
+        try:
+            index = _select_collection_face(raw, family, weight, italic)
+        except ValueError:
+            continue
+        font = TTFont(io.BytesIO(raw), fontNumber=index, lazy=True)
+        try:
+            names = _family_names(font)
+            if family.casefold() not in names:
+                continue
+            candidates.append((_face_score(font, weight, italic), str(path), index, names))
+        finally:
+            font.close()
+    if not candidates:
+        return []
+    _, path, index, names = min(candidates, key=lambda candidate: (candidate[0], candidate[1]))
+    return [', '.join(sorted(names)), path, str(index)]
+
+
 class FontResolver:
     def __init__(self,cache: Path,custom_fonts=()):
         self.cache=Path(cache); self.cache.mkdir(parents=True,exist_ok=True)
@@ -210,7 +299,7 @@ class FontResolver:
         return response.content
 
     def resolve(self,family,weight=400,italic=False):
-        family=ALIASES.get(family,family)
+        family=canonical_family(family)
         key=(family,weight,italic)
         if key in self._resolved:return self._resolved[key]
         source=self.custom.get(family)
@@ -225,7 +314,10 @@ class FontResolver:
             index=_select_collection_face(raw,family,weight,italic)
         else:
             pattern=family+(':style=Bold Italic' if weight>=600 and italic else ':style=Bold' if weight>=600 else ':style=Italic' if italic else ':style=Regular')
-            result=subprocess.run(['fc-match','-f','%{family}\n%{file}\n%{index}',pattern],capture_output=True,text=True,check=True).stdout.splitlines()
+            if sys.platform=='win32':
+                result=_windows_font_match(family,weight,italic)
+            else:
+                result=subprocess.run(['fc-match','-f','%{family}\n%{file}\n%{index}',pattern],capture_output=True,text=True,check=True).stdout.splitlines()
             if not result or family.casefold() not in [f.strip().casefold() for f in result[0].split(',')]:
                 raise ValueError(f'Font {family!r} is not installed; declare customFonts with an explicit source')
             raw=Path(result[1]).read_bytes(); index=int(result[2] or 0)&0xffff; source='system:'+result[1]

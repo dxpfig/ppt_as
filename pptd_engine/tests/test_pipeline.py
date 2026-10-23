@@ -7,7 +7,7 @@ from zipfile import ZipFile
 from lxml import etree
 from pptd_engine.pptx import Exporter
 from pptd_engine.source_archive import recover_source
-from pptd_engine.fonts import eot_decode
+from pptd_engine.fonts import eot_decode, canonical_family
 from pptd_engine.document import load_yaml
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -51,7 +51,7 @@ class PipelineTests(unittest.TestCase):
                 sfnt=eot_decode(z.read(font['part']))
                 self.assertEqual(hashlib.sha256(sfnt).hexdigest(),font['sfntSha256'])
             self.assertIn('JetBrains Mono',[f['family'] for f in self.report['fonts']])
-            self.assertIn('Noto Sans CJK SC',[f['family'] for f in self.report['fonts']])
+            self.assertIn(canonical_family('Noto Sans CJK SC'),[f['family'] for f in self.report['fonts']])
             relations=etree.fromstring(z.read('ppt/_rels/presentation.xml.rels'))
             for relation in relations:
                 if relation.get('Type').endswith('/font'):

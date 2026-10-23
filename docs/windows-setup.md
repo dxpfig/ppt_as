@@ -142,3 +142,10 @@ uvicorn 会直接使用 asyncio 默认事件循环。
 **脚本报 `SetConsoleWindowTitle` / `HostException`**
 把脚本输出重定向到文件时，PowerShell 控制台宿主会尝试应用 pnpm 输出的 ANSI 窗口标题
 序列并失败。安装脚本已改用 `append-only` 报告器并捕获该宿主异常，不会因此中断。
+
+**导出报 `Font 'xxx' is not installed`**
+导出器需要系统字体。Windows 上它从注册表枚举已安装字体并用字体自身的 name 表校验家族名，
+因此 Windows 必须装有对应字体：中文正文需要 `Noto Sans SC`（本机通常随
+`Noto Sans SC` 静态或可变字体安装），衬线用 `Noto Serif SC`，拉丁用 `Arial`。
+文档里保留的是规范名（`Noto Sans CJK SC`），导出器会映射到平台实际安装的字体并记录替换。
+若某个字体确实缺失，可在文档的 `customFonts` 里用显式来源声明。
