@@ -1278,9 +1278,13 @@ def _tool_detail(name: str, raw_input: str, workspace: Path | None) -> str:
         if not text:
             return ''
         path = Path(text)
-        if workspace and path.is_absolute():
+        # A rooted path without a drive is the POSIX spelling of an absolute
+        # location; Windows treats it as drive-relative, so is_absolute() alone
+        # would miss it.
+        located = path.is_absolute() or (bool(path.root) and not path.drive)
+        if workspace and located:
             try:
-                return str(path.resolve().relative_to(workspace.resolve()))
+                return path.resolve().relative_to(workspace.resolve()).as_posix()
             except (OSError, ValueError):
                 return f'外部文件 · {path.name}'
         return text
