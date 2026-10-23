@@ -14,6 +14,8 @@ import re
 import subprocess
 from lxml import etree
 
+from .fonts import canonical_family
+
 NS = {
     "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -118,7 +120,7 @@ class _Converter:
                     properties.append(_val("scr", target)); break
         drawing = self.drawing_style()
         if any('\u2e80' <= char <= '\u9fff' or '\uac00' <= char <= '\ud7af' or '\uff00' <= char <= '\uffef' or ord(char) >= 0x20000 for char in text):
-            drawing.append(_el("a:ea", typeface="Noto Sans CJK SC"))
+            drawing.append(_el("a:ea", typeface=canonical_family("Noto Sans CJK SC")))
         run = _el("m:r", properties, drawing, _el("m:t", text=text))
         if text != text.strip():
             run[-1].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")

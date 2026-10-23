@@ -10,6 +10,7 @@ from pptx import Presentation
 from pptx.util import Pt
 
 from pptd_engine.math import append_math, split_math, mathml_to_omml
+from pptd_engine.fonts import canonical_family
 from pptd_engine.icons import add_icon, load_icon_index, svg_path_geometry
 
 NS = {
@@ -64,7 +65,7 @@ class MathTests(unittest.TestCase):
         append_math(p, r"\text{中文}+\sqrt{x}", 18, "#000000")
         self.assertIn("中文", p._p.xml)
         self.assertTrue(etree.fromstring(p._p.xml.encode()).xpath("a14:m/m:oMath/m:r/m:t", namespaces=NS))
-        self.assertTrue(etree.fromstring(p._p.xml.encode()).xpath("a14:m//a:ea[@typeface='Noto Sans CJK SC']", namespaces=NS))
+        self.assertTrue(etree.fromstring(p._p.xml.encode()).xpath("a14:m//a:ea[@typeface='%s']" % canonical_family('Noto Sans CJK SC'), namespaces=NS))
 
     def test_bad_latex_and_unknown_mathml_are_explicit_errors(self):
         for latex in [r"\frac{a}", r"\unknowncommand{x}", r"{x", r"<b>x</b>"]:

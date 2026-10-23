@@ -2,6 +2,7 @@
 from functools import lru_cache
 from pathlib import Path
 import re
+import sys
 import unicodedata
 
 from PIL import ImageFont
@@ -11,7 +12,9 @@ from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.util import Inches, Pt
 
 FONT_DIR = Path("/usr/share/fonts/opentype/noto")
-FONT_FAMILY = "Noto Sans CJK SC" if FONT_DIR.is_dir() else "WenQuanYi Zen Hei"
+# WenQuanYi is a Linux-only fallback. Other platforms keep the canonical family
+# name and let the exporter map it onto the face they actually install.
+FONT_FAMILY = "Noto Sans CJK SC" if FONT_DIR.is_dir() or sys.platform == "win32" else "WenQuanYi Zen Hei"
 PALETTES = {
     "forest": {"paper": "F5F3EC", "ink": "183E34", "muted": "62776F", "rule": "CCD3C9", "accent": "9B783E"},
     "ink": {"paper": "F1F2F4", "ink": "25344B", "muted": "617080", "rule": "CBD1D7", "accent": "9D643D"},

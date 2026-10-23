@@ -51,6 +51,9 @@ docs/api-reference/generated
 .remember/
 .traces/
 
+# Windows 本地安装缓存（pip / npm / pnpm store / 临时文件），全部留在项目盘
+.cache/
+
 # Large generated comparison artifacts; keep them locally outside Git
 experiments/long_file_ppt_ex/*.pptx
 experiments/long_file_ppt_ex/analysis/*.png

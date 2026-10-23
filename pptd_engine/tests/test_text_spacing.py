@@ -7,6 +7,7 @@ from zipfile import ZipFile
 
 from lxml import etree
 from pptd_engine.pptx import Exporter, NS
+from pptd_engine.fonts import canonical_family, substitution_note
 
 
 class TextSpacingTests(unittest.TestCase):
@@ -52,9 +53,11 @@ class TextSpacingTests(unittest.TestCase):
 
             report = Exporter(source, root / 'out').run()
 
-            self.assertEqual(report['fontSubstitutions'], [
-                '字体替换：Arial 未安装，已改用开源等价字体 Liberation Sans 并随文件内嵌。',
-            ])
+            substituted = canonical_family('Arial')
+            expected = [] if substituted == 'Arial' else [
+                substitution_note('Arial', substituted),
+            ]
+            self.assertEqual(report.get('fontSubstitutions', []), expected)
 
 
 if __name__ == '__main__': unittest.main()

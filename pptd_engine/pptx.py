@@ -24,7 +24,7 @@ from zipfile import ZipFile
 
 from .math import append_math, split_math
 from .icons import add_icon
-from .fonts import FontResolver, ALIASES, embed_fonts, is_east_asian
+from .fonts import FontResolver, canonical_family, embed_fonts, is_east_asian, substitution_note
 
 from lxml import etree
 from PIL import Image
@@ -780,7 +780,7 @@ class Exporter:
         names = {"latin": names, "ea": names} if isinstance(names, str) else names
         for script in ("latin", "ea"):
             requested = names.get(script, names.get("latin", "MiSans"))
-            name = ALIASES.get(requested, requested)
+            name = canonical_family(requested)
             if name != requested:
                 self.font_substitutions.setdefault(requested, name)
             prop = font._rPr.find("{" + NS["a"] + "}" + script)
@@ -1119,7 +1119,7 @@ class Exporter:
                         if etree.QName(face).localname not in ("latin", "ea", "cs"): continue
                         name = face.get("typeface")
                         if name and not name.startswith("+"):
-                            replaced = ALIASES.get(name, name); face.set("typeface", replaced)
+                            replaced = canonical_family(name); face.set("typeface", replaced)
                             if replaced != name:
                                 self.font_substitutions.setdefault(name, replaced)
                             name = replaced
@@ -1138,7 +1138,7 @@ class Exporter:
             if asset.synthesis: self.report.note(asset.synthesis)
         if self.font_substitutions:
             substitutions = [
-                f'字体替换：{source} 未安装，已改用开源等价字体 {target} 并随文件内嵌。'
+                substitution_note(source, target)
                 for source, target in sorted(self.font_substitutions.items())
             ]
             self.report.data["fontSubstitutions"] = substitutions
