@@ -967,6 +967,8 @@ function PptdWorkspace({ studio }: { studio: ReturnType<typeof usePptdStudio> })
 							loading={studio.loading}
 							canStop={studio.canStop}
 							draft={job?.draftPreview}
+							plan={job?.planPreview}
+							message={job?.message}
 							onFocus={() => inputRef.current?.focus()}
 						/>
 					)}

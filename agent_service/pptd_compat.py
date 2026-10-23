@@ -27,6 +27,13 @@ CJK_FAMILY_MARKERS = (
     "noto sans cjk", "noto serif cjk", "source han", "pingfang",
     "microsoft yahei", "simhei", "simsun",
 )
+SERIF_FONT_ALIASES = {
+    "liter": "MiSans",
+    "noto serif sc": "Noto Serif CJK SC",
+    "思源宋体": "Noto Serif CJK SC",
+    "思源宋体 cn vf": "Noto Serif CJK SC",
+    "source han serif cn vf": "Noto Serif CJK SC",
+}
 
 
 def _plain_text(markup: str) -> str:
@@ -42,8 +49,22 @@ def _cjk_family(value: str) -> bool:
     return any(marker in folded for marker in CJK_FAMILY_MARKERS)
 
 
+def _resolve_font_alias(family):
+    if isinstance(family, str):
+        return SERIF_FONT_ALIASES.get(family.strip().casefold(), family)
+    if isinstance(family, dict):
+        return {
+            key: SERIF_FONT_ALIASES.get(value.strip().casefold(), value)
+            if isinstance(value, str)
+            else value
+            for key, value in family.items()
+        }
+    return family
+
+
 def _routed_family(family, text: str):
     """Route CJK glyphs to an installed East-Asian face without losing Latin intent."""
+    family = _resolve_font_alias(family)
     if not isinstance(family, str) or not family.strip() or not _contains_cjk(text):
         return family
     parts = [part.strip().strip("\"'") for part in family.split(",") if part.strip()]
@@ -145,9 +166,21 @@ def normalize_pages(pages: list[dict]) -> dict[str, int]:
         data = page.get("data") if isinstance(page, dict) else None
         if not isinstance(data, dict):
             continue
+        for key in [
+            key for key in data
+            if key.startswith("_pending")
+        ]:
+            data.pop(key, None)
+            changed["native"] += 1
         for element in data.get("elements", []):
             if not isinstance(element, dict):
                 continue
+            for key in [
+                key for key in element
+                if key.startswith("_pending")
+            ]:
+                element.pop(key, None)
+                changed["native"] += 1
             if "opacity" in element:
                 element.pop("opacity", None)
                 changed["opacity"] += 1
@@ -193,21 +226,40 @@ def normalize_pages(pages: list[dict]) -> dict[str, int]:
 
 
 def normalize_custom_fonts(document: dict, pages: list[dict]) -> int:
-    """Drop declared custom fonts that no page actually references."""
+    """Drop unused custom fonts and canonicalize installed font aliases."""
     custom = document.get("customFonts")
-    if not isinstance(custom, list) or not custom:
-        return 0
-    content = json.dumps(pages, ensure_ascii=False, sort_keys=True)
-    kept = [
-        item
-        for item in custom
-        if isinstance(item, dict)
-        and isinstance(item.get("family"), str)
-        and item["family"] in content
-    ]
-    removed = len(custom) - len(kept)
-    if kept:
-        document["customFonts"] = kept
-    else:
-        document.pop("customFonts", None)
-    return removed
+    removed = 0
+    if isinstance(custom, list) and custom:
+        content = json.dumps(pages, ensure_ascii=False, sort_keys=True)
+        kept = [
+            item
+            for item in custom
+            if isinstance(item, dict)
+            and isinstance(item.get("family"), str)
+            and item["family"] in content
+        ]
+        removed = len(custom) - len(kept)
+        if kept:
+            document["customFonts"] = kept
+        else:
+            document.pop("customFonts", None)
+
+    changed = 0
+
+    def walk(value):
+        nonlocal changed
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "fontFamily":
+                    resolved = _resolve_font_alias(child)
+                    if resolved != child:
+                        value[key] = resolved
+                        changed += 1
+                else:
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk({key: value for key, value in document.items() if key != "customFonts"})
+    return removed + changed

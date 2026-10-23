@@ -155,6 +155,7 @@ test('execution timeline follows live SSE, page retries and repairs, bounded his
 			message: '公开页面事件 ' + index,
 			pagePath: 'pages/11.page',
 			attempt: 2,
+			detail: index === 0 ? 'deck/pages/11.page' : undefined,
 		}));
 		publish({
 			stage: 91,
@@ -187,8 +188,11 @@ test('execution timeline follows live SSE, page retries and repairs, bounded his
 				.locator('.pptd-execution-details')
 				.evaluate((element) => element.scrollHeight > element.clientHeight),
 		);
-		await panel.locator('.pptd-execution-events summary').click();
-		assert.equal(await panel.locator('.pptd-execution-events li').count(), 12);
+		const actionLog = panel.getByRole('region', { name: '具体执行记录' });
+		assert.equal(await actionLog.locator('li').count(), 30);
+		assert.match(await actionLog.innerText(), /公开页面事件 0/);
+		assert.match(await actionLog.innerText(), /deck\/pages\/11\.page/);
+		assert.match(await actionLog.innerText(), /间隔|已等待/);
 		assert.ok(
 			(await panel.boundingBox()).height <= 380,
 			'Expanded details leave room for the preview',

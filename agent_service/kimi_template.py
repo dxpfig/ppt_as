@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import html
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -256,9 +257,16 @@ def _relocate(bounds, box, size, gap: float = 4.0):
 def _clear_corner_conflicts(elements: list[dict], chrome: list[dict], template_dir: Path, size) -> list[str]:
     """Relocate our own content that the template's mandatory chrome would cover."""
     boxes = [box for box in (_visible_box(element, template_dir) for element in chrome) if box]
+    chrome_signatures = {
+        _chrome_signature(element)
+        for element in chrome
+        if isinstance(element, dict)
+    }
     moved: list[str] = []
     for element in elements:
         if not isinstance(element, dict):
+            continue
+        if _chrome_signature(element) in chrome_signatures:
             continue
         # Page-covering artwork is the background the chrome deliberately sits
         # on top of; only foreground content is pushed out of the corner band.
@@ -306,7 +314,19 @@ def _apply_chrome(deck_dir: Path, document: dict, pages: list[dict], chrome: lis
         _clear_corner_conflicts(elements, chrome, template_dir, size)
         has_top = any(_corner(e.get("bounds"), size)[0] for e in elements if isinstance(e, dict))
         has_bottom = any(_corner(e.get("bounds"), size)[1] for e in elements if isinstance(e, dict))
+        signatures = {
+            _chrome_signature(e)
+            for e in elements
+            if isinstance(e, dict)
+        }
         for group, present in ((top, has_top), (bottom, has_bottom)):
+            present = present or bool(
+                signatures
+                & {
+                    _chrome_signature(element)
+                    for element in group
+                }
+            )
             if present:
                 continue
             for element in group:
@@ -570,8 +590,43 @@ def _fit_cover_slots(page_data: dict, size) -> None:
     available = width * 0.88
     one_line = _cover_fit_size(text, available, maximum, spacing)
     if one_line >= maximum * 0.82:
-        if one_line < maximum:
-            title["content"] = {**content, "text": _cover_markup(str(content.get("text", "")), [text], one_line)}
+        line_height = one_line * 1.2
+        title_height = line_height + 32
+        title_top = max(88.0, round(height * 0.20, 2))
+        title["bounds"] = [0.0, title_top, width, title_height]
+        title["content"] = {
+            **content,
+            "text": _cover_markup(
+                str(content.get("text", "")),
+                [text],
+                one_line,
+            ),
+            "align": ["center", "middle"],
+            "wrap": True,
+        }
+        title_bottom = title_top + title_height
+        subtitle_y = title_bottom + max(16.0, round(one_line * 0.30, 2))
+        if len(slots) > 1:
+            subtitle = slots[1]
+            subtitle_bounds = subtitle.get("bounds")
+            if isinstance(subtitle_bounds, list) and len(subtitle_bounds) == 4:
+                subtitle["bounds"] = [
+                    0.0,
+                    subtitle_y,
+                    width,
+                    max(36.0, subtitle_bounds[3]),
+                ]
+        date_y = subtitle_y + max(54.0, round(height * 0.12, 2))
+        if len(slots) > 2:
+            date = slots[2]
+            date_bounds = date.get("bounds")
+            if isinstance(date_bounds, list) and len(date_bounds) == 4:
+                date["bounds"] = [
+                    date_bounds[0],
+                    min(date_y, height - date_bounds[3] - 8),
+                    date_bounds[2],
+                    date_bounds[3],
+                ]
         return
 
     first, second = _cover_split(text)
@@ -633,7 +688,1474 @@ def _copy_page_media(page_data: dict, template_dir: Path, deck_dir: Path) -> Non
             source, target = template_dir / src, deck_dir / src
             if source.is_file() and not target.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(source.read_bytes())
+            target.write_bytes(source.read_bytes())
+
+
+def build_template_cover(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    subtitle: str = "",
+    organization: str = "",
+    date: str = "",
+) -> dict:
+    """Build one cover page from the template's own first-page design."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    refs = template.get("pages") or []
+    if not refs:
+        raise ValueError("模板没有可复用的封面页。")
+    page = load_yaml(template_dir / refs[0])
+    _copy_page_media(page, template_dir, deck_dir)
+    page = _fill_template_page(
+        page,
+        [title, subtitle, date],
+        keep_unfilled=False,
+    )
+    _fit_cover_slots(page, template.get("size"))
+
+    if organization:
+        slots = _text_slots(page)
+        if len(slots) >= 3:
+            date_slot = slots[2]
+            unit_slot = json.loads(json.dumps(date_slot))
+            existing_ids = {
+                item.get("elementId")
+                for item in page.get("elements") or []
+                if isinstance(item, dict)
+            }
+            unit_id = f"{unit_slot.get('elementId') or 'cover-slot'}-unit"
+            while unit_id in existing_ids:
+                unit_id += "x"
+            unit_slot["elementId"] = unit_id
+            unit_slot["content"] = _relabel(
+                unit_slot.get("content") or {},
+                organization,
+            )
+            bounds = unit_slot.get("bounds") or [0, 0, 960, 36]
+            subtitle_bottom = 0.0
+            if len(slots) >= 2:
+                subtitle_bounds = slots[1].get("bounds") or [0, 0, 0, 0]
+                subtitle_bottom = float(subtitle_bounds[1]) + float(subtitle_bounds[3])
+            unit_y = max(float(bounds[1]), subtitle_bottom + 16.0)
+            date_bounds = date_slot.get("bounds") or bounds
+            date_height = max(30.0, float(date_bounds[3]))
+            date_y = unit_y + date_height + 10.0
+            unit_slot["bounds"] = [
+                float(bounds[0]),
+                unit_y,
+                float(bounds[2]),
+                date_height,
+            ]
+            canvas_height = (
+                float(template["size"][1])
+                if isinstance(template.get("size"), list)
+                and len(template["size"]) == 2
+                else 540.0
+            )
+            date_slot["bounds"] = [
+                float(date_bounds[0]),
+                min(date_y, canvas_height - date_height - 12.0),
+                float(date_bounds[2]),
+                date_height,
+            ]
+            page.setdefault("elements", []).append(unit_slot)
+    return page
+
+
+def build_template_closing(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    text: str,
+) -> dict:
+    """Build one closing page from the template's own final-page design."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    refs = template.get("pages") or []
+    if not refs:
+        raise ValueError("模板没有可复用的结束页。")
+    page = load_yaml(template_dir / refs[-1])
+    _copy_page_media(page, template_dir, deck_dir)
+    page = _fill_template_page(
+        page,
+        [text],
+        keep_unfilled=False,
+    )
+    slots = _text_slots(page)
+    if slots:
+        main = slots[0]
+        bounds = main.get("bounds")
+        size = template.get("size") or [960, 540]
+        font_size = _font_size(main.get("content") or {})
+        if (
+            isinstance(bounds, list)
+            and len(bounds) == 4
+            and font_size > 0
+        ):
+            canvas_width = float(size[0])
+            canvas_height = float(size[1])
+            required_height = max(float(bounds[3]), font_size * 1.45)
+            center_y = float(bounds[1]) + float(bounds[3]) / 2
+            main["bounds"] = [
+                0.0,
+                max(0.0, center_y - required_height / 2),
+                canvas_width,
+                min(
+                    required_height,
+                    canvas_height
+                    - max(0.0, center_y - required_height / 2),
+                ),
+            ]
+    return page
+
+
+def _text_center(element: dict) -> tuple[float, float]:
+    bounds = element.get("bounds") or [0, 0, 0, 0]
+    return (
+        float(bounds[0]) + float(bounds[2]) / 2,
+        float(bounds[1]) + float(bounds[3]) / 2,
+    )
+
+
+def _agenda_rows(page: dict) -> list[dict]:
+    """Pair each template agenda number with its row and title elements."""
+    elements = [
+        item for item in page.get("elements") or []
+        if isinstance(item, dict)
+    ]
+    numbers = [
+        item for item in elements
+        if item.get("elementType") == "text"
+        and re.fullmatch(
+            r"\s*\d{2}\s*",
+            _visible_text(item.get("content") or {}),
+        )
+    ]
+    rows = []
+    for number in numbers:
+        center_x, center_y = _text_center(number)
+        red = min(
+            (
+                item for item in elements
+                if item.get("elementType") == "shape"
+                and abs(_text_center(item)[1] - center_y) < 8
+                and abs(_text_center(item)[0] - center_x) < 12
+            ),
+            key=lambda item: abs(_text_center(item)[1] - center_y),
+            default=None,
+        )
+        white = min(
+            (
+                item for item in elements
+                if item.get("elementType") == "shape"
+                and abs(_text_center(item)[1] - center_y) < 8
+                and _text_center(item)[0] > center_x + 20
+            ),
+            key=lambda item: abs(_text_center(item)[1] - center_y),
+            default=None,
+        )
+        title = min(
+            (
+                item for item in elements
+                if item.get("elementType") == "text"
+                and item is not number
+                and abs(_text_center(item)[1] - center_y) < 9
+                and (
+                    white is None
+                    or _text_center(item)[0]
+                    > float((white.get('bounds') or [0, 0, 0, 0])[0])
+                )
+            ),
+            key=lambda item: abs(_text_center(item)[1] - center_y),
+            default=None,
+        )
+        if red is not None and white is not None and title is not None:
+            rows.append({
+                'number': number,
+                'red': red,
+                'white': white,
+                'title': title,
+            })
+    return sorted(rows, key=lambda row: _text_center(row['number'])[1])
+
+
+def _agenda_title_markup(template: str, text: str, size: float) -> str:
+    family = re.search(r'font-family:\s*([^;\"]+)', template)
+    font = family.group(1).strip() if family else '微软雅黑'
+    return (
+        '<p style="text-align:left;line-height:1.0"><strong>'
+        f'<span style="font-family:{font};font-size:{size}px;color:#000000">'
+        f'{html.escape(text)}</span></strong></p>'
+    )
+
+
+def build_template_agenda(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    items: list[str],
+) -> dict:
+    """Fill the template agenda and extend its row pattern as needed."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    refs = template.get("pages") or []
+    if len(refs) < 2:
+        raise ValueError("模板没有可复用的目录页。")
+    page = load_yaml(template_dir / refs[1])
+    _copy_page_media(page, template_dir, deck_dir)
+    rows = _agenda_rows(page)
+    if not rows:
+        raise ValueError("模板目录页没有可识别的编号行。")
+    if len(items) > len(rows):
+        last = rows[-1]
+        gap = (
+            _text_center(last['number'])[1]
+            - _text_center(rows[-2]['number'])[1]
+            if len(rows) > 1
+            else 44.0
+        )
+        existing_ids = {
+            str(item.get('elementId'))
+            for item in page.get('elements') or []
+            if isinstance(item, dict)
+        }
+        for _ in range(len(items) - len(rows)):
+            cloned = {}
+            for role in ('red', 'number', 'white', 'title'):
+                source = rows[-1][role]
+                clone = json.loads(json.dumps(source))
+                base = str(clone.get('elementId') or role)
+                clone_id = f'{base}-next'
+                while clone_id in existing_ids:
+                    clone_id += 'x'
+                clone['elementId'] = clone_id
+                clone['bounds'] = [
+                    clone['bounds'][0],
+                    clone['bounds'][1] + gap,
+                    clone['bounds'][2],
+                    clone['bounds'][3],
+                ]
+                existing_ids.add(clone_id)
+                page.setdefault('elements', []).append(clone)
+                cloned[role] = clone
+            rows.append(cloned)
+    for index, (row, text) in enumerate(zip(rows, items), 1):
+        number = f'{index:02d}'
+        for role in ('red', 'white', 'number'):
+            bounds = row[role].get('bounds')
+            if isinstance(bounds, list) and len(bounds) == 4:
+                row[role]['bounds'] = [
+                    bounds[0],
+                    bounds[1],
+                    bounds[2],
+                    max(38.0, bounds[3]),
+                ]
+        row['number']['content'] = _relabel(
+            row['number'].get('content') or {},
+            number,
+        )
+        white_bounds = row['white'].get('bounds') or [0, 0, 0, 0]
+        title_x = float(white_bounds[0]) + 6.0
+        title_y = float(white_bounds[1]) + 2.0
+        title_width = max(40.0, float(white_bounds[2]) - 12.0)
+        title_height = max(38.0, float(white_bounds[3]))
+        size = 15.0
+        while size > 12 and _text_width(text, size) > title_width:
+            size -= 1
+        row['title']['bounds'] = [
+            title_x,
+            title_y,
+            title_width,
+            title_height,
+        ]
+        row['title']['content'] = {
+            **(row['title'].get('content') or {}),
+            'text': _agenda_title_markup(
+                str((row['title'].get('content') or {}).get('text', '')),
+                text,
+                size,
+            ),
+            'wrap': True,
+            'align': ['left', 'middle'],
+        }
+    for element in page.get('elements') or []:
+        if not isinstance(element, dict) or element.get('elementType') != 'text':
+            continue
+        element['content'] = {
+            **(element.get('content') or {}),
+            'inset': [0.0, 0.0, 0.0, 0.0],
+        }
+    return page
+
+
+def build_template_cards(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    items: list[str],
+) -> dict:
+    """Build an equal-width goal-card page on the template body artwork."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    size = template.get("size") or [960, 540]
+    width, height = float(size[0]), float(size[1])
+    elements: list[dict] = []
+    background = _extract_body_background(template_dir)
+    if (
+        isinstance(background, dict)
+        and isinstance(background.get("src"), str)
+        and (template_dir / background["src"]).is_file()
+    ):
+        source = template_dir / background["src"]
+        deck_src = _share_media(
+            deck_dir,
+            background["src"],
+            source.read_bytes(),
+        )
+        _install_background_image(
+            {"elements": elements},
+            size,
+            deck_src,
+        )
+        elements = [{
+            'elementId': 'host-background',
+            'bounds': [0, 0, width, height],
+            'elementType': 'image',
+            'src': deck_src,
+            'fit': {'mode': 'fill'},
+            'crop': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0},
+        }]
+    elements.append({
+        'elementId': 'cards-title',
+        'elementType': 'text',
+        'bounds': [64, 42, 720, 52],
+        'content': {
+            'text': title,
+            'fontSize': 28,
+            'bold': True,
+            'color': '#1F2430',
+            'wrap': True,
+            'align': ['left', 'middle'],
+        },
+    })
+    elements.append({
+        'elementId': 'cards-accent',
+        'elementType': 'shape',
+        'shapeName': 'rect',
+        'bounds': [64, 106, 54, 5],
+        'fill': {'type': 'solid', 'color': '#C62828'},
+    })
+    count = max(1, len(items))
+    gap = 24.0
+    left = 64.0
+    available = width - left * 2
+    card_width = (available - gap * (count - 1)) / count
+    card_y = 156.0
+    card_height = min(160.0, height - card_y - 76.0)
+    for index, item in enumerate(items, 1):
+        x = left + (index - 1) * (card_width + gap)
+        shape_id = f'goal-card-{index}'
+        number_id = f'goal-number-{index}'
+        title_id = f'goal-title-{index}'
+        elements.append({
+            'elementId': shape_id,
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, card_y, card_width, card_height],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': number_id,
+            'elementType': 'text',
+            'bounds': [x + 20, card_y + 20, card_width - 40, 28],
+            'content': {
+                'text': f'{index:02d}',
+                'fontSize': 15,
+                'bold': True,
+                'color': '#C62828',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+        text_width = card_width - 40
+        font_size = 20
+        while font_size > 14 and _text_width(item, font_size) > text_width:
+            font_size -= 1
+        elements.append({
+            'elementId': title_id,
+            'elementType': 'text',
+            'bounds': [
+                x + 20,
+                card_y + 58,
+                text_width,
+                max(64.0, card_height - 78.0),
+            ],
+            'content': {
+                'text': item,
+                'fontSize': font_size,
+                'bold': True,
+                'color': '#1F2430',
+                'wrap': True,
+                'align': ['left', 'top'],
+            },
+        })
+    return {'elements': elements, 'notes': ''}
+
+
+def build_template_comparison(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    left_title: str,
+    left_items: list[str],
+    right_title: str,
+    right_items: list[str],
+    conclusion: str,
+) -> dict:
+    """Build a two-column range comparison on the template body artwork."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    size = template.get("size") or [960, 540]
+    width = float(size[0])
+    elements: list[dict] = []
+    background = _extract_body_background(template_dir)
+    if (
+        isinstance(background, dict)
+        and isinstance(background.get("src"), str)
+        and (template_dir / background["src"]).is_file()
+    ):
+        source = template_dir / background["src"]
+        deck_src = _share_media(
+            deck_dir,
+            background["src"],
+            source.read_bytes(),
+        )
+        elements.append({
+            'elementId': 'host-background',
+            'bounds': [0, 0, width, float(size[1])],
+            'elementType': 'image',
+            'src': deck_src,
+            'fit': {'mode': 'fill'},
+            'crop': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0},
+        })
+    elements.append({
+        'elementId': 'comparison-title',
+        'elementType': 'text',
+        'bounds': [64, 42, 680, 52],
+        'content': {
+            'text': title,
+            'fontSize': 28,
+            'bold': True,
+            'color': '#1F2430',
+            'wrap': True,
+            'align': ['left', 'middle'],
+        },
+    })
+    columns = [
+        (64.0, left_title, left_items),
+        (504.0, right_title, right_items),
+    ]
+    card_y = 154.0
+    card_height = 236.0
+    card_width = 392.0
+    for side, (x, heading, items) in zip(('left', 'right'), columns):
+        elements.append({
+            'elementId': f'comparison-{side}-card',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, card_y, card_width, card_height],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': f'comparison-{side}-heading',
+            'elementType': 'text',
+            'bounds': [x + 20, card_y + 20, card_width - 40, 34],
+            'content': {
+                'text': heading,
+                'fontSize': 17,
+                'bold': True,
+                'color': '#C62828',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+        for index, item in enumerate(items, 1):
+            available = card_width - 60
+            font_size = 15
+            while font_size > 12 and _text_width(item, font_size) > available:
+                font_size -= 1
+            elements.append({
+                'elementId': f'comparison-{side}-item-{index}',
+                'elementType': 'text',
+                'bounds': [
+                    x + 20,
+                    card_y + 72 + (index - 1) * 46,
+                    card_width - 40,
+                    38,
+                ],
+                'content': {
+                    'text': item,
+                    'fontSize': font_size,
+                    'bold': False,
+                    'color': '#333B47',
+                    'wrap': True,
+                    'align': ['left', 'middle'],
+                },
+            })
+    elements.extend([
+        {
+            'elementId': 'comparison-conclusion-bg',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [64, 414, 832, 64],
+            'fill': {'type': 'solid', 'color': '#FBE9E9'},
+        },
+        {
+            'elementId': 'comparison-conclusion',
+            'elementType': 'text',
+            'bounds': [84, 428, 792, 36],
+            'content': {
+                'text': conclusion,
+                'fontSize': 15,
+                'bold': True,
+                'color': '#9B1C1C',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+    ])
+    return {'elements': elements, 'notes': ''}
+
+
+def build_template_metrics_matrix(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    kpis: list[str],
+    matrix_items: list[str],
+    conclusion: str,
+) -> dict:
+    """Build the KPI row, 2x2 matrix and conclusion on template body art."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    size = template.get("size") or [960, 540]
+    elements: list[dict] = []
+    background = _extract_body_background(template_dir)
+    if (
+        isinstance(background, dict)
+        and isinstance(background.get("src"), str)
+        and (template_dir / background["src"]).is_file()
+    ):
+        source = template_dir / background["src"]
+        deck_src = _share_media(
+            deck_dir,
+            background["src"],
+            source.read_bytes(),
+        )
+        elements.append({
+            'elementId': 'host-background',
+            'bounds': [0, 0, float(size[0]), float(size[1])],
+            'elementType': 'image',
+            'src': deck_src,
+            'fit': {'mode': 'fill'},
+            'crop': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0},
+        })
+    elements.append({
+        'elementId': 'metrics-title',
+        'elementType': 'text',
+        'bounds': [64, 34, 680, 44],
+        'content': {
+            'text': title,
+            'fontSize': 28,
+            'bold': True,
+            'color': '#1F2430',
+            'wrap': True,
+            'align': ['left', 'middle'],
+        },
+    })
+    kpi_gap = 24.0
+    kpi_width = (832.0 - kpi_gap * 2) / 3
+    for index, kpi in enumerate(kpis[:3], 1):
+        x = 64.0 + (index - 1) * (kpi_width + kpi_gap)
+        elements.append({
+            'elementId': f'kpi-card-{index}',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, 118, kpi_width, 78],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        font_size = 17
+        while font_size > 12 and _text_width(kpi, font_size) > kpi_width - 28:
+            font_size -= 1
+        elements.append({
+            'elementId': f'kpi-text-{index}',
+            'elementType': 'text',
+            'bounds': [x + 14, 132, kpi_width - 28, 50],
+            'content': {
+                'text': kpi,
+                'fontSize': font_size,
+                'bold': True,
+                'color': '#9B1C1C',
+                'wrap': True,
+                'align': ['center', 'middle'],
+            },
+        })
+    matrix_width = 392.0
+    matrix_height = 106.0
+    matrix_gap_x = 48.0
+    for index, item in enumerate(matrix_items[:4], 1):
+        column = (index - 1) % 2
+        row = (index - 1) // 2
+        x = 64.0 + column * (matrix_width + matrix_gap_x)
+        y = 214.0 + row * (matrix_height + 14.0)
+        elements.append({
+            'elementId': f'matrix-card-{index}',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, y, matrix_width, matrix_height],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': f'matrix-number-{index}',
+            'elementType': 'text',
+            'bounds': [x + 16, y + 10, 52, 24],
+            'content': {
+                'text': f'{index:02d}',
+                'fontSize': 13,
+                'bold': True,
+                'color': '#C62828',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+        font_size = 19
+        while font_size > 14 and _text_width(item, font_size) > matrix_width - 120:
+            font_size -= 1
+        elements.append({
+            'elementId': f'matrix-title-{index}',
+            'elementType': 'text',
+            'bounds': [x + 72, y + 28, matrix_width - 92, 52],
+            'content': {
+                'text': item,
+                'fontSize': font_size,
+                'bold': True,
+                'color': '#1F2430',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+    elements.append({
+        'elementId': 'metrics-conclusion',
+        'elementType': 'text',
+        'bounds': [64, 458, 832, 42],
+        'content': {
+            'text': conclusion,
+            'fontSize': 15,
+            'bold': True,
+            'color': '#9B1C1C',
+            'wrap': True,
+            'align': ['center', 'middle'],
+        },
+    })
+    return {'elements': elements, 'notes': ''}
+
+
+def build_template_table_process(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    columns: list[str],
+    rows: list[list[str]],
+    stages: list[str],
+    request_text: str,
+) -> dict:
+    """Build one editable table, three-stage process and request box."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    size = template.get("size") or [960, 540]
+    elements: list[dict] = []
+    background = _extract_body_background(template_dir)
+    if (
+        isinstance(background, dict)
+        and isinstance(background.get("src"), str)
+        and (template_dir / background["src"]).is_file()
+    ):
+        source = template_dir / background["src"]
+        deck_src = _share_media(
+            deck_dir,
+            background["src"],
+            source.read_bytes(),
+        )
+        elements.append({
+            'elementId': 'host-background',
+            'bounds': [0, 0, float(size[0]), float(size[1])],
+            'elementType': 'image',
+            'src': deck_src,
+            'fit': {'mode': 'fill'},
+            'crop': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0},
+        })
+    elements.append({
+        'elementId': 'table-page-title',
+        'elementType': 'text',
+        'bounds': [64, 34, 680, 44],
+        'content': {
+            'text': title,
+            'fontSize': 28,
+            'bold': True,
+            'color': '#1F2430',
+            'wrap': True,
+            'align': ['left', 'middle'],
+        },
+    })
+    table_rows = [
+        [
+            {'text': str(cell), 'fontSize': 12}
+            for cell in row
+        ]
+        for row in [columns, *rows]
+    ]
+    row_count = len(table_rows)
+    elements.append({
+        'elementId': 'tasks-table',
+        'elementType': 'table',
+        'bounds': [64, 112, 832, 140],
+        'columnWidths': [0.36, 0.42, 0.22],
+        'rowHeights': [1 / row_count] * row_count,
+        'rows': table_rows,
+    })
+    elements.append({
+        'elementId': 'process-label',
+        'elementType': 'text',
+        'bounds': [64, 258, 200, 20],
+        'content': {
+            'text': '实施流程',
+            'fontSize': 13,
+            'bold': True,
+            'color': '#4B5563',
+            'wrap': True,
+            'align': ['left', 'middle'],
+        },
+    })
+    node_width = 238.0
+    node_height = 62.0
+    arrow_width = 24.0
+    node_y = 286.0
+    node_xs = [64.0, 358.0, 652.0]
+    for index, (x, stage) in enumerate(zip(node_xs, stages[:3]), 1):
+        elements.append({
+            'elementId': f'process-card-{index}',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, node_y, node_width, node_height],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': f'process-text-{index}',
+            'elementType': 'text',
+            'bounds': [x + 16, node_y + 15, node_width - 32, 32],
+            'content': {
+                'text': stage,
+                'fontSize': 17,
+                'bold': True,
+                'color': '#1F2430',
+                'wrap': True,
+                'align': ['center', 'middle'],
+            },
+        })
+    for index, x in enumerate((318.0, 612.0), 1):
+        elements.append({
+            'elementId': f'process-arrow-{index}',
+            'elementType': 'text',
+            'bounds': [x, node_y + 15, arrow_width, 32],
+            'content': {
+                'text': '→',
+                'fontSize': 24,
+                'bold': True,
+                'color': '#4B5563',
+                'wrap': False,
+                'align': ['center', 'middle'],
+            },
+        })
+    elements.extend([
+        {
+            'elementId': 'request-box',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [64, 362, 832, 92],
+            'fill': {'type': 'solid', 'color': '#FBE9E9'},
+        },
+        {
+            'elementId': 'request-title',
+            'elementType': 'text',
+            'bounds': [84, 374, 180, 28],
+            'content': {
+                'text': '请示事项',
+                'fontSize': 14,
+                'bold': True,
+                'color': '#9B1C1C',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+        {
+            'elementId': 'request-text',
+            'elementType': 'text',
+            'bounds': [84, 406, 792, 34],
+            'content': {
+                'text': request_text,
+                'fontSize': 15,
+                'bold': True,
+                'color': '#333B47',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+    ])
+    return {'elements': elements, 'notes': ''}
+
+
+def build_template_dense_regression(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    subtitle: str,
+    stages: list[str],
+    core_judgment: str,
+    metrics_title: str,
+    metrics: list[dict],
+    table_columns: list[str],
+    table_rows: list[list[str]],
+) -> dict:
+    """Build the dense diagnostic regression page without a page model."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    size = template.get("size") or [960, 540]
+    elements: list[dict] = []
+    background = _extract_body_background(template_dir)
+    if (
+        isinstance(background, dict)
+        and isinstance(background.get("src"), str)
+        and (template_dir / background["src"]).is_file()
+    ):
+        source = template_dir / background["src"]
+        deck_src = _share_media(
+            deck_dir,
+            background["src"],
+            source.read_bytes(),
+        )
+        elements.append({
+            'elementId': 'host-background',
+            'bounds': [0, 0, float(size[0]), float(size[1])],
+            'elementType': 'image',
+            'src': deck_src,
+            'fit': {'mode': 'fill'},
+            'crop': {'left': 0, 'top': 0, 'right': 0, 'bottom': 0},
+        })
+    elements.extend([
+        {
+            'elementId': 'dense-title',
+            'elementType': 'text',
+            'bounds': [56, 20, 620, 34],
+            'content': {
+                'text': title,
+                'fontSize': 22,
+                'bold': True,
+                'color': '#1F2430',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+        {
+            'elementId': 'dense-subtitle',
+            'elementType': 'text',
+            'bounds': [56, 58, 680, 28],
+            'content': {
+                'text': subtitle,
+                'fontSize': 12,
+                'bold': False,
+                'color': '#4B5563',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+    ])
+    for index, stage in enumerate(stages[:3], 1):
+        y = 96.0 + (index - 1) * 46.0
+        elements.append({
+            'elementId': f'dense-stage-card-{index}',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [56, y, 344, 40],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': f'dense-stage-text-{index}',
+            'elementType': 'text',
+            'bounds': [68, y + 6, 320, 28],
+            'content': {
+                'text': stage,
+                'fontSize': 13,
+                'bold': True,
+                'color': '#333B47',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+    elements.extend([
+        {
+            'elementId': 'dense-core-bg',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [56, 242, 344, 164],
+            'fill': {'type': 'solid', 'color': '#FBE9E9'},
+        },
+        {
+            'elementId': 'dense-core-text',
+            'elementType': 'text',
+            'bounds': [68, 252, 320, 144],
+            'content': {
+                'text': core_judgment,
+                'fontSize': 12,
+                'bold': False,
+                'color': '#333B47',
+                'wrap': True,
+                'align': ['left', 'top'],
+            },
+        },
+        {
+            'elementId': 'dense-metrics-title',
+            'elementType': 'text',
+            'bounds': [424, 92, 400, 24],
+            'content': {
+                'text': metrics_title,
+                'fontSize': 14,
+                'bold': True,
+                'color': '#9B1C1C',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+    ])
+    for index, metric in enumerate(metrics[:4], 1):
+        column = (index - 1) % 2
+        row = (index - 1) // 2
+        x = 424.0 + column * 244.0
+        y = 120.0 + row * 92.0
+        elements.append({
+            'elementId': f'dense-metric-card-{index}',
+            'elementType': 'shape',
+            'shapeName': 'roundRect',
+            'bounds': [x, y, 236, 82],
+            'fill': {'type': 'solid', 'color': '#F2F4F7'},
+        })
+        elements.append({
+            'elementId': f'dense-metric-value-{index}',
+            'elementType': 'text',
+            'bounds': [x + 10, y + 8, 216, 28],
+            'content': {
+                'text': metric['value'],
+                'fontSize': 20,
+                'bold': True,
+                'color': '#9B1C1C',
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        })
+        elements.append({
+            'elementId': f'dense-metric-label-{index}',
+            'elementType': 'text',
+            'bounds': [x + 10, y + 40, 216, 34],
+            'content': {
+                'text': metric['label'],
+                'fontSize': 12,
+                'bold': False,
+                'color': '#333B47',
+                'wrap': True,
+                'align': ['left', 'top'],
+            },
+        })
+    table_rows = [
+        [
+            {'text': str(cell), 'fontSize': 11}
+            for cell in row
+        ]
+        for row in [table_columns, *table_rows]
+    ]
+    row_count = len(table_rows)
+    elements.append({
+        'elementId': 'dense-comparison-table',
+        'elementType': 'table',
+        'bounds': [424, 306, 480, 210],
+        'columnWidths': [0.18, 0.41, 0.41],
+        'rowHeights': [28 / 210, *([182 / 3 / 210] * (row_count - 1))],
+        'rows': table_rows,
+    })
+    return {'elements': elements, 'notes': ''}
+
+
+def _planned_body_blocks(text: str) -> list[str]:
+    """Split plan copy into at most four ordered blocks without rewriting it."""
+    source = str(text or '').strip()
+    if not source:
+        return []
+    segments = [
+        value.strip()
+        for value in re.findall(r'.*?[。；;]|.+$', source, re.S)
+        if value.strip()
+    ]
+    if not segments:
+        return [source]
+    if len(segments) <= 4:
+        return segments
+    groups = []
+    for group_index in range(4):
+        start = round(group_index * len(segments) / 4)
+        stop = round((group_index + 1) * len(segments) / 4)
+        block = ''.join(segments[start:stop]).strip()
+        if block:
+            groups.append(block)
+    return groups
+
+
+def _hex_rgb(value: str):
+    match = re.fullmatch(r'#([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?', str(value or ''))
+    if not match:
+        return None
+    digits = match.group(1)
+    return tuple(int(digits[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def _luminance(rgb) -> float:
+    def channel(value: float) -> float:
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+    red, green, blue = (channel(value) for value in rgb)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _template_body_page_refs(
+    template_dir: Path,
+    refs: list[str],
+) -> list[str]:
+    """Select user-template body pages without assuming fixed page numbers."""
+    from pptd_engine.document import load_yaml
+
+    candidates = list(refs[1:-1])
+    if not candidates:
+        candidates = list(refs)
+    body_pages = []
+    for ref in candidates:
+        try:
+            page = load_yaml(Path(template_dir) / ref)
+        except (OSError, ValueError):
+            continue
+        elements = [
+            item for item in page.get("elements") or []
+            if isinstance(item, dict)
+        ]
+        visible = " ".join(
+            _visible_text(item.get("content") or {})
+            for item in elements
+            if item.get("elementType") == "text"
+        ).strip()
+        normalized = re.sub(r"\s+", "", visible).lower()
+        if any(
+            marker in normalized
+            for marker in ("目录", "目錄", "contents", "agenda", "汇报提纲")
+        ):
+            continue
+        text_elements = sum(
+            item.get("elementType") == "text"
+            for item in elements
+        )
+        if text_elements >= 2 and visible:
+            body_pages.append(ref)
+    return body_pages or candidates
+
+
+def template_style_profile(template_dir: Path) -> dict:
+    """Extract reusable body typography and colors from the template itself."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(Path(template_dir).glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    document = load_yaml(entries[0])
+    refs = list(document.get("pages") or [])
+    colors: Counter = Counter()
+    fonts: Counter = Counter()
+    sizes: Counter = Counter()
+    for ref in _template_body_page_refs(Path(template_dir), refs):
+        try:
+            page = load_yaml(Path(template_dir) / ref)
+        except (OSError, ValueError):
+            continue
+        for element in page.get("elements") or []:
+            if not isinstance(element, dict):
+                continue
+            fill = (element.get("fill") or {}).get("color")
+            if isinstance(fill, str) and re.fullmatch(r'#[0-9a-fA-F]{6,8}', fill):
+                colors[fill[:7].upper()] += 1
+            border = (element.get("border") or {}).get("color")
+            if isinstance(border, str) and re.fullmatch(r'#[0-9a-fA-F]{6,8}', border):
+                colors[border[:7].upper()] += 1
+            if element.get("elementType") != "text":
+                continue
+            content = element.get("content") or {}
+            if isinstance(content.get("color"), str):
+                color = content["color"]
+                if re.fullmatch(r'#[0-9a-fA-F]{6,8}', color):
+                    colors[color[:7].upper()] += 1
+            markup = str(content.get("text") or "")
+            colors.update(
+                value[:7].upper()
+                for value in re.findall(
+                    r'color:\s*(#[0-9a-fA-F]{6,8})',
+                    markup,
+                )
+            )
+            fonts.update(
+                value.strip().strip('"\'')
+                for value in re.findall(r'font-family:([^;\"]+)', markup)
+                if value.strip()
+            )
+            sizes.update(
+                round(float(value), 1)
+                for value in re.findall(r'font-size:([0-9.]+)px', markup)
+            )
+            if isinstance(content.get("fontSize"), (int, float)):
+                sizes[round(float(content["fontSize"]), 1)] += 1
+    color_info = {
+        value: (_hex_rgb(value), _luminance(_hex_rgb(value)))
+        for value in colors
+        if _hex_rgb(value)
+    }
+    non_neutral = [
+        (value, count)
+        for value, count in colors.items()
+        if value in color_info
+        and max(color_info[value][0]) - min(color_info[value][0]) > 20
+    ]
+    dark_neutral = [
+        (value, count)
+        for value, count in colors.items()
+        if value in color_info
+        and max(color_info[value][0]) - min(color_info[value][0]) <= 20
+        and color_info[value][1] < 0.4
+    ]
+    light_neutral = [
+        (value, count)
+        for value, count in colors.items()
+        if value in color_info
+        and max(color_info[value][0]) - min(color_info[value][0]) <= 20
+        and color_info[value][1] > 0.8
+    ]
+    strong_accents = [
+        (value, count)
+        for value, count in non_neutral
+        if color_info[value][1] < 0.45
+    ]
+    accent = max(
+        strong_accents or non_neutral,
+        key=lambda item: item[1],
+        default=('#E50011', 0),
+    )[0]
+    text = max(dark_neutral, key=lambda item: item[1], default=('#000000', 0))[0]
+    muted = max(
+        (
+            (value, count)
+            for value, count in dark_neutral
+            if value != text
+        ),
+        key=lambda item: item[1],
+        default=(text, 0),
+    )[0]
+    surface = max(light_neutral, key=lambda item: item[1], default=('#FFFFFF', 0))[0]
+    light_accents = [
+        (value, count)
+        for value, count in non_neutral
+        if value != accent and color_info[value][1] > 0.3
+    ]
+    border = max(light_accents, key=lambda item: item[1], default=(accent, 0))[0]
+    subtle_candidates = [
+        (value, count)
+        for value, count in light_accents
+        if value != border
+    ]
+    subtle = max(
+        subtle_candidates,
+        key=lambda item: item[1],
+        default=(border, 0),
+    )[0]
+    title_sizes = [size for size in sizes if size >= 24]
+    body_sizes = [size for size in sizes if 11 <= size <= 16]
+    title_size = max(
+        title_sizes,
+        key=lambda size: sizes[size],
+        default=30.0,
+    )
+    body_size = max(
+        body_sizes,
+        key=lambda size: sizes[size],
+        default=13.0,
+    )
+    subtitle_size = max(12.0, min(18.0, body_size + 3.0))
+    return {
+        'fontFamily': fonts.most_common(1)[0][0] if fonts else '微软雅黑',
+        'colors': {
+            'accent': accent,
+            'text': text,
+            'muted': muted,
+            'surface': surface,
+            'border': border,
+            'subtle': subtle,
+        },
+        'sizes': {
+            'title': title_size,
+            'subtitle': subtitle_size,
+            'body': body_size,
+        },
+    }
+
+
+def template_theme(profile: dict) -> dict:
+    """Convert the extracted profile into a PPTD theme."""
+    colors = profile.get('colors') or {}
+    sizes = profile.get('sizes') or {}
+    family = profile.get('fontFamily') or '微软雅黑'
+    return {
+        'colors': {
+            'primary': colors.get('accent', '#E50011'),
+            'ink': colors.get('text', '#000000'),
+            'muted': colors.get('muted', '#444444'),
+            'paper': colors.get('surface', '#FFFFFF'),
+            'border': colors.get('border', '#E50011'),
+        },
+        'textStyles': {
+            'title': {
+                'fontFamily': family,
+                'fontSize': sizes.get('title', 30),
+                'color': '$primary',
+                'bold': True,
+            },
+            'subtitle': {
+                'fontFamily': family,
+                'fontSize': sizes.get('subtitle', 16),
+                'color': '$muted',
+            },
+            'body': {
+                'fontFamily': family,
+                'fontSize': sizes.get('body', 13),
+                'color': '$ink',
+                'lineHeight': 1.45,
+            },
+        },
+    }
+
+
+def build_template_body_flow(
+    template_dir: Path,
+    deck_dir: Path,
+    *,
+    title: str,
+    subtitle: str,
+    content: str,
+    style_profile: dict | None = None,
+    layout: str = 'editorial',
+) -> dict:
+    """Build a compact editorial body page from the approved plan copy."""
+    from pptd_engine.document import load_yaml
+
+    entries = sorted(template_dir.glob("*.pptd"))
+    if not entries:
+        raise ValueError("模板转换结果缺少 PPTD 入口。")
+    template = load_yaml(entries[0])
+    profile = style_profile or template_style_profile(template_dir)
+    colors = profile.get('colors') or {}
+    sizes = profile.get('sizes') or {}
+    family = profile.get('fontFamily') or '微软雅黑'
+    size = template.get("size") or [960, 540]
+    blocks = _planned_body_blocks(content)
+    if not blocks:
+        raise ValueError("计划正文为空，无法构建正文页。")
+    elements: list[dict] = [
+        {
+            'elementId': 'body-flow-title',
+            'elementType': 'text',
+            'bounds': [64, 34, 700, 44],
+            'content': {
+                'text': title,
+                'fontFamily': family,
+                'fontSize': sizes.get('title', 30),
+                'bold': True,
+                'color': colors.get('accent', '#E50011'),
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+        {
+            'elementId': 'body-flow-subtitle',
+            'elementType': 'text',
+            'bounds': [64, 82, 820, 24],
+            'content': {
+                'text': subtitle,
+                'fontFamily': family,
+                'fontSize': sizes.get('subtitle', 16),
+                'bold': False,
+                'color': colors.get('muted', '#444444'),
+                'wrap': True,
+                'align': ['left', 'middle'],
+            },
+        },
+    ]
+    top = 122.0
+    bottom = float(size[1]) - 72.0
+    gap = 12.0
+    if layout in {'cards', 'columns'} and all(
+        len(block) <= 150 for block in blocks
+    ):
+        columns = (
+            2 if layout == 'columns' or len(blocks) in (2, 4)
+            else 3
+        )
+        columns = min(columns, len(blocks))
+        rows = math.ceil(len(blocks) / columns)
+        card_gap = 14.0
+        horizontal_gap = 16.0
+        usable_width = 832.0
+        card_width = (
+            usable_width - horizontal_gap * (columns - 1)
+        ) / columns
+        card_height = (
+            bottom - top - card_gap * (rows - 1)
+        ) / rows
+        for index, block in enumerate(blocks, 1):
+            column = (index - 1) % columns
+            row = (index - 1) // columns
+            x = 64.0 + column * (card_width + horizontal_gap)
+            y = top + row * (card_height + card_gap)
+            elements.append({
+                'elementId': f'body-card-{index}',
+                'elementType': 'shape',
+                'shapeName': 'roundRect',
+                'bounds': [x, y, card_width, card_height],
+                'fill': {
+                    'type': 'solid',
+                    'color': colors.get('surface', '#FFFFFF'),
+                },
+                'border': {
+                    'width': 1,
+                    'color': colors.get(
+                        'border',
+                        colors.get('accent', '#E50011'),
+                    ),
+                    'style': 'solid',
+                },
+            })
+            font_size = float(sizes.get('body', 13))
+            while font_size > 12 and len(block) > (
+                (card_width - 32) / font_size
+                * ((card_height - 28) / (font_size * 1.45))
+            ):
+                font_size -= 1
+            elements.append({
+                'elementId': f'body-card-text-{index}',
+                'elementType': 'text',
+                'bounds': [
+                    x + 16,
+                    y + 14,
+                    card_width - 32,
+                    card_height - 28,
+                ],
+                'content': {
+                    'text': block,
+                    'fontFamily': family,
+                    'fontSize': font_size,
+                    'bold': False,
+                    'color': colors.get('text', '#000000'),
+                    'wrap': True,
+                    'align': ['left', 'top'],
+                },
+            })
+        return {'elements': elements, 'notes': ''}
+    row_height = bottom - top
+    if len(blocks) > 1:
+        row_height = (
+            bottom - top - gap * (len(blocks) - 1)
+        ) / len(blocks)
+    for index, block in enumerate(blocks, 1):
+        y = top + (index - 1) * (row_height + gap)
+        elements.append({
+            'elementId': f'body-flow-accent-{index}',
+            'elementType': 'shape',
+            'shapeName': 'rect',
+            'bounds': [64, y, 4, row_height],
+            'fill': {
+                'type': 'solid',
+                'color': colors.get('accent', '#E50011'),
+            },
+        })
+        font_size = float(sizes.get('body', 13))
+        while (
+            font_size > 12
+            and len(block) * font_size * 1.45
+            > (780 / font_size) * row_height
+        ):
+            font_size -= 1
+        elements.append({
+            'elementId': f'body-flow-text-{index}',
+            'elementType': 'text',
+            'bounds': [84, y, 780, row_height],
+            'content': {
+                'text': block,
+                'fontFamily': family,
+                'fontSize': font_size,
+                'bold': False,
+                'color': colors.get('text', '#000000'),
+                'wrap': True,
+                'align': ['left', 'top'],
+            },
+        })
+    return {'elements': elements, 'notes': ''}
 
 
 def _is_closing_like(page_data: dict, path: str = "") -> bool:
@@ -644,7 +2166,7 @@ def _is_closing_like(page_data: dict, path: str = "") -> bool:
 
 
 def _apply_template_cover_closing(template_dir: Path, deck_dir: Path, document: dict, pages: list[dict]) -> None:
-    """Use the template's own cover and closing designs for the first/last page."""
+    """Use template cover/closing only when the deck declares those roles."""
     from pptd_engine.document import load_yaml
 
     entries = sorted(template_dir.glob("*.pptd"))
@@ -654,26 +2176,78 @@ def _apply_template_cover_closing(template_dir: Path, deck_dir: Path, document: 
     refs = template.get("pages", [])
     if len(refs) < 1 or not pages:
         return
-    cover_template = load_yaml(template_dir / refs[0])
-    _copy_page_media(cover_template, template_dir, deck_dir)
-    cover = _fill_template_page(cover_template, _template_texts(pages[0]["data"]), keep_unfilled=False)
-    _fit_cover_slots(cover, document.get("size"))
-    pages[0]["data"] = cover
+    def kind(page):
+        meta = page.get("data", {}).get("meta")
+        return str(meta.get("kind") or "").strip().lower() if isinstance(meta, dict) else ""
+
+    typed_deck = any(kind(page) for page in pages)
+    first_kind = kind(pages[0])
+    cover_template = None
+    if not typed_deck or first_kind in {"", "cover"}:
+        cover_template = load_yaml(template_dir / refs[0])
+        _copy_page_media(cover_template, template_dir, deck_dir)
+        cover_ids = {
+            element.get("elementId")
+            for element in cover_template.get("elements", [])
+            if isinstance(element, dict) and element.get("elementId")
+        }
+        current_cover_ids = {
+            element.get("elementId")
+            for element in pages[0].get("data", {}).get("elements", [])
+            if isinstance(element, dict) and element.get("elementId")
+        }
+        cover = (
+            json.loads(json.dumps(pages[0]["data"]))
+            if cover_ids and cover_ids.issubset(current_cover_ids)
+            else _fill_template_page(
+                cover_template,
+                _template_texts(pages[0]["data"]),
+                keep_unfilled=False,
+            )
+        )
+        _fit_cover_slots(cover, document.get("size"))
+        pages[0]["data"] = cover
     if len(refs) < 2:
         document["pages"] = [p["path"] for p in pages]
         return
-    closing_template = load_yaml(template_dir / refs[-1])
-    _copy_page_media(closing_template, template_dir, deck_dir)
     if len(pages) >= 2 and _is_closing_like(pages[-1]["data"], pages[-1]["path"]):
-        pages[-1]["data"] = _fill_template_page(
-            closing_template, _template_texts(pages[-1]["data"], closing=True), keep_unfilled=False)
-    else:
+        closing_template = load_yaml(template_dir / refs[-1])
+        _copy_page_media(closing_template, template_dir, deck_dir)
+        closing_ids = {
+            element.get("elementId")
+            for element in closing_template.get("elements", [])
+            if isinstance(element, dict) and element.get("elementId")
+        }
+        current_closing_ids = {
+            element.get("elementId")
+            for element in pages[-1].get("data", {}).get("elements", [])
+            if isinstance(element, dict) and element.get("elementId")
+        }
+        pages[-1]["data"] = (
+            json.loads(json.dumps(pages[-1]["data"]))
+            if closing_ids and closing_ids.issubset(current_closing_ids)
+            else _fill_template_page(
+                closing_template,
+                _template_texts(pages[-1]["data"], closing=True),
+                keep_unfilled=False,
+            )
+        )
+    elif not typed_deck:
+        closing_template = load_yaml(template_dir / refs[-1])
+        _copy_page_media(closing_template, template_dir, deck_dir)
         existing = {p["path"] for p in pages}
         path, n = "pages/closing.page", 1
         while path in existing:
             path = f"pages/closing-{n}.page"
             n += 1
-        pages.append({"path": path, "data": _fill_template_page(closing_template, ["感谢观看"], keep_unfilled=False)})
+        pages.append({
+            "path": path,
+            "data": build_template_closing(
+                template_dir,
+                deck_dir,
+                text="感谢观看",
+            ),
+        })
     document["pages"] = [p["path"] for p in pages]
 
 

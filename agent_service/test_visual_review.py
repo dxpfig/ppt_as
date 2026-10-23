@@ -32,6 +32,28 @@ class Availability(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_vision_timeout_is_bounded_and_configurable(self):
+        from agent_service.visual_review import (
+            VisualReviewError,
+            vision_timeout_seconds,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(vision_timeout_seconds(), 300)
+        with patch.dict(
+            os.environ,
+            {'PPT_VISION_TIMEOUT_SECONDS': '420'},
+            clear=True,
+        ):
+            self.assertEqual(vision_timeout_seconds(), 420)
+        for value in ('29', '601', 'nan', 'invalid'):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {'PPT_VISION_TIMEOUT_SECONDS': value},
+                clear=True,
+            ), self.assertRaises(VisualReviewError):
+                vision_timeout_seconds()
+
     def test_same_model_vision_inherits_request_controls_but_other_models_do_not(self):
         from agent_service.visual_review import vision_extra_body, VisionConfig
         env = {'PPT_LLM_PROVIDER': 'openai', 'PPT_LLM_MODEL': 'local', 'OPENAI_BASE_URL': 'http://local/v1',
@@ -249,6 +271,188 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
             [review['coveredPages'][0] for review in result['pageReviews']],
             ['pages/a.page', 'pages/b.page'],
         )
+
+    async def test_single_page_review_sends_image_paths_not_metadata_objects(self):
+        from agent_service import visual_review as module
+        from agent_service.visual_review import VisionConfig
+
+        seen = []
+
+        class Client:
+            requests = 0
+
+            async def verify_vision(self, _folder):
+                return {'status': 'passed'}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def ask(self, _system, _prompt, images):
+                seen.extend(images)
+                return verdict(['pages/a.page'])
+
+        state_value = state()
+        state_value['document']['pages'] = ['pages/a.page']
+        state_value['pages'] = state_value['pages'][:1]
+        with patch.object(
+            module,
+            'vision_configuration',
+            return_value=VisionConfig('openai', 'vision', 'key'),
+        ), patch.object(module, 'VisionClient', return_value=Client()):
+            report = await module.review_page(
+                state_value,
+                self.folder,
+                'pages/a.page',
+                image_name='slide-1.png',
+            )
+
+        self.assertEqual(report['status'], 'passed')
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], Path)
+        self.assertTrue(seen[0].is_file())
+
+    async def test_single_page_review_retries_one_invalid_model_verdict(self):
+        from agent_service import visual_review as module
+        from agent_service.visual_review import VisionConfig
+
+        invalid = verdict(
+            ['pages/a.page'],
+            [{
+                'pagePath': 'pages/a.page',
+                'pageIndex': 0,
+                'elementIds': ['invented'],
+                'severity': 'error',
+                'code': 'TextOverlap',
+                'message': '重叠',
+                'evidence': '标题重叠',
+                'repair': '调整位置',
+            }],
+        )
+        responses = [invalid, verdict(['pages/a.page'])]
+        calls = []
+
+        class Client:
+            requests = 0
+
+            async def verify_vision(self, _folder):
+                return {'status': 'passed'}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def ask(self, _system, _prompt, images):
+                calls.extend(images)
+                return responses.pop(0)
+
+        state_value = state()
+        state_value['document']['pages'] = ['pages/a.page']
+        state_value['pages'] = state_value['pages'][:1]
+        with patch.object(
+            module,
+            'vision_configuration',
+            return_value=VisionConfig('openai', 'vision', 'key'),
+        ), patch.object(module, 'VisionClient', return_value=Client()):
+            report = await module.review_page(
+                state_value,
+                self.folder,
+                'pages/a.page',
+                image_name='slide-1.png',
+            )
+
+        self.assertEqual(report['status'], 'passed')
+        self.assertEqual(len(calls), 2)
+
+    async def test_single_incomplete_page_is_retried_without_losing_completed_reviews(self):
+        invalid = {
+            'status': 'passed',
+            'coveredPages': [],
+            'observations': [],
+            'issues': [],
+        }
+        result, events = await self.run_review(
+            [
+                verdict(['pages/a.page', 'pages/b.page']),
+                invalid,
+                invalid,
+                verdict(['pages/b.page']),
+                verdict(['pages/a.page']),
+            ]
+        )
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(
+            [review['coveredPages'][0] for review in result['pageReviews']],
+            ['pages/a.page', 'pages/b.page'],
+        )
+        self.assertTrue(
+            any(
+                event.get('pagePath') == 'pages/a.page'
+                and event.get('status') == 'retrying'
+                for event in events
+            )
+        )
+        self.assertEqual(len(self.calls), 5)
+
+    async def test_page_review_receives_measured_geometry_as_spatial_evidence(self):
+        layout = {
+            'pages/a.page': {
+                'elements': [
+                    {
+                        'elementId': 'title-a',
+                        'measuredTextSize': [320, 38],
+                        'paddingSize': [4, 2],
+                    }
+                ]
+            }
+        }
+        await self.run_review(
+            [
+                verdict(['pages/a.page', 'pages/b.page']),
+                verdict(['pages/a.page']),
+                verdict(['pages/b.page']),
+            ],
+            layout_measurements=layout,
+        )
+        evidence = self.calls[1]['prompt']['layoutMeasurements'][0]
+        self.assertEqual(evidence['elementId'], 'title-a')
+        self.assertEqual(evidence['measuredTextSize'], [320, 38])
+        self.assertIn('measured box', self.calls[1]['prompt']['measurementPolicy'])
+
+    async def test_exhausted_page_recovery_remains_fail_closed(self):
+        from agent_service.visual_review import VisualReviewError
+
+        invalid = {
+            'status': 'passed',
+            'coveredPages': [],
+            'observations': [],
+            'issues': [],
+        }
+        with self.assertRaises(VisualReviewError) as raised:
+            await self.run_review(
+                [
+                    verdict(['pages/a.page', 'pages/b.page']),
+                    invalid,
+                    invalid,
+                    verdict(['pages/b.page']),
+                    invalid,
+                    invalid,
+                ]
+            )
+        self.assertEqual(raised.exception.code, 'visual_review_invalid')
+        report = json.loads(
+            (self.folder / 'visual-review.json').read_text(encoding='utf-8')
+        )
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(
+            [review['coveredPages'][0] for review in report['pageReviews']],
+            ['pages/b.page'],
+        )
+
     async def test_partial_coverage_and_unknown_element_ids_never_pass(self):
         from agent_service.visual_review import VisualReviewError
         with self.assertRaises(VisualReviewError):
@@ -292,7 +496,14 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         from agent_service.visual_review import VisualReviewError
         issue = {'pagePath': 'pages/a.page', 'pageIndex': 0, 'elementIds': ['title-a'], 'severity': 'error', 'code': 'InvisibleTitle', 'message': '标题不可见', 'evidence': '白色背景上的白色标题不可见', 'repair': '把标题改为深色'}
         with self.assertRaises(VisualReviewError):
-            await self.run_review([verdict(['pages/a.page','pages/b.page'], [issue]), verdict(['pages/a.page']), verdict(['pages/a.page'])])
+            await self.run_review([
+                verdict(['pages/a.page','pages/b.page'], [issue]),
+                verdict(['pages/a.page']),
+                verdict(['pages/a.page']),
+                verdict(['pages/b.page']),
+                verdict(['pages/a.page']),
+                verdict(['pages/a.page']),
+            ])
 
     async def test_previous_review_context_reaches_all_pages_without_skipping_images(self):
         old = {'issues': [{'pagePath': 'pages/a.page', 'code': 'InvisibleTitle', 'message': '标题不可见'}], 'pageReviews': []}

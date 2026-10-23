@@ -24,11 +24,13 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from PIL import Image, ImageDraw, ImageFont
 
-from .model_gateway import configuration
+from .model_gateway import configuration, reasoning_settings
 from .kimi_rules import KimiRules, SCENARIOS
 from .model_context import PROTECTED_REQUEST_FIELDS
 
 VISUAL_WAIT_SECONDS = 15.0
+REVIEW_SCHEMA_ATTEMPTS = 2
+PAGE_RECOVERY_ROUNDS = 1
 _CAPABILITY_CACHE: dict[tuple[str, str, str], dict] = {}
 _CAPABILITY_LOCKS: dict[tuple[str, str, str], asyncio.Lock] = {}
 
@@ -76,9 +78,14 @@ def vision_configuration():
 def vision_extra_body(config):
     """Inherit generation controls only when vision uses that exact endpoint/model."""
     raw = os.getenv('PPT_VISION_EXTRA_BODY')
+    explicit = raw is not None
     provider, _, model = configuration()
-    if raw is None and (config.provider == provider == 'openai' and config.model == model
-                        and (config.base_url or '').rstrip('/') == (os.getenv('OPENAI_BASE_URL') or '').rstrip('/')):
+    same_openai_endpoint = (
+        config.provider == provider == 'openai'
+        and config.model == model
+        and (config.base_url or '').rstrip('/') == (os.getenv('OPENAI_BASE_URL') or '').rstrip('/')
+    )
+    if raw is None and same_openai_endpoint:
         raw = os.getenv('PPT_LLM_EXTRA_BODY')
     try:
         value = json.loads(raw or '{}')
@@ -86,7 +93,55 @@ def vision_extra_body(config):
             raise ValueError()
     except (TypeError, ValueError) as exc:
         raise VisualReviewError('视觉模型扩展参数必须为 JSON 对象，且不能覆盖模型、图片消息或输出格式。', code='vision_unavailable') from exc
+    if same_openai_endpoint and not explicit:
+        _, reasoning = reasoning_settings()
+        value.update(reasoning)
     return value
+
+
+def vision_timeout_seconds():
+    try:
+        value = float(os.getenv('PPT_VISION_TIMEOUT_SECONDS') or 300)
+        if not math.isfinite(value) or not 30 <= value <= 600:
+            raise ValueError()
+        return value
+    except (TypeError, ValueError) as exc:
+        raise VisualReviewError(
+            'PPT_VISION_TIMEOUT_SECONDS 必须为 30–600 秒。',
+            code='vision_unavailable',
+        ) from exc
+
+
+def vision_max_tokens():
+    try:
+        value = int(os.getenv('PPT_VISION_MAX_TOKENS') or 10000)
+        if not 1 <= value <= 65536:
+            raise ValueError()
+        return value
+    except (TypeError, ValueError) as exc:
+        raise VisualReviewError(
+            'PPT_VISION_MAX_TOKENS 必须为 1–65536 的整数。',
+            code='vision_unavailable',
+        ) from exc
+
+
+def vision_review_token_budget(element_count: int) -> int:
+    """Give dense pages enough output room without slowing simple pages."""
+    base = vision_max_tokens()
+    if element_count < 14:
+        return base
+    try:
+        complex_budget = int(
+            os.getenv('PPT_VISION_COMPLEX_MAX_TOKENS') or 8192
+        )
+        if not 1 <= complex_budget <= 65536:
+            raise ValueError()
+    except (TypeError, ValueError) as exc:
+        raise VisualReviewError(
+            'PPT_VISION_COMPLEX_MAX_TOKENS 必须为 1–65536 的整数。',
+            code='vision_unavailable',
+        ) from exc
+    return max(base, complex_budget)
 
 
 def _strict_json(text):
@@ -195,7 +250,13 @@ class VisionClient:
     """Bounded requests, zero hidden SDK retries, and explicit client ownership."""
     def __init__(self, config: VisionConfig):
         self.config = config
-        kwargs = {'base_url': config.base_url, 'timeout': 180.0, 'max_retries': 0}
+        self.timeout_seconds = vision_timeout_seconds()
+        self.review_max_tokens = None
+        kwargs = {
+            'base_url': config.base_url,
+            'timeout': self.timeout_seconds,
+            'max_retries': 0,
+        }
         if config.provider == 'anthropic':
             kwargs['auth_token' if config.auth_token else 'api_key'] = config.api_key
             self.client = AsyncAnthropic(**kwargs)
@@ -209,7 +270,7 @@ class VisionClient:
     async def __aexit__(self, *_):
         await self.client.close()
 
-    async def ask(self, system, prompt, images):
+    async def ask(self, system, prompt, images, *, max_tokens=None):
         if not images:
             raise VisualReviewError('视觉审稿请求缺少实际图片。')
         content = [{'type': 'text', 'text': prompt}]
@@ -224,20 +285,23 @@ class VisionClient:
                 content.append({'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{encoded}', 'detail': 'high'}})
         try:
             self.requests += 1
-            async with asyncio.timeout(185):
+            async with asyncio.timeout(self.timeout_seconds):
+                output_tokens = (
+                    max_tokens
+                    or self.review_max_tokens
+                    or vision_max_tokens()
+                )
                 if self.config.provider == 'anthropic':
-                    result = await self.client.messages.create(model=self.config.model, max_tokens=10000, system=system, messages=[{'role': 'user', 'content': content}])
+                    result = await self.client.messages.create(model=self.config.model, max_tokens=output_tokens, system=system, messages=[{'role': 'user', 'content': content}])
                     if result.stop_reason not in ('end_turn', 'stop_sequence'):
                         raise VisualReviewError('视觉模型输出不完整或拒绝了审稿请求。')
                     text = ''.join(block.text for block in result.content if block.type == 'text')
                 else:
                     extra = {}
                     body = vision_extra_body(self.config)
-                    if self.config.model == 'MiniMax-M3' and urlparse(self.config.base_url or '').hostname in ('api.minimaxi.com', 'api.minimax.io'):
-                        body.update(thinking={'type': 'disabled'}, reasoning_split=True)
                     if body:
                         extra['extra_body'] = body
-                    result = await self.client.chat.completions.create(model=self.config.model, max_tokens=10000, messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': content}], **extra)
+                    result = await self.client.chat.completions.create(model=self.config.model, max_tokens=output_tokens, messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': content}], **extra)
                     if not result.choices or result.choices[0].finish_reason != 'stop' or getattr(result.choices[0].message, 'refusal', None):
                         raise VisualReviewError('视觉模型输出不完整或拒绝了审稿请求。')
                     text = result.choices[0].message.content
@@ -322,7 +386,7 @@ def _write_report(folder, report):
     temporary.replace(path)
 
 
-def _inspect_source(state, artifact_dir):
+def _inspect_source(state, artifact_dir, image_names=None):
     pages = state.get('pages')
     if not isinstance(pages, list) or not pages or len(pages) > 120:
         raise VisualReviewError('视觉审稿需要 1–120 页有效文档。')
@@ -334,7 +398,10 @@ def _inspect_source(state, artifact_dir):
         if not isinstance(path, str) or path in paths:
             raise VisualReviewError('视觉审稿文档包含无效或重复的页面路径。')
         paths.add(path)
-        image = artifact_dir / f'slide-{index + 1}.png'
+        image = artifact_dir / (
+            (image_names or {}).get(path)
+            or f'slide-{index + 1}.png'
+        )
         try:
             with Image.open(image) as im:
                 width, height = im.size
@@ -399,6 +466,9 @@ removal of decoration, not missing meaningful content. Only flag invisible
 meaningful text/data/media. Do not add motifs merely because objects exist.
 If previousReview is supplied, check unresolved defects and genuine new visible
 regressions. Do not reverse a prior repair due to a different stylistic preference.
+When layoutMeasurements are supplied, use them to verify claims about bounds,
+clipping, alignment, overlap and empty space. Pixel inspection remains mandatory,
+but a spatial claim contradicted by the measured box is not a valid finding.
 For PAGE reviews, independently assess EVERY deckFindingsForPage item against
 the current high-resolution pixels. Return one deckFindingDecisions entry per
 findingId, with decision confirm or reject and specific visible evidence. Reject
@@ -449,22 +519,75 @@ Status passed requires zero new issues and zero confirmed deck findings.
     return instructions.replace('__CURRENT_DECISIONS__', json.dumps(decisions, ensure_ascii=False, separators=(',', ':')))
 
 
-def _validate_verdict(result, requested, all_metadata, deck_findings=None):
+def _single_page_contract_system(design_contract):
+    """Compact review prompt for deterministic pages with explicit layout."""
+    requirements = json.dumps(
+        list(design_contract or []),
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    return f'''You are the final visual QA gate for one rendered presentation page.
+Inspect the supplied image pixels. The explicit user layout contract is
+authoritative; successful implementation of it is not a defect.
+
+Explicit user layout contract:
+{requirements}
+
+Report only concrete visible problems such as clipping, overlap, unreadable
+contrast, text outside the canvas, missing required text, or a clear visual
+contradiction of the contract. Do not report subjective style preferences.
+Use Chinese in message, evidence and repair.
+
+Return one JSON object exactly:
+{{"status":"passed"|"issues","coveredPages":["the requested pagePath"],
+"issues":[{{"pagePath":"...","pageIndex":0,"elementIds":["actual element ids"],
+"severity":"error"|"warning","code":"stable-code","message":"specific problem",
+"evidence":"visible evidence","repair":"safe correction preserving content"}}],
+"deckFindingDecisions":[]}}
+For issues, every element id must exist in the supplied page metadata.
+Status passed requires an empty issues list.'''
+
+
+def _validate_verdict(
+    result,
+    requested,
+    all_metadata,
+    deck_findings=None,
+    *,
+    require_observations=True,
+):
     expected = [item['pagePath'] for item in requested]
+    if not isinstance(result, dict):
+        raise VisualReviewError('视觉模型没有完成有效审稿，不能视为通过。')
+    if (
+        len(expected) == 1
+        and result.get('coveredPages') is None
+        and result.get('status') in ('passed', 'issues')
+    ):
+        result = {**result, 'coveredPages': list(expected)}
+    if result.get('status') == 'passed' and result.get('issues') is None:
+        result = {**result, 'issues': []}
+    if not deck_findings and result.get('deckFindingDecisions') is None:
+        result = {**result, 'deckFindingDecisions': []}
     if result.get('status') not in ('passed', 'issues'):
         raise VisualReviewError('视觉模型没有完成有效审稿，不能视为通过。')
     coverage = result.get('coveredPages')
     if not isinstance(coverage, list) or len(coverage) != len(expected) or any(not isinstance(path, str) for path in coverage) or set(coverage) != set(expected):
         raise VisualReviewError('视觉模型未覆盖全部待审页面，不能发布。')
-    observations = result.get('observations')
-    if not isinstance(observations, list) or len(observations) != len(expected):
-        raise VisualReviewError('视觉模型缺少逐页图像观察证据。')
-    seen, clean_observations = set(), []
-    for observation in observations:
-        if not isinstance(observation, dict) or not isinstance(observation.get('pagePath'), str) or len(observation['pagePath']) > 2048 or observation['pagePath'] not in expected or observation['pagePath'] in seen or not isinstance(observation.get('evidence'), str) or not 8 <= len(observation['evidence'].strip()) <= 4000 or len(observation['evidence']) > 4000:
-            raise VisualReviewError('视觉模型的图像观察证据无效。')
-        seen.add(observation['pagePath'])
-        clean_observations.append({'pagePath': observation['pagePath'], 'evidence': observation['evidence']})
+    clean_observations = []
+    if require_observations:
+        observations = result.get('observations')
+        if not isinstance(observations, list) or len(observations) != len(expected):
+            raise VisualReviewError('视觉模型缺少逐页图像观察证据。')
+        seen = set()
+        for observation in observations:
+            if not isinstance(observation, dict) or not isinstance(observation.get('pagePath'), str) or len(observation['pagePath']) > 2048 or observation['pagePath'] not in expected or observation['pagePath'] in seen or not isinstance(observation.get('evidence'), str) or not observation['evidence'].strip() or len(observation['evidence']) > 4000:
+                raise VisualReviewError('视觉模型的图像观察证据无效。')
+            seen.add(observation['pagePath'])
+            clean_observations.append({
+                'pagePath': observation['pagePath'],
+                'evidence': observation['evidence'],
+            })
     issues = result.get('issues')
     if not isinstance(issues, list) or len(issues) > 120:
         raise VisualReviewError('视觉模型的问题清单无效。')
@@ -489,7 +612,7 @@ def _validate_verdict(result, requested, all_metadata, deck_findings=None):
         raise VisualReviewError('复核决定必须与当前 requiredDeckFindingIds 一一对应；列表为空时 deckFindingDecisions 必须为 []，不得沿用历史决定。')
     assessed, clean_decisions = set(), []
     for decision in decisions:
-        if not isinstance(decision, dict) or not isinstance(decision.get('findingId'), str) or decision['findingId'] not in findings or decision['findingId'] in assessed or decision.get('decision') not in ('confirm', 'reject') or not isinstance(decision.get('evidence'), str) or not 8 <= len(decision['evidence'].strip()) <= 4000 or len(decision['evidence']) > 4000:
+        if not isinstance(decision, dict) or not isinstance(decision.get('findingId'), str) or decision['findingId'] not in findings or decision['findingId'] in assessed or decision.get('decision') not in ('confirm', 'reject') or not isinstance(decision.get('evidence'), str) or not decision['evidence'].strip() or len(decision['evidence']) > 4000:
             raise VisualReviewError('高清逐页审稿的整稿发现复核结果或证据无效。')
         assessed.add(decision['findingId'])
         clean_decisions.append({key: decision[key] for key in ('findingId', 'decision', 'evidence')})
@@ -545,7 +668,19 @@ async def review_deck_overview(state, artifact_dir: Path, *, scenario='auto', us
         return report
 
 
-async def review_page(state, artifact_dir: Path, page_path: str, *, scenario='auto', usage='reading', on_event=None):
+async def review_page(
+    state,
+    artifact_dir: Path,
+    page_path: str,
+    *,
+    scenario='auto',
+    usage='reading',
+    on_event=None,
+    image_name='slide-1.png',
+    layout_measurements=None,
+    design_contract=None,
+    max_tokens=None,
+):
     """Review exactly one rendered page without claiming coverage of the deck."""
     artifact_dir = Path(artifact_dir)
     paths = state.get('document', {}).get('pages')
@@ -559,7 +694,12 @@ async def review_page(state, artifact_dir: Path, page_path: str, *, scenario='au
         'document': {**state['document'], 'pages': [page_path]},
         'pages': [page],
     }
-    metadata, images = _inspect_source(single, artifact_dir)
+    metadata, image_metadata = _inspect_source(
+        single,
+        artifact_dir,
+        {page_path: image_name},
+    )
+    image_paths = [artifact_dir / image_name]
     config = vision_configuration()
     async with VisionClient(config) as client:
         await _emit(on_event, status='started', scope='page', pagePath=page_path, pageIndex=page_index,
@@ -582,19 +722,100 @@ async def review_page(state, artifact_dir: Path, page_path: str, *, scenario='au
             ],
             'hintPolicy': '源数据提示不是错误；必须结合实际图片、页面用途与设计意图确认问题后才可列入 issues。',
         }
+        if design_contract:
+            payload['explicitUserDesignRequirements'] = list(design_contract)
+            payload['designRequirementPolicy'] = (
+                'These explicit user requirements are authoritative. '
+                'Their successful implementation is not a defect. '
+                'Only report readability, clipping, overlap or content problems.'
+            )
+        measured = {
+            item['elementId']: item
+            for item in (
+                (layout_measurements or {})
+                .get(page_path, {})
+                .get('elements', [])
+            )
+            if isinstance(item, dict) and item.get('elementId')
+        }
+        elements = {
+            element.get('elementId'): element
+            for element in metadata[0]['elements']
+        }
+        payload['layoutMeasurements'] = [
+            {
+                'elementId': element_id,
+                'bounds': elements.get(element_id, {}).get('bounds'),
+                'measuredTextSize': item.get('measuredTextSize'),
+                'paddingSize': item.get('paddingSize'),
+            }
+            for element_id, item in measured.items()
+        ]
+        payload['measurementPolicy'] = (
+            'Before reporting alignment, clipping, overlap or spacing, '
+            'compare the claim with these actual browser bounds and '
+            'measured text sizes. Do not report a position contradiction '
+            'when the measured box already satisfies the claimed layout.'
+        )
         await _emit(on_event, status='started', scope='page', pagePath=page_path, pageIndex=page_index,
                     message='AI 正在高清审查当前页面', covered=0, total=1)
-        raw = await client.ask(_review_system(scenario), json.dumps(payload, ensure_ascii=False), images)
-        report = _validate_verdict(raw, metadata, metadata)
+        output_tokens = (
+            max_tokens
+            or vision_review_token_budget(
+                len(metadata[0].get('elements') or [])
+            )
+        )
+        client.review_max_tokens = output_tokens
+        last_error = None
+        for attempt in range(REVIEW_SCHEMA_ATTEMPTS):
+            try:
+                system_prompt = (
+                    _single_page_contract_system(design_contract)
+                    if design_contract
+                    else _review_system(scenario)
+                )
+                raw = await client.ask(
+                    system_prompt,
+                    json.dumps(payload, ensure_ascii=False),
+                    image_paths,
+                )
+                report = _validate_verdict(
+                    raw,
+                    metadata,
+                    metadata,
+                    require_observations=not bool(design_contract),
+                )
+                break
+            except VisualReviewError as exc:
+                last_error = exc
+                if (
+                    exc.code != 'visual_review_invalid'
+                    or attempt + 1 >= REVIEW_SCHEMA_ATTEMPTS
+                ):
+                    raise
+                await _emit(
+                    on_event,
+                    status='retrying',
+                    scope='page',
+                    pagePath=page_path,
+                    pageIndex=page_index,
+                    message='单页视觉审稿结果结构无效，正在重新审稿。',
+                    detail=str(exc)[:1200],
+                    covered=0,
+                    total=1,
+                )
+        else:
+            raise last_error
         for issue in report['issues']:
             issue['pageIndex'] = page_index
         report.update(
             model=config.model,
             provider=config.provider,
             capability=capability,
-            images=images,
+            images=image_metadata,
             pagePath=page_path,
             pageIndex=page_index,
+            requests=client.requests,
         )
         await _emit(on_event, status='completed', scope='page', pagePath=page_path, pageIndex=page_index,
                     message='当前页面视觉审查完成', covered=1, total=1,
@@ -611,6 +832,9 @@ async def review_deck(
     on_event=None,
     previous_review=None,
     concurrency=2,
+    layout_measurements=None,
+    design_contract=None,
+    max_tokens=None,
 ):
     """Full review: one whole-deck pass plus a high-resolution pass per page."""
     artifact_dir = Path(artifact_dir)
@@ -619,17 +843,87 @@ async def review_deck(
     source_hash = hashlib.sha256(json.dumps({'document': state['document'], 'pages': state['pages']}, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     report = {'version': 1, 'status': 'running', 'revision': state.get('revision'), 'sourceSha256': source_hash, 'model': config.model, 'provider': config.provider, 'scenario': scenario, 'usage': usage, 'coveredPages': [], 'issues': [], 'images': images}
     started = time.monotonic()
-    sheets = _contact_sheets(artifact_dir, images)
     total = len(metadata)
+    if total == 1:
+        page = metadata[0]
+        reviewed = await review_page(
+            state,
+            artifact_dir,
+            page['pagePath'],
+            scenario=scenario,
+            usage=usage,
+            on_event=on_event,
+            image_name=images[0]['file'],
+            layout_measurements=layout_measurements,
+            design_contract=design_contract,
+            max_tokens=max_tokens,
+        )
+        page_review = {
+            key: reviewed.get(key)
+            for key in (
+                'status',
+                'coveredPages',
+                'observations',
+                'issues',
+                'deckFindingDecisions',
+                'model',
+                'provider',
+                'capability',
+                'images',
+            )
+            if key in reviewed
+        }
+        report.update(page_review)
+        report.update(
+            deckReview=page_review,
+            deckFindings=[],
+            pageReviews=[page_review],
+            coveredPages=[page['pagePath']],
+            status='issues' if reviewed.get('issues') else 'passed',
+            seconds=round(time.monotonic() - started, 2),
+            requests=reviewed.get('requests', 0),
+        )
+        _write_report(artifact_dir, report)
+        return report
+    sheets = _contact_sheets(artifact_dir, images)
     async with VisionClient(config) as client:
         try:
             await _emit(on_event, status='started', scope='deck', message='正在验证视觉模型的实际看图能力', covered=0, total=total)
             report['capability'] = await _await_with_progress(client.verify_vision(artifact_dir), on_event, scope='deck', message='正在等待图片识别能力校验结果', covered=0, total=total)
-            async def checked(scope, requested, supplied_images, deck_findings=None):
+            async def checked(scope, requested, supplied_images, deck_findings=None, attempt_limit=REVIEW_SCHEMA_ATTEMPTS):
                 system = _review_system(scenario, deck_findings)
                 payload = {'scope': scope, 'usage': usage, 'scenario': scenario, 'document': state['document'], 'pages': requested, 'instructions': '检查整稿风格、叙事节奏和页面关系；每张总览图片标注页码。' if scope == 'deck' else '高清逐页检查：识别可读性、对齐、排版与视觉问题。'}
                 payload['deckFindingsForPage'] = deck_findings or []
                 payload['requiredDeckFindingIds'] = [finding['findingId'] for finding in (deck_findings or [])]
+                if scope == 'page':
+                    measured = {
+                        item['elementId']: item
+                        for item in (
+                            (layout_measurements or {})
+                            .get(requested[0]['pagePath'], {})
+                            .get('elements', [])
+                        )
+                        if isinstance(item, dict) and item.get('elementId')
+                    }
+                    elements = {
+                        element.get('elementId'): element
+                        for element in requested[0]['elements']
+                    }
+                    payload['layoutMeasurements'] = [
+                        {
+                            'elementId': element_id,
+                            'bounds': elements.get(element_id, {}).get('bounds'),
+                            'measuredTextSize': item.get('measuredTextSize'),
+                            'paddingSize': item.get('paddingSize'),
+                        }
+                        for element_id, item in measured.items()
+                    ]
+                    payload['measurementPolicy'] = (
+                        'Before reporting alignment, clipping, overlap or spacing, '
+                        'compare the claim with these actual browser bounds and '
+                        'measured text sizes. Do not report a position contradiction '
+                        'when the measured box already satisfies the claimed layout.'
+                    )
                 paths = {page['pagePath'] for page in requested}
                 if isinstance(previous_review, dict):
                     payload['previousReview'] = {'issues': [{key: value for key, value in issue.items() if key != 'findingId'} for issue in previous_review.get('issues', []) if issue.get('pagePath') in paths], 'pageReviews': [{'coveredPages': review.get('coveredPages', []), 'deckFindingDecisions': [{key: decision[key] for key in ('decision', 'evidence') if key in decision} for decision in review.get('deckFindingDecisions', [])]} for review in previous_review.get('pageReviews', []) if any(path in paths for path in review.get('coveredPages', []))]}
@@ -641,7 +935,16 @@ async def review_deck(
                     if isinstance(element.get('content'), dict) and type(element['content'].get('fontSize')) in (int, float) and element['content']['fontSize'] < 12
                 ]
                 payload['hintPolicy'] = '源数据提示不是错误；必须结合实际图片、页面用途与设计意图确认可读性问题后才可列入 issues。不要将脚注或装饰误报为正文缺陷。'
-                for attempt in range(2):
+                if design_contract:
+                    payload['explicitUserDesignRequirements'] = list(
+                        design_contract
+                    )
+                    payload['designRequirementPolicy'] = (
+                        'These explicit user requirements are authoritative. '
+                        'Their successful implementation is not a defect. '
+                        'Only report readability, clipping, overlap or content problems.'
+                    )
+                for attempt in range(max(1, attempt_limit)):
                     try:
                         raw = await _await_with_progress(client.ask(system, json.dumps(payload, ensure_ascii=False), supplied_images), on_event, scope=scope, message='视觉模型请求仍在处理，等待图像审稿结果', covered=len(report['coveredPages']), total=total, **({'pagePath': requested[0]['pagePath'], 'pageIndex': requested[0]['pageIndex']} if scope == 'page' else {}))
                         return _validate_verdict(raw, requested, metadata, deck_findings)
@@ -655,7 +958,21 @@ async def review_deck(
                             corrected = await _await_with_progress(client.ask(SERIALIZATION_SYSTEM, serializer_prompt, supplied_images), on_event, scope=scope, message='正在等待审稿结果格式修复', covered=len(report['coveredPages']), total=total, **({'pagePath': requested[0]['pagePath'], 'pageIndex': requested[0]['pageIndex']} if scope == 'page' else {}))
                             return _validate_verdict(_validate_serialization(original, corrected), requested, metadata, deck_findings)
                         payload['responseCorrection'] = str(exc) + ' 请重新查看所有图片，严格返回完整结构，不省略覆盖页和证据。'
-                        await _emit(on_event, status='retrying', scope=scope, message='视觉审稿返回不完整，AI 正在重新核对图片', **({'pagePath': requested[0]['pagePath'], 'pageIndex': requested[0]['pageIndex']} if scope == 'page' else {}))
+                        await _emit(
+                            on_event,
+                            status='retrying',
+                            scope=scope,
+                            message='视觉审稿返回不完整，AI 正在重新核对图片',
+                            detail=str(exc)[:1200],
+                            **(
+                                {
+                                    'pagePath': requested[0]['pagePath'],
+                                    'pageIndex': requested[0]['pageIndex'],
+                                }
+                                if scope == 'page'
+                                else {}
+                            ),
+                        )
                 raise AssertionError('unreachable')
             await _emit(on_event, status='started', scope='deck', message='AI 正在审查整稿风格与页面节奏', covered=0, total=total)
             report['deckReview'] = await checked('deck', metadata, sheets)
@@ -695,16 +1012,100 @@ async def review_deck(
                 for index, (item, rendered) in enumerate(zip(metadata, images))
             ]
             try:
-                for task in asyncio.as_completed(tasks):
-                    _, reviewed = await task
-                    report['pageReviews'].append(reviewed)
-                    report['coveredPages'].append(reviewed['coveredPages'][0])
-                    _write_report(artifact_dir, report)
-            finally:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
+            errors = {
+                index: result
+                for index, result in enumerate(results)
+                if isinstance(result, BaseException)
+            }
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+
+            # One failed page must not discard the other completed page reviews.
+            # Retry only bounded schema/coverage failures; provider failures and
+            # cancelled tasks still fail closed immediately.
+            for recovery in range(PAGE_RECOVERY_ROUNDS):
+                retryable = [
+                    (index, metadata[index], images[index], error)
+                    for index, error in errors.items()
+                    if isinstance(error, VisualReviewError)
+                    and error.code == 'visual_review_invalid'
+                ]
+                if not retryable:
+                    break
+                for _, item, _, _ in retryable:
+                    await _emit(
+                        on_event,
+                        status='retrying',
+                        scope='page',
+                        pagePath=item['pagePath'],
+                        pageIndex=item['pageIndex'],
+                        message=(
+                            f"第 {item['pageNumber']} 页审稿结构不完整，"
+                            '正在单独重新核对图片'
+                        ),
+                        attempt=recovery + 1,
+                    )
+                retry_tasks = [
+                    asyncio.create_task(review_one(index, item, rendered))
+                    for index, item, rendered, _ in retryable
+                ]
+                try:
+                    retry_results = await asyncio.gather(
+                        *retry_tasks,
+                        return_exceptions=True,
+                    )
+                except asyncio.CancelledError:
+                    for task in retry_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*retry_tasks, return_exceptions=True)
+                    raise
+                retried = {
+                    index: result
+                    for (index, _, _, _), result in zip(
+                        retryable,
+                        retry_results,
+                    )
+                }
+                for index, result in retried.items():
+                    if isinstance(result, asyncio.CancelledError):
+                        raise result
+                    if isinstance(result, BaseException):
+                        errors[index] = result
+                    else:
+                        errors.pop(index, None)
+
+            remaining = sorted(errors.items())
+            report['pageReviews'] = [
+                completed[index]
+                for index in range(len(metadata))
+                if index in completed
+            ]
+            report['coveredPages'] = [
+                reviewed['coveredPages'][0]
+                for reviewed in report['pageReviews']
+            ]
+            _write_report(artifact_dir, report)
+            if remaining:
+                index, error = remaining[0]
+                item = metadata[index]
+                if isinstance(error, VisualReviewError):
+                    raise VisualReviewError(
+                        f"第 {item['pageNumber']} 页视觉审稿未返回完整结构，"
+                        '已保留其他页面审稿结果，未发布文件。',
+                        pagePath=item['pagePath'],
+                        pageIndex=index,
+                    ) from error
+                raise error
             report['pageReviews'] = [
                 completed[index] for index in range(len(metadata)) if index in completed
             ]

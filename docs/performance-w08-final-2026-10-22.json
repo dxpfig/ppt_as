@@ -1,0 +1,151 @@
+{
+	"version": 1,
+	"source": "/home/figodxp/workspace/ppt_as/runtime/w08-final-evidence/jobs",
+	"jobsAnalyzed": 2,
+	"durationSeconds": {
+		"count": 2,
+		"min": 373.157,
+		"p50": 769.569,
+		"p95": 1165.982,
+		"max": 1165.982
+	},
+	"byKind": {
+		"outline": {
+			"count": 2,
+			"min": 373.157,
+			"p50": 769.569,
+			"p95": 1165.982,
+			"max": 1165.982
+		}
+	},
+	"byStatus": {
+		"completed": {
+			"count": 2,
+			"min": 373.157,
+			"p50": 769.569,
+			"p95": 1165.982,
+			"max": 1165.982
+		}
+	},
+	"byNode": {
+		"assets": {
+			"count": 1,
+			"min": 32.249,
+			"p50": 32.249,
+			"p95": 32.249,
+			"max": 32.249
+		},
+		"context": {
+			"count": 1,
+			"min": 58.376,
+			"p50": 58.376,
+			"p95": 58.376,
+			"max": 58.376
+		},
+		"done": {
+			"count": 2,
+			"min": 0.0,
+			"p50": 0.0,
+			"p95": 0.0,
+			"max": 0.0
+		},
+		"export": {
+			"count": 2,
+			"min": 261.047,
+			"p50": 694.61,
+			"p95": 1128.172,
+			"max": 1128.172
+		},
+		"pages": {
+			"count": 1,
+			"min": 51.994,
+			"p50": 51.994,
+			"p95": 51.994,
+			"max": 51.994
+		},
+		"plan": {
+			"count": 1,
+			"min": 57.406,
+			"p50": 57.406,
+			"p95": 57.406,
+			"max": 57.406
+		},
+		"visual": {
+			"count": 2,
+			"min": 283.578,
+			"p50": 705.842,
+			"p95": 1128.106,
+			"max": 1128.106
+		}
+	},
+	"milestones": {
+		"deliveredSeconds": {
+			"count": 2,
+			"min": 372.935,
+			"p50": 768.997,
+			"p95": 1165.06,
+			"max": 1165.06
+		},
+		"editableSeconds": {
+			"count": 1,
+			"min": 78.447,
+			"p50": 78.447,
+			"p95": 78.447,
+			"max": 78.447
+		},
+		"firstPageSeconds": {
+			"count": 1,
+			"min": 58.697,
+			"p50": 58.697,
+			"p95": 58.697,
+			"max": 58.697
+		},
+		"visualReviewSeconds": {
+			"count": 2,
+			"min": 372.683,
+			"p50": 768.375,
+			"p95": 1164.068,
+			"max": 1164.068
+		}
+	},
+	"jobs": [
+		{
+			"id": "3da2ea69f8954a81ac3bd484a4e81b39",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 1165.982,
+			"nodes": {
+				"visual": 1128.106,
+				"export": 1128.172,
+				"done": 0.0
+			},
+			"milestones": {
+				"visualReviewSeconds": 1164.068,
+				"deliveredSeconds": 1165.06
+			},
+			"eventCount": 200
+		},
+		{
+			"id": "a39861d4d9e44579af3a4c2fc94b317c",
+			"kind": "outline",
+			"status": "completed",
+			"durationSeconds": 373.157,
+			"nodes": {
+				"context": 58.376,
+				"plan": 57.406,
+				"assets": 32.249,
+				"pages": 51.994,
+				"visual": 283.578,
+				"export": 261.047,
+				"done": 0.0
+			},
+			"milestones": {
+				"firstPageSeconds": 58.697,
+				"editableSeconds": 78.447,
+				"visualReviewSeconds": 372.683,
+				"deliveredSeconds": 372.935
+			},
+			"eventCount": 200
+		}
+	]
+}

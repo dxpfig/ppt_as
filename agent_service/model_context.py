@@ -143,12 +143,12 @@ def context_settings(base_url):
     margin = integer_setting('PPT_LLM_CONTEXT_MARGIN', 8192, minimum=0)
     endpoint = os.getenv('PPT_LLM_TOKENIZER_URL', '').strip()
     if endpoint:
-        target, origin = urlsplit(endpoint), urlsplit(base_url or 'https://api.openai.com/v1')
+        target, origin = urlsplit(endpoint), urlsplit(base_url or '')
         def authority(u):
             return u.scheme, u.hostname, u.port or (443 if u.scheme == 'https' else 80)
         if (target.scheme not in ('http', 'https') or not target.hostname or target.username or
                 target.password or target.query or target.fragment or authority(target) != authority(origin)):
-            raise ValueError('PPT_LLM_TOKENIZER_URL 必须与模型接口同源，且不能包含凭据或查询参数。')
+            raise ValueError('PPT_LLM_TOKENIZER_URL 必须与已配置的模型接口同源，且不能包含凭据或查询参数。')
     return enabled, window, margin, endpoint, mode, bool(os.getenv('PPT_LLM_CONTEXT_TOKENS'))
 
 

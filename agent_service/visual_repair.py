@@ -12,6 +12,7 @@ import base64
 import copy
 import inspect
 import json
+import math
 import re
 from fractions import Fraction
 from typing import Any, Literal
@@ -208,6 +209,17 @@ def apply_visual_patches(state, operations, issues, *, layout_measurements=None,
     result = copy.deepcopy({"document": state["document"], "pages": state["pages"]})
     pages = {p["path"]: p["data"] for p in result["pages"]}
     changed_pages = set()
+    element_types = {
+        (page["path"], element["elementId"]): element["elementType"]
+        for page in result["pages"]
+        for element in page["data"]["elements"]
+    }
+    scaled_lines = {
+        (operation.pagePath, operation.elementId)
+        for operation in parsed.operations
+        if operation.path.startswith("/bounds")
+        and element_types.get((operation.pagePath, operation.elementId)) == "line"
+    }
     for patch in parsed.operations:
         if patch.pagePath not in targets:
             raise ValueError("Visual patch attempted to modify a page outside located findings")
@@ -224,6 +236,25 @@ def apply_visual_patches(state, operations, issues, *, layout_measurements=None,
             matches = [e for e in page["elements"] if e["elementId"] == patch.elementId]
             if len(matches) != 1: raise ValueError("Visual patch references an unknown or ambiguous element ID")
             target = matches[0]
+            if (
+                target["elementType"] == "line"
+                and parts in (["viewBox"], ["points"])
+                and (patch.pagePath, patch.elementId) in scaled_lines
+            ):
+                # Bounds already scale the line. Ignore any accompanying local
+                # coordinate rewrite instead of rejecting an otherwise valid
+                # layout repair.
+                continue
+            if (
+                target["elementType"] == "text"
+                and parts == ["content", "fontSize"]
+                and number(patch.value)
+                and patch.value < 12
+            ):
+                # Shrinking below the readability floor is never an acceptable
+                # way to fit existing text. Keep the original size and allow
+                # any valid geometry operations in the same proposal to apply.
+                continue
             allowed = _allowed_patch(target, parts, patch.value)
         if not allowed:
             raise ValueError(f"Visual repair may not modify protected field or invalid style: {patch.path}")
@@ -271,7 +302,26 @@ def apply_visual_patches(state, operations, issues, *, layout_measurements=None,
                 invalid_geometry.append(f"{path}#{element['elementId']}: bounds {element['bounds']} exceed canvas {width}×{height}")
             measurement = measurements.get(element['elementId'])
             original = originals[path][element['elementId']]
-            if (measurement and element['elementType'] == 'text' and w == original['bounds'][2]
+            if measurement and element['elementType'] == 'text':
+                content = element['content']
+                explicit_lines = max(1, str(content.get('text', '')).count('\n') + 1)
+                font_size = content.get('fontSize')
+                line_height = content.get('lineHeightPx')
+                if not number(line_height):
+                    ratio = content.get('lineHeight', 1.2)
+                    line_height = font_size * ratio if number(font_size) and number(ratio) else None
+                minimum_typography = (
+                    math.ceil(explicit_lines * line_height + measurement.get('paddingSize', [0, 0])[1])
+                    if number(line_height)
+                    else None
+                )
+                if minimum_typography and h + 1 < minimum_typography:
+                    invalid_geometry.append(
+                        f"{path}#{element['elementId']}: explicit text lines require height "
+                        f">= {minimum_typography}px, proposed {h}px"
+                    )
+            if (measurement and element['elementType'] == 'text'
+                    and abs(w - original['bounds'][2]) <= 2
                     and element['content'] == original['content']):
                 minimum = measurement['measuredTextSize'][1] + measurement.get('paddingSize', [0, 0])[1]
                 if h + 2 < minimum:

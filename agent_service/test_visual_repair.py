@@ -142,6 +142,46 @@ class VisualPatchSafety(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_visual_patches(source, [ops[0], operation('/points', '0,0 240,44', elementId='connector')], [issue()])
 
+    def test_line_bounds_scale_ignores_model_coordinate_rewrite(self):
+        from agent_service.visual_repair import apply_visual_patches
+        source = source_deck()
+        source['pages'][0]['data']['elements'].append({
+            'elementId': 'connector',
+            'elementType': 'line',
+            'bounds': [100, 200, 240, 44],
+            'viewBox': [378, 144],
+            'points': '0,144 378,0',
+            'curve': 'sharp',
+        })
+        result = apply_visual_patches(
+            source,
+            [
+                operation('/bounds', [100, 210, 300, 44], elementId='connector'),
+                operation('/points', '0,0 240,44', elementId='connector'),
+                operation('/viewBox', [240, 44], elementId='connector'),
+            ],
+            [issue(elementIds=['connector'])],
+        )
+        connector = result['pages'][0]['data']['elements'][-1]
+        self.assertEqual(connector['bounds'], [100, 210, 300, 44])
+        self.assertEqual(connector['points'], '0,144 378,0')
+        self.assertEqual(connector['viewBox'], [378, 144])
+
+    def test_geometry_is_kept_when_model_also_tries_unreadably_small_text(self):
+        from agent_service.visual_repair import apply_visual_patches
+        source = source_deck()
+        result = apply_visual_patches(
+            source,
+            [
+                operation('/bounds', [50, 50, 300, 140]),
+                operation('/content/fontSize', 10),
+            ],
+            [issue(code='text-overflow')],
+        )
+        title = result['pages'][0]['data']['elements'][0]
+        self.assertEqual(title['bounds'], [50, 50, 300, 140])
+        self.assertEqual(title['content']['fontSize'], 32)
+
     def test_unchanged_wrapping_must_respect_measured_text_height(self):
         from agent_service.visual_repair import apply_visual_patches
         source = source_deck()
@@ -149,6 +189,26 @@ class VisualPatchSafety(unittest.TestCase):
             'measuredTextSize': [800, 80], 'paddingSize': [0, 0]}]}}
         with self.assertRaisesRegex(ValueError, '80'):
             apply_visual_patches(source, [operation('/bounds/3', 22)], [issue()], layout_measurements=layout)
+
+    def test_explicit_multiline_text_cannot_be_clipped_after_a_small_width_change(self):
+        from agent_service.visual_repair import apply_visual_patches
+        source = source_deck()
+        title = source['pages'][0]['data']['elements'][0]
+        title['content'].update(text='运维与增值\n服务 15%', fontSize=12)
+        title['bounds'][2] = 124
+        layout = {'pages/one.page': {'elements': [{
+            'elementId': 'title',
+            'measuredTextSize': [110, 24],
+            'paddingSize': [0, 0],
+        }]}}
+        with self.assertRaisesRegex(ValueError, 'explicit text lines'):
+            apply_visual_patches(
+                source,
+                [operation('/bounds', [50, 50, 125, 24])],
+                [issue()],
+                layout_measurements=layout,
+            )
+
     def test_rejects_text_repair_outside_slide_before_saving_candidate(self):
         with self.assertRaisesRegex(ValueError, 'canvas|画布'):
             self.apply([operation('/bounds', [104, 616, 230, 34])])

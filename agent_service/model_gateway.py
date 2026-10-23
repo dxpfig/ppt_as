@@ -12,6 +12,10 @@ def make_model(*args, **kwargs):
     return agents.make_model(*args, **kwargs)
 
 
+def reasoning_settings(*args, **kwargs):
+    return agents.reasoning_settings(*args, **kwargs)
+
+
 def make_agent(*args, **kwargs):
     return agents.make_agent(*args, **kwargs)
 

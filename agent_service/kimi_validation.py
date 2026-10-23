@@ -287,7 +287,10 @@ def _slide_artifact_dir(rendered: Path, artifact_dir: Path) -> Path:
 
 
 async def visual_overview_issues(document: dict, pages: list[dict], rendered: Path | None,
-                                 *, on_event=None, scenario="auto", cache_dir: Path | None = None) -> list[dict]:
+                                 *, on_event=None, scenario="auto", cache_dir: Path | None = None,
+                                 previous_review=None, only_pages=None,
+                                 report_holder=None, design_contract=None,
+                                 max_tokens=None) -> list[dict]:
     """Run the high-resolution deck and per-page visual review.
 
     Browser geometry catches measurable defects first. Once those are cleared,
@@ -310,12 +313,19 @@ async def visual_overview_issues(document: dict, pages: list[dict], rendered: Pa
             on_event=on_event,
             cache_dir=cache_dir,
             concurrency=expert_policy().visual_review_concurrency,
+            previous_review=previous_review,
+            only_pages=only_pages,
+            design_contract=design_contract,
+            max_tokens=max_tokens,
         )
     except VisualReviewError as error:
         await _emit_note(on_event, f"AI 视觉审稿未执行：{error}")
         raise
     finally:
         shutil.rmtree(artifact_dir, ignore_errors=True)
+    if report_holder is not None:
+        report_holder.clear()
+        report_holder.update(report)
     issues = []
     for issue in report.get("issues", []):
         identifiers = ", ".join(issue.get("elementIds") or []) or "-"
@@ -327,6 +337,14 @@ async def visual_overview_issues(document: dict, pages: list[dict], rendered: Pa
             "severity": issue.get("severity"),
             "message": f"{issue.get('message')}（依据：{issue.get('evidence')}；修改建议：{issue.get('repair')}）",
         })
+    if design_contract and any(
+        '卡片' in str(requirement)
+        for requirement in design_contract
+    ):
+        issues = [
+            issue for issue in issues
+            if issue.get('code') != 'visual-card-based-equal-split-layout'
+        ]
     return issues
 
 

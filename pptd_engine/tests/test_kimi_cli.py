@@ -81,6 +81,37 @@ class CheckTests(unittest.TestCase):
         page = load_yaml(self.root / "pages" / "page-1.page")
         self.assertEqual(len(page["elements"]), 1)
 
+    def test_page_spec_limits_structural_results_to_selected_page(self):
+        (self.root / "pages").mkdir()
+        (self.root / "deck.pptd").write_text(
+            "version: v2\ntitle: test\nsize: [960, 540]\n"
+            "pages:\n- pages/page-1.page\n- pages/page-2.page\n",
+            encoding="utf-8",
+        )
+        (self.root / "pages" / "page-1.page").write_text(
+            "elements:\n"
+            "- elementId: ok\n"
+            "  elementType: text\n"
+            "  bounds: [20, 20, 200, 60]\n"
+            "  content: {text: 第一页}\n",
+            encoding="utf-8",
+        )
+        (self.root / "pages" / "page-2.page").write_text(
+            "elements:\n"
+            "- elementType: text\n"
+            "  bounds: [20, 20, 200, 60]\n"
+            "  content: {text: 第二页}\n",
+            encoding="utf-8",
+        )
+        first = check_module.check_deck(self.root, page_spec="1")
+        second = check_module.check_deck(self.root, page_spec="2")
+        self.assertFalse(
+            any("page-2.page" in item["location"] for item in first)
+        )
+        self.assertTrue(
+            any("page-2.page" in item["location"] for item in second)
+        )
+
 
 class ConvertTests(unittest.TestCase):
     def test_convert_output_layout_and_media_rewrite(self):

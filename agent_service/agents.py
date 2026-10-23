@@ -5,7 +5,6 @@ import math
 import os
 from pathlib import Path
 from uuid import uuid4
-from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 from agentscope.agent import Agent, ReActConfig, ContextConfig
@@ -92,13 +91,47 @@ def timeout_setting(name, default):
         raise ValueError(f"{name} 必须为 1–14400 秒。") from exc
 
 
-def make_model(*, output_mode="default", observable_retries=False):
+def _boolean_setting(name, default):
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in ('1', 'true', 'yes', 'on'):
+        return True
+    if value in ('0', 'false', 'no', 'off'):
+        return False
+    raise ValueError(f'{name} 必须为 true 或 false。')
+
+
+def reasoning_settings(output_mode='default', override=None):
+    """Build provider-neutral OpenAI reasoning controls from configuration."""
+    configured = (
+        str(override).strip().lower()
+        if override is not None
+        else os.getenv('PPT_LLM_REASONING_MODE', '').strip().lower()
+    )
+    mode = configured or output_mode
+    aliases = {'': 'provider-default', 'default': 'provider-default', 'auto': 'provider-default'}
+    mode = aliases.get(mode, mode)
+    if mode == 'provider-default':
+        return 'provider-default', {}
+    if mode not in ('adaptive', 'direct'):
+        raise ValueError('PPT_LLM_REASONING_MODE 必须为 adaptive、direct 或 provider-default。')
+    controls = {'thinking': {'type': 'adaptive' if mode == 'adaptive' else 'disabled'}}
+    if _boolean_setting('PPT_LLM_REASONING_SPLIT', True):
+        controls['reasoning_split'] = True
+    return mode, controls
+
+
+def make_model(
+    *,
+    output_mode="default",
+    observable_retries=False,
+    reasoning_mode=None,
+):
     provider, token, model = configuration()
     if output_mode not in ("default", "auto", "adaptive", "direct"):
         raise ValueError("未知模型输出模式。")
-    official_m3 = provider == "openai" and model == "MiniMax-M3" and urlparse(os.getenv("OPENAI_BASE_URL", "")).hostname in ("api.minimax.io", "api.minimaxi.com")
-    if output_mode == "direct" and not official_m3:
-        raise ValueError("直接输出模式仅对已验证的官方 MiniMax-M3 接口可用。")
     retries = 0 if observable_retries else 1
     if not token or not model:
         raise ValueError("尚未配置大模型。请设置 PPT_LLM_PROVIDER、PPT_LLM_MODEL 与对应 API Key 后重启服务。")
@@ -124,22 +157,19 @@ def make_model(*, output_mode="default", observable_retries=False):
         return model_instance
     if provider != "openai":
         raise ValueError("PPT_LLM_PROVIDER 仅支持 anthropic 或 openai。")
-    # Official M3 accepts this explicit switch; reasoning_effort is ignored by
-    # M3 and reasoning_split alone does not reduce its thinking token budget.
-    controlled = official_m3 and output_mode != "default"
-    effective = ("adaptive" if output_mode == "adaptive" else "direct") if controlled else "provider-default"
+    effective, reasoning = reasoning_settings(output_mode, reasoning_mode)
     stream_setting = os.getenv('PPT_LLM_STREAM', '').strip().lower()
     if stream_setting not in ('', 'true', 'false', '1', '0'):
         raise ValueError('PPT_LLM_STREAM 必须为 true 或 false。')
-    stream = controlled if not stream_setting else stream_setting in ('true', '1')
+    stream = bool(reasoning) if not stream_setting else stream_setting in ('true', '1')
     try:
         extra = json.loads(os.getenv('PPT_LLM_EXTRA_BODY') or '{}')
         if not isinstance(extra, dict) or PROTECTED_REQUEST_FIELDS.intersection(extra): raise ValueError()
     except (TypeError, ValueError) as exc:
         raise ValueError('PPT_LLM_EXTRA_BODY 必须为 JSON 对象，且不能覆盖模型、消息、工具、流式或输出额度参数。') from exc
-    if controlled:
-        extra.update(thinking={"type": "disabled" if effective == "direct" else "adaptive"}, reasoning_split=True)
-    elif extra:
+    if reasoning:
+        extra.update(reasoning)
+    if extra and not reasoning:
         effective = 'configured'
     budget_enabled, window, margin, tokenizer, context_mode, explicit_window = context_settings(os.getenv('OPENAI_BASE_URL'))
     model_instance = BudgetedOpenAIChatModel(

@@ -7,13 +7,13 @@
 - 主线分支：`kimi`
 - 权威文档格式：PPTD v2
 - 生成模式：快速模式和专家模式
-- 主模型：配置在项目 `.env`，当前环境为 MiniMax-M3
+- 主模型：配置在项目 `.env`，当前环境为 MiniMax-M3.1-Flash
 - 视觉模型：MiniMax-M3.1-Flash，已通过真实图片识别校验
 - 本地 Qwen：已完成接口、结构化输出和快速模式冒烟，专家模式调试暂缓
 - 公司知识库：WeKnora 连接代码已存在，真实正文检索等待租户配置
 - Docker：BFF 和前端镜像已验证；Agent 镜像构建暂缓
 - W12 架构重构已完成，任务运行、缓存、审稿和导出共享统一服务
-- W08 性能优化、阶段观测、黄金输入和 p95 回退门禁已完成；长文档最终成功率仍受视觉模型输出稳定性影响
+- W08 性能与发布稳定性已完成；真实 5 页和 20 页任务均成功发布，阶段观测、黄金输入和 p95 回退门禁已落地
 
 ## 核心功能
 
@@ -25,6 +25,8 @@
 - 设计候选稿：预览、应用或放弃，不直接覆盖当前版本。
 - 版本历史、revision 冲突保护、任务取消、失败恢复和 SSE 进度。
 - 运行中草稿页标题预览；草稿不冒充已审稿交付物。
+- PPT 专家写出一页后立即生成真实浏览器预览、同步页面正文，并执行单页结构检查与 AI
+  视觉检视；问题直接回传到生成进度。
 - 知识库配图和可选的正文知识检索能力。
 
 ## 生成架构
@@ -169,6 +171,16 @@ pnpm perf:compare -- \
   --max-regression 0.2
 ```
 
+单页模板基准逐用例运行：
+
+```bash
+pnpm bench:single-page --case COV-01 --mode smoke
+```
+
+该命令会启动隔离的 Agent 服务，固定模板哈希、`MiniMax-M3.1-Flash` 和关闭
+渲染/审稿缓存的状态，并记录各阶段耗时、问题、`.page`、PNG 与汇总报告。
+完整用法见 [单页模板基准 runner](docs/single-page-benchmark-runner.md)。
+
 ## 部署
 
 详见 [部署说明](docs/deployment.md)。
@@ -185,6 +197,7 @@ docker compose -f deploy/docker/compose.yml up -d --build
 - [生成架构重构基线](docs/architecture-refactor.md)
 - [部署说明](docs/deployment.md)
 - [W08 性能验收](docs/w08-acceptance-2026-10-21.md)
+- [W08 最终验收](docs/w08-acceptance-2026-10-22.md)
 - [代码与目录清理清单](docs/cleanup-inventory.md)
 - [后端与 Agent](docs/backend-agent.md)
 - [前端工作台](docs/frontend-studio.md)
@@ -200,4 +213,6 @@ docker compose -f deploy/docker/compose.yml up -d --build
 - 离线部署尚未在真正断网服务器完成验收。
 - Agent Docker 镜像构建暂缓。
 - 完全隔离模式下的字体、素材和知识库仍需按部署环境准备。
-- 5 页和 20 页真实任务可能因视觉模型主观判断或返回格式不完整而被门禁拦截；系统会保留可编辑稿和检查点，不发布未审稿文件。
+- 视觉服务限流、超时或空响应会中止发布并保留检查点；恢复后可继续，不会伪造审稿成功。
+- 主观断行、间距、字号和配色提醒可能保留为非阻断事项，并逐项写入任务和导出报告。
+- 20 页无中断冷启动性能仍由 W08-T0 的固定环境长周期基准持续跟踪。

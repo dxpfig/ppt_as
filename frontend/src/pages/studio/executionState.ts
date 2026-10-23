@@ -43,6 +43,10 @@ function phaseOf(value: unknown): ExecutionPhase | null {
 }
 const count = (value: unknown) =>
 	typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+const percent = (value: unknown) =>
+	typeof value === 'number' && Number.isFinite(value)
+		? Math.max(0, Math.min(100, Math.round(value)))
+		: undefined;
 const validStatus = (status: unknown): status is ExecutionStatus =>
 	typeof status === 'string' &&
 	['pending', 'running', 'completed', 'failed', 'cancelled'].includes(status);
@@ -119,6 +123,9 @@ export function executionView(job: StudioJob) {
 			phase: phaseOf(event.phase) ?? undefined,
 			status: typeof event.status === 'string' ? event.status : undefined,
 			message: event.message ?? '',
+			detail:
+				typeof event.detail === 'string' && event.detail.trim() ? event.detail : undefined,
+			progress: percent(event.progress),
 		})) ??
 		[]
 	).filter((event) => typeof event.message === 'string' && event.message.trim());
@@ -129,7 +136,7 @@ export function executionView(job: StudioJob) {
 				.map((event) => event.pagePath!),
 		),
 	];
-	const events = allEvents.slice(-40);
+	const events = allEvents.slice(-100);
 	const visibleNodes =
 		job.kind === 'render'
 			? nodes.filter((node) => {

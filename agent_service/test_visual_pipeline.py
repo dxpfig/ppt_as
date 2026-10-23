@@ -59,8 +59,13 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.store.read('deck')['revision'],1)
             if calls:
                 self.assertEqual(kw['previous_review']['issues'], [self.issue()])
+                self.assertEqual(
+                    kw['only_pages'],
+                    ['pages/one.page'],
+                )
             else:
                 self.assertIsNone(kw['previous_review'])
+                self.assertIsNone(kw['only_pages'])
             calls.append(deepcopy(state))
             return self.report(state, [self.issue()] if len(calls)==1 else [])
         async def repair(request,state,issues,**kw):
@@ -74,6 +79,76 @@ class VisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['visualReview']['rounds'],2)
         self.assertEqual((self.folder/'presentation.pptx').read_text(),'Hello')
         self.assertEqual(json.loads((self.folder/'export-report.json').read_text())['visualReview']['status'],'passed')
+
+    async def test_remaining_style_warnings_publish_only_after_bounded_review(self):
+        calls = []
+
+        async def review(state, *args, **kwargs):
+            calls.append(deepcopy(state))
+            return self.report(state, [{**self.issue(), 'severity': 'warning'}])
+
+        async def repair(request, state, issues, **kwargs):
+            value = deepcopy(state)
+            value['pages'][0]['data']['elements'][0]['bounds'][3] += 2
+            return value
+
+        result = await self.run_pipeline(review, repair)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result['visualReview']['status'], 'passed')
+        self.assertEqual(result['visualReview']['issueCount'], 0)
+        self.assertEqual(result['visualReview']['warningCount'], 1)
+        self.assertEqual(
+            result['visualReview']['warnings'][0]['code'],
+            'unbalanced',
+        )
+        self.assertTrue(self.folder.exists())
+        self.assertEqual(self.store.read('deck')['revision'], 2)
+
+    async def test_warning_repair_failure_keeps_reviewed_source_and_warnings(self):
+        async def review(state, *args, **kwargs):
+            return self.report(
+                state,
+                [{**self.issue(), 'severity': 'warning'}],
+            )
+
+        async def repair(*args, **kwargs):
+            raise ValueError('No safe warning-only rearrangement')
+
+        result = await self.run_pipeline(review, repair)
+        self.assertEqual(result['visualReview']['status'], 'passed')
+        self.assertEqual(result['visualReview']['warningCount'], 1)
+        self.assertTrue(self.folder.exists())
+        self.assertEqual(self.store.read('deck')['revision'], 1)
+
+    async def test_blocking_error_repair_excludes_advisory_warnings(self):
+        received = []
+
+        async def review(state, *args, **kwargs):
+            return self.report(state, [
+                self.issue(),
+                {
+                    **self.issue(),
+                    'elementIds': ['subtitle'],
+                    'code': 'advisory',
+                    'severity': 'warning',
+                },
+            ]) if not received else self.report(state, [{
+                **self.issue(),
+                'elementIds': ['subtitle'],
+                'code': 'advisory',
+                'severity': 'warning',
+            }])
+
+        async def repair(request, state, issues, **kwargs):
+            received.append(issues)
+            value = deepcopy(state)
+            if any(issue.get('severity') == 'error' for issue in issues):
+                value['pages'][0]['data']['elements'][0]['bounds'][2] += 2
+            return value
+
+        result = await self.run_pipeline(review, repair)
+        self.assertEqual(received[0], [self.issue()])
+        self.assertEqual(result['visualReview']['warningCount'], 1)
 
     async def test_review_can_run_in_validation_without_publishing_an_export(self):
         from agent_service import visual_pipeline as pipeline

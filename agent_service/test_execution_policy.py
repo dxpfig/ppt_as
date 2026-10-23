@@ -37,6 +37,12 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(policy.visual_review, 'full')
         self.assertFalse(policy.export_after_review)
 
+    def test_expert_policy_uses_bounded_default_planning_budget(self):
+        with patch.dict(os.environ, {}, clear=True):
+            policy = expert_policy()
+        self.assertEqual(policy.planning_iterations, 6)
+        self.assertEqual(policy.planning_attempts, 2)
+
     def test_invalid_policy_value_fails_explicitly(self):
         with patch.dict(os.environ, {'PPT_KIMI_BATCH_PAGES': '99'}, clear=False):
             with self.assertRaises(ValueError):

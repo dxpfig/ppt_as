@@ -13,7 +13,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 
 import type { ExecutionPhase, StudioJob } from './api';
-import { executionStatusLabels, executionView } from './executionState';
+import { executionPhases, executionStatusLabels, executionView } from './executionState';
 import type { DisplayStatus } from './executionState';
 import { isRunningJob } from './pptdState';
 
@@ -27,6 +27,33 @@ function eventTime(timestamp?: number | string) {
 	if (timestamp === undefined) return '';
 	const date = new Date(typeof timestamp === 'number' ? timestamp * 1000 : timestamp);
 	return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('zh-CN');
+}
+function eventTimestamp(timestamp?: number | string) {
+	if (typeof timestamp === 'number') return Number.isFinite(timestamp) ? timestamp : null;
+	if (typeof timestamp !== 'string') return null;
+	const value = Date.parse(timestamp);
+	return Number.isNaN(value) ? null : value / 1000;
+}
+function intervalDuration(seconds: number) {
+	if (seconds < 1) return `${seconds.toFixed(2)} 秒`;
+	if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+	return duration(seconds);
+}
+const eventStatusLabels: Record<string, string> = {
+	pending: '待开始',
+	started: '执行中',
+	waiting: '等待中',
+	retrying: '处理中',
+	running: '进行中',
+	completed: '已完成',
+	failed: '失败',
+	cancelled: '已停止',
+};
+function eventTone(status?: string) {
+	if (status === 'completed') return 'completed';
+	if (status === 'failed' || status === 'cancelled') return 'failed';
+	if (status === 'started' || status === 'retrying') return 'running';
+	return 'waiting';
 }
 function StatusIcon({ status }: { status: DisplayStatus }) {
 	if (status === 'completed') return <Check size={13} />;
@@ -137,11 +164,24 @@ export function PptdJobStatus({
 		cancelled: '任务已停止',
 		interrupted: '任务已中断',
 	};
-	const recentEvents = execution.events.slice(-12).reverse();
-	const selectedEvents = execution.events
-		.filter((event) => event.phase === selected.id)
-		.slice(-8)
-		.reverse();
+	const timedEvents = execution.events.map((event, index) => {
+		const start = eventTimestamp(event.timestamp);
+		const next = eventTimestamp(execution.events[index + 1]?.timestamp);
+		const ongoing = index === execution.events.length - 1 && running && start !== null;
+		return {
+			event,
+			seconds:
+				start === null
+					? null
+					: ongoing
+						? Math.max(0, now - start)
+						: next !== null
+							? Math.max(0, next - start)
+							: null,
+			ongoing,
+		};
+	});
+	const recentEvents = timedEvents.slice(-100).reverse();
 	const summary =
 		selected.summary ||
 		(selected.id === execution.phase
@@ -332,6 +372,9 @@ export function PptdJobStatus({
 						<span>
 							{executionStatusLabels[selected.status]}
 							{selected.startedAt ? ` · ${eventTime(selected.startedAt)} 开始` : ''}
+							{typeof selected.progress === 'number'
+								? ` · 当前批次 ${selected.progress}%`
+								: ''}
 							{selected.status !== 'running' && selected.startedAt && selected.endedAt
 								? ` · 用时 ${duration(selected.endedAt - selected.startedAt)}`
 								: ''}
@@ -340,6 +383,18 @@ export function PptdJobStatus({
 								: ''}
 						</span>
 					</div>
+					{typeof selected.progress === 'number' && (
+						<div
+							className="pptd-execution-progress"
+							role="progressbar"
+							aria-label={`${selected.label}进度`}
+							aria-valuemin={0}
+							aria-valuemax={100}
+							aria-valuenow={selected.progress}
+						>
+							<span style={{ width: `${selected.progress}%` }} />
+						</div>
+					)}
 					<p className="pptd-execution-summary">{summary}</p>
 					{selected.id === 'visual' && execution.visual && (
 						<div className="pptd-visual-coverage" aria-live="polite">
@@ -417,38 +472,58 @@ export function PptdJobStatus({
 										: '此任务没有逐页记录，无法确认每一页的状态。'}
 							</p>
 						))}
-					{selected.id !== 'pages' && !!selectedEvents.length && (
-						<ol className="pptd-execution-stage-events">
-							{selectedEvents.map((event, index) => (
-								<li key={`${event.timestamp}-${index}`}>
-									<time>{eventTime(event.timestamp)}</time>
-									<span>{event.message}</span>
-								</li>
-							))}
-						</ol>
-					)}
-					<details className="pptd-execution-events">
-						<summary>
-							最近事件{recentEvents.length ? ` · ${recentEvents.length}` : ''}
-						</summary>
+					<section className="pptd-execution-actions" aria-label="具体执行记录">
+						<div className="pptd-execution-actions-heading">
+							<strong>具体执行记录</strong>
+							<span>{recentEvents.length} 条 · 最新在前</span>
+						</div>
 						{recentEvents.length ? (
 							<ol>
-								{recentEvents.map((event, index) => (
-									<li key={`${event.timestamp}-${index}`}>
-										<time>{eventTime(event.timestamp)}</time>
-										<span>
-											{event.message}
-											{event.attempt && event.attempt > 1
-												? `（第 ${event.attempt} 次尝试）`
-												: ''}
-										</span>
-									</li>
-								))}
+								{recentEvents.map(({ event, seconds, ongoing }, index) => {
+									const phase = executionPhases.find(
+										(item) => item.id === event.phase,
+									);
+									return (
+										<li
+											key={`${event.timestamp}-${index}`}
+											className={`is-${eventTone(event.status)}`}
+										>
+											<span
+												className="pptd-execution-action-dot"
+												aria-hidden="true"
+											/>
+											<div className="pptd-execution-action-body">
+												<div className="pptd-execution-action-meta">
+													<time>{eventTime(event.timestamp)}</time>
+													{phase && (
+														<span className="pptd-execution-action-phase">
+															{phase.label}
+														</span>
+													)}
+													<span className="pptd-execution-action-status">
+														{eventStatusLabels[event.status ?? ''] ??
+															'执行中'}
+													</span>
+													{seconds !== null && (
+														<span className="pptd-execution-action-duration">
+															{ongoing ? '已等待' : '间隔'}{' '}
+															{intervalDuration(seconds)}
+														</span>
+													)}
+												</div>
+												<p>{event.message}</p>
+												{event.detail && (
+													<code title={event.detail}>{event.detail}</code>
+												)}
+											</div>
+										</li>
+									);
+								})}
 							</ol>
 						) : (
-							<p>暂无公开执行事件。</p>
+							<p className="pptd-execution-unknown">暂无公开执行记录。</p>
 						)}
-					</details>
+					</section>
 				</div>
 			)}
 			{failed && issuesExpanded && issues.length > 0 && (

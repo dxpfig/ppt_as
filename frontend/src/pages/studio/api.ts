@@ -104,6 +104,8 @@ export type StudioJob = {
 	draftPreview?: {
 		status: 'draft';
 		completedPages: number;
+		reviewedPages?: number;
+		issuePages?: number;
 		totalPages: number;
 		latestIndex?: number;
 		pages: {
@@ -112,7 +114,41 @@ export type StudioJob = {
 			title: string;
 			status: 'ready' | 'pending' | 'rendering' | 'failed';
 			previewUrl?: string | null;
+			text?: string;
+			reviewStatus?:
+				| 'pending'
+				| 'reviewing'
+				| 'passed'
+				| 'issues'
+				| 'unavailable'
+				| 'unreviewed';
+			issueCount?: number;
+			issues?: {
+				location?: string;
+				elementId?: string;
+				severity?: string;
+				code?: string;
+				message?: string;
+			}[];
+			reviewModel?: string;
 			error?: string | null;
+		}[];
+	};
+	planPreview?: {
+		status: 'ready';
+		title: string;
+		subtitle?: string;
+		totalPages: number;
+		updatedAt?: number;
+		pages: {
+			path: string;
+			index: number;
+			title: string;
+			readerTask?: string;
+			content?: string;
+			visualPlan?: string;
+			sourceSections?: string[];
+			sourceSubsections?: string[];
 		}[];
 	};
 	diagnostic?: {
@@ -187,6 +223,7 @@ export type ExecutionEvent = {
 	phase?: string;
 	status?: string;
 	message: string;
+	detail?: string;
 	pagePath?: string;
 	pageIndex?: number;
 	elementId?: string;

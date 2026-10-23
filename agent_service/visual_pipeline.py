@@ -63,6 +63,21 @@ def _source_sha256(state):
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
+def _page_hashes(state):
+    return {
+        page['path']: hashlib.sha256(
+            json.dumps(
+                page.get('data'),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(',', ':'),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        for page in state.get('pages', [])
+    }
+
+
 def _semantic_sha256(state, contract_version=None):
     return _source_sha256(semantic_payload(state, contract_version=contract_version))
 
@@ -271,11 +286,17 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
                 )
                 if any(changed.values()):
                     autofit_attempts += 1
+                    changed_pages = sorted({
+                        issue.get('pagePath') or issue.get('page')
+                        for issue in issues
+                        if issue.get('pagePath') or issue.get('page')
+                    })
                     state = {
                         **state,
                         'pages': pages,
                         'revision': base_revision + 1,
                     }
+                    visual['reviewChangedPages'] = changed_pages
                     for issue in issues:
                         page_path = issue.get('pagePath')
                         if page_path in page_queue.states:
@@ -311,7 +332,9 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             report = await review_deck(deepcopy(state), candidate_folder, scenario=request.scenario,
                                        usage=request.usage, on_event=review_event, previous_review=previous_review,
                                        cache_dir=store.root / 'review-cache',
-                                       concurrency=quick_policy().visual_review_concurrency)
+                                       concurrency=quick_policy().visual_review_concurrency,
+                                       layout_measurements=layout_measurements,
+                                       only_pages=visual.get('reviewChangedPages'))
             paths = state['document']['pages']
             if (report.get('status') not in ('passed', 'issues') or
                     report.get('coveredPages') != paths or not isinstance(report.get('issues'), list)):
@@ -332,13 +355,31 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
                 page_queue.mark(page_path, PageWorkStatus.APPROVED)
             persist()
             break
+        blocking_issues = [
+            issue for issue in issues
+            if issue.get('severity', 'error') != 'warning'
+        ]
+        repair_issues = blocking_issues or issues
         fingerprint = _fingerprint(issues)
-        if repair_coordinator.stalled(visual['fingerprints'], issues):
+        if (
+            repair_coordinator.stalled(visual['fingerprints'], issues)
+            or visual['repairs'] >= budget
+        ):
+            if not blocking_issues:
+                for page_path in state['document']['pages']:
+                    page_queue.mark(page_path, PageWorkStatus.APPROVED)
+                persist()
+                emit(
+                    'completed',
+                    f'AI 视觉审稿已完成；保留 {len(issues)} 项非阻断样式提醒',
+                    covered=len(state['pages']),
+                    total=len(state['pages']),
+                    warningCount=len(issues),
+                )
+                break
             raise VisualReviewExhausted(issues)
-        if visual['repairs'] >= budget:
-            raise VisualReviewExhausted(issues)
-        emit('retrying', f'AI 发现 {len(issues)} 项问题，正在自动修复并准备复审', scope='repair',
-             attempt=attempt, issueCount=len(issues), total=len(state['pages']))
+        emit('retrying', f'AI 发现 {len(repair_issues)} 项需处理问题，正在自动修复并准备复审', scope='repair',
+             attempt=attempt, issueCount=len(repair_issues), total=len(state['pages']))
         # Charge the attempt before calling the model, including interrupted calls.
         visual['repairs'] += 1
         visual['fingerprints'].append(fingerprint)
@@ -353,29 +394,65 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
             result = await pptd_exports.export_document(CandidateSource(private / 'source', checked), project_id, output, progress)
             verified_candidate = {'hash': _source_sha256(checked), 'folder': output, 'metadata': result}
 
-        missing = [issue for issue in issues if needs_completion(issue)]
-        if missing:
+        before_pages = _page_hashes(state)
+        missing = [issue for issue in repair_issues if needs_completion(issue)]
+        try:
+            if missing:
             # Complete source-bound content before style repair. The next loop
             # renders and reviews it with the same unchanged round budget.
-            repaired, receipt = await complete_content(request, deepcopy(state), missing, completion_plan,
-                on_event=review_event, on_audit=audit, rendered_pages=rendered_pages)
-            receipts = [*visual.get('completionReceipts', []), receipt]
-            next_semantics = expected_semantics(receipts)
-            _assert_semantics(repaired, next_semantics)
-            visual['completionReceipts'] = receipts
-            accepted_semantics = next_semantics
-        else:
-            repaired = await repair_deck_batched(
-                request, deepcopy(state), issues, on_event=review_event,
-                rendered_pages=rendered_pages, layout_measurements=layout_measurements,
-                validate_candidate=validate_candidate, on_audit=audit,
+                repaired, receipt = await complete_content(request, deepcopy(state), missing, completion_plan,
+                    on_event=review_event, on_audit=audit, rendered_pages=rendered_pages)
+                receipts = [*visual.get('completionReceipts', []), receipt]
+                next_semantics = expected_semantics(receipts)
+                _assert_semantics(repaired, next_semantics)
+                visual['completionReceipts'] = receipts
+                accepted_semantics = next_semantics
+            else:
+                repaired = await repair_deck_batched(
+                    request, deepcopy(state), repair_issues, on_event=review_event,
+                    rendered_pages=rendered_pages, layout_measurements=layout_measurements,
+                    validate_candidate=validate_candidate, on_audit=audit,
+                )
+        except Exception:
+            if blocking_issues:
+                raise
+            # Warnings are advisory once bounded repair cannot find a safe
+            # arrangement. The reviewed source remains publishable with every
+            # warning and evidence preserved.
+            for page_path in state['document']['pages']:
+                page_queue.mark(page_path, PageWorkStatus.APPROVED)
+            persist()
+            emit(
+                'completed',
+                f'AI 视觉审稿已完成；保留 {len(issues)} 项非阻断样式提醒',
+                covered=len(state['pages']),
+                total=len(state['pages']),
+                warningCount=len(issues),
             )
+            break
         _assert_semantics(repaired, accepted_semantics)
         DocumentStore._validate(repaired['document'], repaired['pages'])
         if repaired['document'] == state['document'] and repaired['pages'] == state['pages']:
-            raise VisualReviewExhausted(issues)
+            if blocking_issues:
+                raise VisualReviewExhausted(issues)
+            for page_path in state['document']['pages']:
+                page_queue.mark(page_path, PageWorkStatus.APPROVED)
+            persist()
+            emit(
+                'completed',
+                f'AI 视觉审稿已完成；保留 {len(issues)} 项非阻断样式提醒',
+                covered=len(state['pages']),
+                total=len(state['pages']),
+                warningCount=len(issues),
+            )
+            break
         state = {**state, 'document': repaired['document'], 'pages': repaired['pages'], 'revision': base_revision + 1}
-        for page_path in {issue.get('pagePath') or issue.get('page') for issue in issues}:
+        after_pages = _page_hashes(state)
+        visual['reviewChangedPages'] = [
+            path for path in state['document']['pages']
+            if before_pages.get(path) != after_pages.get(path)
+        ]
+        for page_path in {issue.get('pagePath') or issue.get('page') for issue in repair_issues}:
             if page_path in page_queue.states:
                 page_queue.mark(page_path, PageWorkStatus.REPAIRED)
         persist()
@@ -385,10 +462,21 @@ async def export_reviewed(store, project_id, folder, request, progress=None, *,
     if store.read(project_id)['revision'] != base_revision:
         raise RevisionConflict('视觉审稿期间文档已变化，旧文件未发布。')
     _assert_semantics(state, accepted_semantics)
+    remaining_warnings = [
+        issue for issue in visual.get('issues', [])
+        if issue.get('severity') != 'error'
+    ]
     summary = {'status': 'passed', 'rounds': len(visual['reports']),
-               'reviewedPages': len(state['pages']), 'totalPages': len(state['pages']), 'issueCount': 0,
+               'reviewedPages': len(state['pages']), 'totalPages': len(state['pages']),
+               'issueCount': 0, 'warningCount': len(remaining_warnings),
+               'warnings': remaining_warnings,
                'repairedIssueCount': sum(len(r.get('issues', [])) for r in visual['reports']),
-               'summary': '整稿与全部单页已通过 AI 视觉复审', 'model': report.get('model', '')}
+               'summary': (
+                   f'整稿与全部单页已通过 AI 视觉复审，保留 {len(remaining_warnings)} 项非阻断样式提醒'
+                   if remaining_warnings
+                   else '整稿与全部单页已通过 AI 视觉复审'
+               ),
+               'model': report.get('model', '')}
     for page_path in state['document']['pages']:
         page_queue.mark(page_path, PageWorkStatus.APPROVED)
     metadata['visualReview'] = summary

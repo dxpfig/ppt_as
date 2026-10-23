@@ -240,6 +240,7 @@ async def run_pptd_job(
                     )
                     if migrated:
                         current_revision = migrated['revision']
+                        committed = current_revision
                         checkpoint = {
                             **checkpoint,
                             '_committedRevision': current_revision,
@@ -606,10 +607,20 @@ async def run_pptd_job(
                 )
             base = f'{prefix}/artifacts/{identifier}'
             generation_meta = result.get('generationMeta', {})
+            visual_review = metadata.get('visualReview')
+            visual_warnings = [
+                (
+                    f"{item.get('pagePath', 'document')}: "
+                    f"{item.get('message', '视觉样式提醒')}"
+                )
+                for item in (visual_review or {}).get('warnings', [])
+                if isinstance(item, dict)
+            ]
             warnings = [
                 *metadata.get('warnings', []),
                 *generation_meta.get('research', {}).get('warnings', []),
                 *generation_meta.get('assetWarnings', []),
+                *visual_warnings,
             ]
             artifact = ArtifactRecord(
                 id=identifier,
@@ -625,7 +636,6 @@ async def run_pptd_job(
                 warnings=list(dict.fromkeys(warnings)),
             ).model_dump()
             meta = result.get('generationMeta', {})
-            visual_review = metadata.get('visualReview')
             meta['validation'] = {
                 **meta.get('validation', {}),
                 'status': 'render-passed',
@@ -646,10 +656,19 @@ async def run_pptd_job(
                 contentGenerated=True,
                 updatedAt=time.time(),
             )
+            visual_warning_count = (
+                int(visual_review.get('warningCount') or 0)
+                if visual_review
+                else 0
+            )
             reply = (
                 f"演示文件已生成，共 {metadata['pageCount']} 页；"
-                '整稿及全部单页已通过 AI 视觉审查，预览、可编辑 PPTX、'
-                'PDF 和 PPTD 源文件已就绪。'
+                + (
+                    f'视觉审稿完成并保留 {visual_warning_count} 项非阻断样式提醒，'
+                    if visual_warning_count
+                    else '整稿及全部单页已通过 AI 视觉审查，'
+                )
+                + '预览、可编辑 PPTX、PDF 和 PPTD 源文件已就绪。'
                 if visual_review
                 else (
                     f"演示文件已生成，共 {metadata['pageCount']} 页；"

@@ -1,0 +1,193 @@
+{
+	"version": 1,
+	"status": "mandatory",
+	"approvedAt": "2026-10-23",
+	"specification": "docs/single-page-template-test-cases.md",
+	"template": {
+		"id": "d962b90ffef240d0be9dde7fee39750b",
+		"path": "runtime/studio/templates/d962b90ffef240d0be9dde7fee39750b/template.pptx",
+		"sha256": "e197ff456d0678dd15d022eee1814869db469965606422b02c5d96397b792113",
+		"pageCount": 19,
+		"size": [960, 540]
+	},
+	"execution": {
+		"kind": "kimi-slides",
+		"generationModel": "MiniMax-M3.1-Flash",
+		"visionModel": "MiniMax-M3.1-Flash",
+		"pageCount": 1,
+		"scenario": "management-report",
+		"allowResearch": false,
+		"imageSource": "none",
+		"repeats": 3,
+		"smokeRepeats": 1,
+		"disableRenderCache": true,
+		"disableReviewCache": true,
+		"timeBasis": "page generation request start to final single-page gate result; planning and template import are recorded separately",
+		"resultPath": "runtime/benchmarks/single-page-template"
+	},
+	"qualityGate": {
+		"everyRunMustPass": true,
+		"maxRepairRounds": 0,
+		"diagnosticRepairRoundsAllowed": 1,
+		"requiredIssueCount": 0,
+		"requiredReviewStatus": "passed",
+		"requiredPageCount": 1,
+		"requiredTemplateApplied": true
+	},
+	"commonBudgetsMs": {
+		"cachedTemplateLoad": 10000,
+		"planning": 60000,
+		"pageModel": 75000,
+		"compileAndStructureValidation": 2000,
+		"hostTemplateTransform": 2000,
+		"browserRenderAndLayout": 12000,
+		"singleVisionReview": 75000,
+		"diagnosticRepairRound": 90000
+	},
+	"cases": [
+		{
+			"id": "COV-01",
+			"category": "cover",
+			"name": "标准封面",
+			"templateRole": "cover",
+			"targetElements": 7,
+			"hardElementLimit": 10,
+			"firstPassTargetMs": 60000,
+			"firstPassHardMs": 100000,
+			"absoluteTimeoutMs": 150000
+		},
+		{
+			"id": "COV-02",
+			"category": "cover",
+			"name": "长标题封面",
+			"templateRole": "cover",
+			"targetElements": 8,
+			"hardElementLimit": 10,
+			"firstPassTargetMs": 70000,
+			"firstPassHardMs": 110000,
+			"absoluteTimeoutMs": 165000
+		},
+		{
+			"id": "THX-01",
+			"category": "closing",
+			"name": "感谢观看",
+			"templateRole": "closing",
+			"targetElements": 4,
+			"hardElementLimit": 6,
+			"firstPassTargetMs": 45000,
+			"firstPassHardMs": 90000,
+			"absoluteTimeoutMs": 120000
+		},
+		{
+			"id": "THX-02",
+			"category": "closing",
+			"name": "请领导讲话",
+			"templateRole": "closing",
+			"targetElements": 4,
+			"hardElementLimit": 6,
+			"firstPassTargetMs": 45000,
+			"firstPassHardMs": 90000,
+			"absoluteTimeoutMs": 120000
+		},
+		{
+			"id": "AGD-01",
+			"category": "agenda",
+			"name": "五章节目录",
+			"templateRole": "body",
+			"targetElements": 15,
+			"hardElementLimit": 18,
+			"firstPassTargetMs": 70000,
+			"firstPassHardMs": 110000,
+			"absoluteTimeoutMs": 150000
+		},
+		{
+			"id": "AGD-02",
+			"category": "agenda",
+			"name": "六章节长目录",
+			"templateRole": "body",
+			"targetElements": 17,
+			"hardElementLimit": 18,
+			"firstPassTargetMs": 80000,
+			"firstPassHardMs": 120000,
+			"absoluteTimeoutMs": 165000
+		},
+		{
+			"id": "SIM-01",
+			"category": "simple-structure",
+			"name": "三张等宽目标卡",
+			"templateRole": "body",
+			"targetElements": 10,
+			"hardElementLimit": 14,
+			"firstPassTargetMs": 70000,
+			"firstPassHardMs": 110000,
+			"absoluteTimeoutMs": 150000
+		},
+		{
+			"id": "SIM-02",
+			"category": "simple-structure",
+			"name": "双栏范围对比",
+			"templateRole": "body",
+			"targetElements": 12,
+			"hardElementLimit": 14,
+			"firstPassTargetMs": 80000,
+			"firstPassHardMs": 120000,
+			"absoluteTimeoutMs": 165000
+		},
+		{
+			"id": "CMP-01",
+			"category": "complex-structure",
+			"name": "KPI 与 2x2 矩阵",
+			"templateRole": "body",
+			"targetElements": 20,
+			"hardElementLimit": 24,
+			"firstPassTargetMs": 95000,
+			"firstPassHardMs": 140000,
+			"absoluteTimeoutMs": 210000
+		},
+		{
+			"id": "CMP-02",
+			"category": "complex-structure",
+			"name": "表格、流程与请示框",
+			"templateRole": "body",
+			"targetElements": 14,
+			"hardElementLimit": 20,
+			"firstPassTargetMs": 100000,
+			"firstPassHardMs": 145000,
+			"absoluteTimeoutMs": 210000
+		},
+		{
+			"id": "REG-P02",
+			"category": "complex-structure",
+			"name": "第2页高密度现状与对照回归",
+			"templateRole": "body",
+			"includeInFullSuite": false,
+			"suiteRole": "diagnostic-regression",
+			"source": {
+				"jobId": "889e7f585f5c4242bf2c77c9cb8caf96",
+				"projectId": "6cb02c75-0bf5-45b5-95be-4a53227caccc",
+				"pagePath": "pages/02-industry-status.page",
+				"failure": "PageGateFailed after 3 repair rounds",
+				"firstGateIssueCount": 9,
+				"finalIssueCount": 1
+			},
+			"deckRequirements": {
+				"mustGenerateAgendaPage": true,
+				"agendaPagePosition": 2,
+				"agendaTitle": "目录",
+				"agendaTemplateRole": "body",
+				"agendaItems": [
+					"军用计算业务发展现状与趋势分析",
+					"未来军用计算业务发展需求",
+					"集团军用计算业务发展基础与现状",
+					"集团军用计算业务高质量发展规划",
+					"全方位保障措施"
+				]
+			},
+			"targetElements": 24,
+			"hardElementLimit": 24,
+			"firstPassTargetMs": 110000,
+			"firstPassHardMs": 150000,
+			"absoluteTimeoutMs": 240000
+		}
+	]
+}

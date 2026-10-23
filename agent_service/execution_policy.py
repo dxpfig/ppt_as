@@ -99,14 +99,14 @@ def expert_policy() -> ExecutionPolicy:
     return ExecutionPolicy(
         mode='expert',
         page_concurrency=1,
-        page_batch_size=_integer('PPT_KIMI_BATCH_PAGES', 2, 1, 5),
+        page_batch_size=_integer('PPT_KIMI_BATCH_PAGES', 1, 1, 5),
         max_batch_pages=5,
         max_iterations=max_iterations,
         planning_iterations=min(
             max_iterations,
-            _integer('PPT_KIMI_PLAN_ITERS', 24, 4, 200),
+            _integer('PPT_KIMI_PLAN_ITERS', 6, 4, 200),
         ),
-        planning_attempts=_integer('PPT_KIMI_PLAN_ATTEMPTS', 3, 1, 10),
+        planning_attempts=_integer('PPT_KIMI_PLAN_ATTEMPTS', 2, 1, 10),
         repair_rounds=_integer('PPT_KIMI_REPAIR_ROUNDS', 2, 0, 10),
         layout_page_attempts=_integer_with_fallback(
             'PPT_KIMI_LAYOUT_PAGE_ATTEMPTS',

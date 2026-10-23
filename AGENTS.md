@@ -8,13 +8,13 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 技术栈
 
-| 层 | 选型 |
-|---|---|
-| 包管理 | pnpm(workspace) |
-| 前端 | React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui + TanStack Query + i18next + streamdown |
-| 后端(BFF) | Express + TypeScript(`ts-node` + `nodemon`) |
-| Agent 框架 | `@agentscope-ai/agentscope`(Python 侧,见 AgentScope 主仓库) |
-| 代码规范 | ESLint(React + 类型检查)+ Prettier + Husky + lint-staged |
+| 层         | 选型                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------------- |
+| 包管理     | pnpm(workspace)                                                                                |
+| 前端       | React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui + TanStack Query + i18next + streamdown |
+| 后端(BFF)  | Express + TypeScript(`ts-node` + `nodemon`)                                                    |
+| Agent 框架 | `@agentscope-ai/agentscope`(Python 侧,见 AgentScope 主仓库)                                    |
+| 代码规范   | ESLint(React + 类型检查)+ Prettier + Husky + lint-staged                                       |
 
 ## 项目结构
 
@@ -61,6 +61,33 @@ pnpm build:backend
 pnpm format                 # prettier + eslint --fix
 pnpm format:check
 ```
+
+## 单页模板基准门禁(强制)
+
+页面生成相关改动必须通过固定的 10 个用户模板单页基准用例。基线定义：
+
+- 用例说明与时间预算：`docs/single-page-template-test-cases.md`
+- 机器可读用例清单：`benchmarks/single-page-template/cases.v1.json`
+- 优化目标与实施顺序：`docs/single-page-template-optimization-goals.md`
+- 固定用户模板：`d962b90ffef240d0be9dde7fee39750b`
+- 模板 SHA-256：`e197ff456d0678dd15d022eee1814869db469965606422b02c5d96397b792113`
+
+触发条件：
+
+- 修改 `agent_service/layout_engine.py`
+- 修改页面生成提示词、页面 Agent 或页面门禁
+- 修改 `agent_service/kimi_template.py` 或模板处理
+- 修改单页渲染、AI 视觉检视或视觉修复
+- 修改 PPTD 页面结构、元素统计或导出相关逻辑
+
+执行要求：
+
+- 日常开发：10 个用例各运行 1 次 smoke。
+- 合并或发布前：10 个用例各运行 3 次，记录中位数和硬上限。
+- 基准门禁要求每个用例首轮直接通过；发生修复的运行只能用于诊断，不能记为基准通过。
+- 任意用例失败、超时或相对上一基线中位耗时回退超过 10%，不得宣称迭代通过。
+- 基线结果写入 `runtime/benchmarks/single-page-template/`，不得覆盖历史结果。
+- 不得删除或替换固定模板、用例 ID、元素预算和时间预算来规避失败；用例变更必须单独评审。
 
 ## 运行时目录(不要提交)
 

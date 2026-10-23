@@ -58,6 +58,68 @@ class PptdCompatTests(unittest.TestCase):
         self.assertIn('font-family:微软雅黑', pages[0]["data"]["elements"][0]["content"]["text"])
         self.assertNotIn('font-family:Arial', pages[0]["data"]["elements"][0]["content"]["text"])
 
+    def test_common_source_han_serif_aliases_resolve_to_installed_family(self):
+        pages = [{"data": {"elements": [
+            {
+                "elementId": "title",
+                "elementType": "text",
+                "content": {
+                    "fontFamily": "思源宋体 CN VF",
+                    "text": "管理汇报",
+                },
+            },
+            {
+                "elementId": "label",
+                "elementType": "text",
+                "content": {
+                    "fontFamily": "Noto Serif SC",
+                    "text": "Management",
+                },
+            },
+            {
+                "elementId": "bad-model-font",
+                "elementType": "text",
+                "content": {
+                    "fontFamily": "Liter",
+                    "text": "中文与 English",
+                },
+            },
+        ]}}]
+        changed = normalize_pages(pages)
+        self.assertEqual(changed["font"], 3)
+        self.assertEqual(
+            pages[0]["data"]["elements"][0]["content"]["fontFamily"],
+            "Noto Serif CJK SC",
+        )
+        self.assertEqual(
+            pages[0]["data"]["elements"][1]["content"]["fontFamily"],
+            "Noto Serif CJK SC",
+        )
+        self.assertEqual(
+            pages[0]["data"]["elements"][2]["content"]["fontFamily"],
+            "MiSans",
+        )
+
+    def test_internal_pending_fields_are_removed_before_native_export(self):
+        pages = [{
+            'data': {
+                '_pendingElements': [{'elementId': 'future'}],
+                'elements': [{
+                    'elementId': 'title',
+                    'elementType': 'text',
+                    '_pendingLayout': [1, 2, 3, 4],
+                    'content': {'text': '标题'},
+                }],
+            }
+        }]
+        changed = normalize_pages(pages)
+        self.assertEqual(changed['native'], 2)
+        self.assertNotIn('_pendingElements', pages[0]['data'])
+        self.assertNotIn(
+            '_pendingLayout',
+            pages[0]['data']['elements'][0],
+        )
+
     def test_only_referenced_custom_fonts_are_kept(self):
         document = {
             'customFonts': [
@@ -80,6 +142,20 @@ class PptdCompatTests(unittest.TestCase):
         ]
         self.assertEqual(normalize_custom_fonts(document, pages), 1)
         self.assertEqual([item['family'] for item in document['customFonts']], ['MiSans'])
+
+    def test_theme_font_aliases_are_canonicalized_with_document_cleanup(self):
+        document = {
+            'theme': {
+                'textStyles': {
+                    'quote': {'fontFamily': '思源宋体'},
+                }
+            }
+        }
+        self.assertEqual(normalize_custom_fonts(document, []), 1)
+        self.assertEqual(
+            document['theme']['textStyles']['quote']['fontFamily'],
+            'Noto Serif CJK SC',
+        )
 
     def test_unsupported_line_arrow_is_removed_without_touching_geometry(self):
         pages = [{"data": {"elements": [{

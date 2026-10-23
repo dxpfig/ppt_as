@@ -93,6 +93,14 @@ export type VisualReviewSummary = {
 	reviewedPages: number;
 	totalPages: number;
 	issueCount: number;
+	warningCount?: number;
+	warnings?: {
+		pagePath?: string;
+		severity?: string;
+		code?: string;
+		message?: string;
+		evidence?: string;
+	}[];
 	repairedIssueCount?: number;
 	summary?: string;
 	model?: string;

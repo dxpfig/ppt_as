@@ -44,6 +44,50 @@ test('explicit stages stay authoritative and percentages never invent completed 
 	assert.equal(view.source, 'execution');
 });
 
+test('repair progress is preserved and clamped for detail display', () => {
+	const view = executionView(
+		job({
+			execution: {
+				phase: 'validate',
+				nodes: [
+					{
+						id: 'validate',
+						label: '检查修复',
+						status: 'running',
+						progress: 46,
+					},
+				],
+				pages: [],
+				events: [
+					{
+						phase: 'validate',
+						status: 'waiting',
+						message: '正在等待模型返回下一步',
+						progress: 46,
+					},
+				],
+			},
+		}),
+	);
+	assert.equal(view.nodes.find((node) => node.id === 'validate').progress, 46);
+	assert.equal(view.events.at(-1).progress, 46);
+
+	const legacy = executionView(
+		job({
+			execution: undefined,
+			events: [
+				{
+					phase: 'validate',
+					status: 'waiting',
+					message: '修复进度',
+					progress: 180,
+				},
+			],
+		}),
+	);
+	assert.equal(legacy.events.at(-1).progress, 100);
+});
+
 test('legacy checkpoint exposes only its known current phase and saved count', () => {
 	const view = executionView(
 		job({
@@ -110,7 +154,7 @@ test('latest page snapshot wins across retries and events remain bounded', () =>
 	assert.equal(view.pages[1].attempt, 2);
 	assert.equal(view.saved, 1);
 	assert.equal(view.total, null);
-	assert.equal(view.events.length, 40);
+	assert.equal(view.events.length, 60);
 	assert.equal(view.events.at(-1).message, '事件59');
 });
 
@@ -150,7 +194,7 @@ test('bounded event display preserves known page repair associations', () => {
 						status: 'completed',
 						message: '页面修复完成',
 					},
-					...Array.from({ length: 60 }, (_, index) => ({
+					...Array.from({ length: 140 }, (_, index) => ({
 						timestamp: index + 2,
 						phase: 'export',
 						status: 'waiting',
@@ -160,7 +204,7 @@ test('bounded event display preserves known page repair associations', () => {
 			},
 		}),
 	);
-	assert.equal(view.events.length, 40);
+	assert.equal(view.events.length, 100);
 	assert.deepEqual(view.repairPaths, ['pages/repaired.page']);
 });
 

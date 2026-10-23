@@ -17,6 +17,33 @@ def bundle():
 
 
 class ExecutionStateTests(unittest.TestCase):
+    def test_repair_progress_is_bounded_and_exposed_on_node_and_event(self):
+        from agent_service.job_execution import record_event
+
+        state = record_event(
+            None,
+            {
+                'phase': 'validate',
+                'status': 'waiting',
+                'message': '正在等待模型返回下一步',
+                'progress': 46,
+            },
+        )
+        node = next(node for node in state['nodes'] if node['id'] == 'validate')
+        self.assertEqual(node['progress'], 46)
+        self.assertEqual(state['events'][-1]['progress'], 46)
+
+        state = record_event(
+            state,
+            {
+                'phase': 'validate',
+                'status': 'waiting',
+                'message': '进度上限',
+                'progress': 180,
+            },
+        )
+        self.assertEqual(state['events'][-1]['progress'], 100)
+
     def test_export_waits_while_failed_layout_is_being_repaired(self):
         from agent_service.job_execution import record_event
         state = record_event(None, {'phase': 'export', 'status': 'started', 'message': '正在导出'})
@@ -116,7 +143,15 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
             'pages: [pages/one.page, pages/two.page, pages/three.page]\n',
             encoding='utf-8',
         )
-        (entry.parent / 'pages' / 'one.page').write_text('elements: []\n', encoding='utf-8')
+        (entry.parent / 'pages' / 'one.page').write_text(
+            'elements:\n'
+            '- elementId: title\n'
+            '  elementType: text\n'
+            '  bounds: [40, 40, 800, 60]\n'
+            '  content:\n'
+            '    text: 已完成页面\n',
+            encoding='utf-8',
+        )
 
         response = await self.client.post(f'jobs/{identifier}/cancel')
         self.assertEqual(response.status_code, 200, response.text)
@@ -472,6 +507,62 @@ class PptdJobsTests(unittest.IsolatedAsyncioTestCase):
         state = (await self.client.get('projects/demo/pptd')).json()
         self.assertEqual(state['revision'], 2)
         self.assertEqual(state['pages'][0]['data']['elements'][0]['content']['text'], '保存原始内容')
+
+    async def test_resume_after_font_migration_uses_new_committed_revision(self):
+        value = bundle()
+        value['document']['customFonts'] = [
+            {
+                'family': '思源宋体',
+                'src': 'https://example.test/source-serif.ttf',
+            }
+        ]
+        service.document_store().commit(
+            'demo',
+            value['document'],
+            value['pages'],
+            'initial',
+        )
+        service.save(service.project_path('demo'), {
+            **self.project,
+            'phase': 'outline',
+            'activeJobId': None,
+        })
+        old = 'font-retry'
+        service.save(service.job_path(old), {
+            'id': old,
+            'projectId': 'demo',
+            'kind': 'render',
+            'status': 'failed',
+            'baseRevision': 1,
+        })
+        service.save(self.root / 'requests' / f'{old}.json', {
+            'kind': 'render',
+            'project': self.project,
+        })
+        service.save(self.root / 'checkpoints' / f'{old}.json', {
+            'stage': 'export',
+            '_committedRevision': 1,
+            'externalIssues': [
+                {
+                    'page': 'pages/a.page',
+                    'location': 'pages/a.page',
+                    'code': 'font-unresolved',
+                    'message': 'unresolved font',
+                }
+            ],
+        })
+        with patch.object(
+            service.pptd_exports,
+            'export_document',
+            side_effect=self.export,
+        ):
+            response = await self.client.post(f'jobs/{old}/resume')
+            self.assertEqual(response.status_code, 202, response.text)
+            resumed = await self.wait(response.json()['id'])
+        self.assertEqual(resumed['status'], 'completed', resumed)
+        state = service.document_store().read('demo')
+        self.assertEqual(state['revision'], 2)
+        self.assertNotIn('customFonts', state['document'])
 
     async def test_external_render_error_repairs_and_exports_new_revision(self):
         issue = {'page': 'pages/a.page', 'location': 'pages/a.page#title', 'elementId': 'title', 'code': 'content-missing', 'severity': 'error', 'message': '不支持的富文本导致正文未完整渲染'}

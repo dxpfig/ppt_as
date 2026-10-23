@@ -152,10 +152,13 @@ class OutputMode(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(model.client.close)
         return model
 
-    async def test_official_m3_auto_controls_thinking_and_streams(self):
-        model=await self.model('https://api.minimaxi.com/v1')
-        self.assertEqual(model.extra_body,{'thinking':{'type':'disabled'},'reasoning_split':True})
-        self.assertTrue(model.stream)
+    async def test_auto_mode_leaves_provider_reasoning_defaults_untouched(self):
+        model=await self.model(
+            'https://api.minimaxi.com/v1',
+            settings={'PPT_LLM_REASONING_MODE':''},
+        )
+        self.assertIsNone(model.extra_body)
+        self.assertFalse(model.stream)
         self.assertEqual(model.max_retries,0)
 
     async def test_direct_profile_reaches_actual_openai_http_request_body(self):
@@ -167,7 +170,11 @@ class OutputMode(unittest.IsolatedAsyncioTestCase):
             packet={"id":"test-stream","object":"chat.completion.chunk","model":"MiniMax-M3","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":"{\"data\":{\"elements\":[]}}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13}}
             content="data: "+json.dumps(packet)+"\n\ndata: [DONE]\n\n"
             return httpx.Response(200,headers={"content-type":"text/event-stream"},text=content)
-        model=await self.model('https://api.minimaxi.com/v1')
+        model=await self.model(
+            'https://api.minimaxi.com/v1',
+            'direct',
+            settings={'PPT_LLM_REASONING_MODE':''},
+        )
         await model.client.close()
         model.client=AsyncOpenAI(api_key='unit-test-only',base_url='https://api.minimaxi.com/v1',http_client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
         self.addAsyncCleanup(model.client.close)
@@ -182,15 +189,34 @@ class OutputMode(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0]['model'],'MiniMax-M3')
 
     async def test_explicit_adaptive_and_other_provider_are_preserved(self):
-        model=await self.model('https://api.minimax.io/v1','adaptive')
+        model=await self.model(
+            'https://api.minimax.io/v1',
+            'adaptive',
+            settings={'PPT_LLM_REASONING_MODE':''},
+        )
         self.assertEqual(model.extra_body,{'thinking':{'type':'adaptive'},'reasoning_split':True})
-        other=await self.model('https://gateway.example/v1')
+        other=await self.model(
+            'https://gateway.example/v1',
+            settings={'PPT_LLM_REASONING_MODE':''},
+        )
         self.assertIsNone(other.extra_body)
-        other_model=await self.model('https://api.minimax.io/v1',model_name='another-model')
+        other_model=await self.model(
+            'https://api.minimax.io/v1',
+            model_name='another-model',
+            settings={'PPT_LLM_REASONING_MODE':''},
+        )
         self.assertIsNone(other_model.extra_body)
 
-    async def test_unverified_direct_mode_is_rejected(self):
-        with self.assertRaises(ValueError): await self.model('https://gateway.example/v1','direct')
+    async def test_explicit_direct_mode_is_provider_neutral(self):
+        model = await self.model(
+            'https://gateway.example/v1',
+            'direct',
+            settings={'PPT_LLM_REASONING_MODE': ''},
+        )
+        self.assertEqual(
+            model.extra_body,
+            {'thinking': {'type': 'disabled'}, 'reasoning_split': True},
+        )
 
     async def test_local_model_profile_reaches_http_and_returns_complete_json(self):
         import httpx
@@ -304,6 +330,15 @@ class VisualExecutionEvents(unittest.TestCase):
         self.assertNotIn('检查点', message)
         resumable, _, _ = diagnose_error(error, 'validate')
         self.assertIn('已保留检查点', resumable)
+
+    def test_planning_deadline_is_not_reported_as_provider_timeout(self):
+        from agent_service.job_execution import diagnose_error
+        from agent_service.kimi_agent import PlanningDeadlineError
+        error = PlanningDeadlineError('内容策划超过 360 秒，已停止继续请求模型')
+        message, diagnostic, _ = diagnose_error(error, 'plan', resumable=False)
+        self.assertEqual(diagnostic['code'], 'plan_timeout')
+        self.assertIn('内容策划超过 360 秒', message)
+        self.assertNotIn('模型请求超时', message)
 
     def test_model_failure_during_content_recovery_takes_precedence_over_missing_body(self):
         from agent_service.job_execution import diagnose_error

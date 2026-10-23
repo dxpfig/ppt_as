@@ -214,12 +214,12 @@ def _parse_json_response(text, *, reasoning_prefix=False):
     if not isinstance(text,str) or not text.strip(): raise ValueError("Model returned no JSON text")
     text=text.strip()
     if reasoning_prefix and text.startswith("<think>"):
-        # MiniMax's OpenAI-compatible endpoint may put a tagged reasoning block
-        # in message.content rather than reasoning_content. Separate that one
-        # observed transport prefix; the remaining payload must still be an
-        # entire strict JSON object. Never scan arbitrary prose for JSON.
+        # Some OpenAI-compatible endpoints put a tagged reasoning block in
+        # message.content rather than reasoning_content. Separate a complete
+        # transport prefix; the remaining payload must still be an entire strict
+        # JSON object. Never scan arbitrary prose for JSON.
         envelope=re.fullmatch(r"<think>[\s\S]*?</think>\s*([\s\S]*)",text)
-        if not envelope: raise ValueError("Incomplete MiniMax reasoning envelope")
+        if not envelope: raise ValueError("Incomplete provider reasoning envelope")
         text=envelope[1].strip()
     fence=re.fullmatch(r"```(?:json)?\s*\n([\s\S]*?)\n```",text)
     if fence: text=fence[1]
@@ -328,7 +328,7 @@ async def _ask(model, role, rules, data, *, scenario="auto", session_id=None, on
                 await _emit(on_event,{**position,"status":"failed","message":message_text})
                 raise GenerationModelError(message_text,position,exc,kind) from exc
         try:
-            parsed = _parse_json_response(response.get_text_content(), reasoning_prefix="minimax" in str(getattr(model,"model","")).lower())
+            parsed = _parse_json_response(response.get_text_content(), reasoning_prefix=True)
             if 'contextRequest' in parsed:
                 if set(parsed) != {'contextRequest'} or len(reads) >= 8:
                     raise ValueError('Invalid or excessive original-source request')

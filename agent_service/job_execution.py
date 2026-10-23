@@ -35,31 +35,13 @@ def record_event(execution, event, now=None):
         exporting = next(n for n in state['nodes'] if n['id'] == 'export')
         exporting.update(status='pending', summary='等待检查修复后重新导出')
     # Explicit allowlist: traces and reasoning must never enter the product feed.
-    item = {
-        k: event[k]
-        for k in (
-            'phase',
-            'status',
-            'message',
-            'pagePath',
-            'pageIndex',
-            'title',
-            'attempt',
-            'scope',
-            'elementId',
-            'issueCount',
-            'covered',
-            'total',
-            'progress',
-        )
-        if k in event
-    }
-    if isinstance(item.get('progress'), (int, float)):
-        item['progress'] = max(0, min(100, round(item['progress'])))
+    item = {k: event[k] for k in ('phase', 'status', 'message', 'pagePath', 'pageIndex', 'title', 'attempt', 'scope', 'elementId', 'issueCount', 'covered', 'total', 'progress', 'detail') if k in event and event[k] is not None}
+    if type(item.get('progress')) in (int, float):
+        item['progress'] = max(0, min(100, item['progress']))
     else:
         item.pop('progress', None)
     item['timestamp'] = now
-    for key in ('message', 'title', 'pagePath', 'elementId'):
+    for key in ('message', 'title', 'pagePath', 'elementId', 'detail'):
         if key in item:
             item[key] = redact(str(item[key]))[:1500]
     state['events'] = [*state['events'], item][-_event_limit():]
@@ -72,15 +54,17 @@ def record_event(execution, event, now=None):
             state['visualPages'] = []
         state['visual'] = {**previous, **{k: item[k] for k in ('scope', 'attempt', 'covered', 'total', 'issueCount') if k in item}, 'status': status}
     node['summary'] = item.get('message', '')
-    node.setdefault('startedAt', now)
     if 'progress' in item:
         node['progress'] = item['progress']
+    node.setdefault('startedAt', now)
     # A single completed parallel page does not complete the whole page stage.
     subtask = item.get('pagePath') or (phase == 'visual' and item.get('scope'))
     node['status'] = 'running' if subtask and status == 'completed' else status
     if phase == 'visual':
         state['visual']['status'] = node['status']
     if node['status'] in ('completed', 'failed', 'cancelled'):
+        if node['status'] == 'completed':
+            node['progress'] = 100
         node['endedAt'] = now
         if isinstance(node.get('startedAt'), (int, float)):
             node['durationSeconds'] = round(max(0, now - node['startedAt']), 3)
@@ -197,6 +181,12 @@ def diagnose_error(exc, phase='context', *, resumable=True):
     budget_error = next((item for item in chain if getattr(item, 'failure_kind', None) == 'context-limit' and isinstance(getattr(item, 'budget', None), dict)), None)
     if budget_error is not None:
         code, message = 'model_context_limit', str(budget_error)
+    elif 'plan-timeout' in failure_kinds:
+        timeout_error = next(
+            item for item in chain
+            if getattr(item, 'failure_kind', None) == 'plan-timeout'
+        )
+        code, message = 'plan_timeout', redact(str(timeout_error))[:1000]
     elif 'context-count' in failure_kinds:
         code, message = 'model_context_unavailable', '模型分词服务不可用，无法确认上下文预算，已停止提交请求'
     elif visual_code:

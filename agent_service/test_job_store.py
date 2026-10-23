@@ -208,6 +208,61 @@ class JobStoreTests(unittest.TestCase):
             self.assertEqual(draft['pages'][0]['title'], '开场')
             self.assertNotIn('private', json.dumps(draft))
 
+    def test_running_kimi_job_exposes_accepted_plan_before_ppt_exists(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = JobStore(root)
+            store.save(
+                'job',
+                {
+                    'id': 'job',
+                    'projectId': 'project',
+                    'kind': 'kimi-slides',
+                    'status': 'running',
+                    'stage': 40,
+                    'message': '逐页创作',
+                },
+            )
+            plan_path = (
+                root
+                / 'kimi-workspace'
+                / 'project'
+                / 'job'
+                / 'deck'
+                / 'plan.json'
+            )
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        'deckTitle': '测试报告',
+                        'subtitle': '副标题',
+                        'pages': [
+                            {
+                                'path': 'pages/a.page',
+                                'title': '开场',
+                                'readerTask': '理解背景',
+                                'content': '公开的策划内容',
+                                'visualPlan': '封面',
+                                'sourceSections': ['一、现状'],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+
+            preview = store.read('job')['planPreview']
+
+            self.assertEqual(preview['title'], '测试报告')
+            self.assertEqual(preview['totalPages'], 1)
+            self.assertEqual(preview['pages'][0]['title'], '开场')
+            self.assertEqual(
+                preview['pages'][0]['content'],
+                '公开的策划内容',
+            )
+
 
 class JobStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_emits_snapshot_and_stops_on_terminal_state(self):

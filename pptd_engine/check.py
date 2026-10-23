@@ -403,11 +403,34 @@ def check_deck(directory: Path, page_spec: str | None = None, severity: str = "a
     if not directory.is_dir():
         raise FileNotFoundError(f"input is not a directory: {directory}")
 
+    def selected_paths(bundle):
+        refs = (bundle.get("document") or {}).get("pages") or []
+        if page_spec is None:
+            return None
+        indices = parse_page_spec(page_spec, len(refs))
+        return {refs[index - 1] for index in indices}
+
+    def locate(issue, paths):
+        if paths is None:
+            return True
+        location = str(issue.get("location") or issue.get("page") or "")
+        return any(
+            location == path
+            or location.startswith(path + "#")
+            or location.startswith(path + ".")
+            for path in paths
+        )
+
     def collect(bundle, load_issues):
+        paths = selected_paths(bundle)
         issues = list(load_issues)
         if bundle.get("document") is not None:
             issues.extend(validate_document(bundle, resource_root=directory))
             issues.extend(_heuristic_layout_issues(bundle))
+        issues = [
+            issue for issue in issues
+            if locate(issue, paths)
+        ]
         seen: set[tuple[str, str]] = set()
         unique: list[dict] = []
         for issue in issues:

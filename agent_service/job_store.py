@@ -44,12 +44,95 @@ class JobStore:
         if not isinstance(value, dict):
             raise ValueError('Job state must be a JSON object')
         value['stageMetrics'] = stage_metrics(value.get('execution'))
+        plan = self._plan_preview(identifier, value)
+        if plan:
+            value['planPreview'] = plan
+        else:
+            value.pop('planPreview', None)
         draft = self._draft_preview(identifier, value)
         if draft:
             value['draftPreview'] = draft
         else:
             value.pop('draftPreview', None)
         return value
+
+    def _plan_preview(self, identifier: str, job: dict) -> dict | None:
+        """Expose the accepted plan while the editable deck is still building."""
+        if (
+            job.get('kind') != 'kimi-slides'
+            or job.get('status') not in ('queued', 'running', 'interrupted')
+        ):
+            return None
+        project_id = job.get('projectId')
+        if (
+            not isinstance(project_id, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{1,120}', project_id)
+        ):
+            return None
+        from .kimi_workspace import workspace as kimi_workspace_path
+
+        path = (
+            kimi_workspace_path(
+                self.root,
+                project_id,
+                self._identifier(identifier),
+            )
+            / 'deck'
+            / 'plan.json'
+        )
+        try:
+            plan = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        items = plan.get('pages') if isinstance(plan, dict) else None
+        if not isinstance(items, list) or not items:
+            return None
+        pages = []
+        for index, item in enumerate(items[:80]):
+            if not isinstance(item, dict):
+                item = {}
+            source_sections = item.get('sourceSections')
+            source_subsections = item.get('sourceSubsections')
+            pages.append(
+                {
+                    'path': str(item.get('path') or f'pages/{index + 1}.page')[:240],
+                    'index': index,
+                    'title': str(item.get('title') or f'第 {index + 1} 页')[:120],
+                    'readerTask': str(item.get('readerTask') or '')[:180],
+                    'content': str(item.get('content') or '')[:420],
+                    'visualPlan': str(item.get('visualPlan') or '')[:240],
+                    'sourceSections': [
+                        str(value)[:160]
+                        for value in (
+                            source_sections
+                            if isinstance(source_sections, list)
+                            else []
+                        )
+                        if isinstance(value, str)
+                    ][:12],
+                    'sourceSubsections': [
+                        str(value)[:160]
+                        for value in (
+                            source_subsections
+                            if isinstance(source_subsections, list)
+                            else []
+                        )
+                        if isinstance(value, str)
+                    ][:20],
+                }
+            )
+        return {
+            'status': 'ready',
+            'title': str(
+                plan.get('deckTitle')
+                or plan.get('title')
+                or '内容策划'
+            )[:160],
+            'subtitle': str(plan.get('subtitle') or '')[:240],
+            'totalPages': len(pages),
+            'updatedAt': path.stat().st_mtime,
+            'pages': pages,
+        }
 
     def _draft_preview(self, identifier: str, job: dict) -> dict | None:
         if job.get('status') not in ('queued', 'running', 'interrupted'):
@@ -78,6 +161,42 @@ class JobStore:
                         page_index = max(0, int(item.get('index') or 0))
                     except (TypeError, ValueError):
                         page_index = 0
+                    review_status = item.get('reviewStatus')
+                    if review_status not in (
+                        'pending',
+                        'reviewing',
+                        'passed',
+                        'issues',
+                        'unavailable',
+                        'unreviewed',
+                    ):
+                        review_status = 'pending'
+                    issues = []
+                    for issue in item.get('issues') or []:
+                        if not isinstance(issue, dict):
+                            continue
+                        public = {
+                            key: issue[key]
+                            for key in (
+                                'location',
+                                'elementId',
+                                'severity',
+                                'code',
+                                'message',
+                            )
+                            if issue.get(key) is not None
+                        }
+                        for key in ('location', 'elementId', 'severity', 'code', 'message'):
+                            if key in public:
+                                public[key] = str(public[key])[:600]
+                        if public:
+                            issues.append(public)
+                        if len(issues) >= 8:
+                            break
+                    try:
+                        issue_count = max(0, int(item.get('issueCount') or 0))
+                    except (TypeError, ValueError):
+                        issue_count = len(issues)
                     pages.append(
                         {
                             'path': str(item.get('path') or ''),
@@ -95,6 +214,11 @@ class JobStore:
                                 if preview_file
                                 else None
                             ),
+                            'text': str(item.get('text') or '')[:6000],
+                            'reviewStatus': review_status,
+                            'issueCount': issue_count,
+                            'issues': issues,
+                            'reviewModel': str(item.get('reviewModel') or '')[:160],
                             'error': str(item.get('error'))[:300]
                             if item.get('error')
                             else None,
@@ -105,6 +229,12 @@ class JobStore:
                         'status': 'draft',
                         'completedPages': sum(
                             page['status'] == 'ready' for page in pages
+                        ),
+                        'reviewedPages': sum(
+                            page['reviewStatus'] == 'passed' for page in pages
+                        ),
+                        'issuePages': sum(
+                            page['reviewStatus'] == 'issues' for page in pages
                         ),
                         'totalPages': len(pages),
                         'latestIndex': max(

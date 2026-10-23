@@ -11,6 +11,102 @@ import shutil
 import yaml
 
 from .docx_markdown import docx_to_markdown
+from .number_fidelity import numeric_tokens
+
+
+def _compact_planning_text(text: str, limit: int = 2400) -> str:
+    """Keep the parts of one chapter that are useful for page planning.
+
+    The planner only needs the chapter's main claims and concrete evidence. It
+    does not need every paragraph from a long source report.
+    """
+    paragraphs = []
+    for block in re.split(r"\n\s*\n", str(text or "")):
+        value = " ".join(part.strip() for part in block.splitlines() if part.strip())
+        if not value or value.startswith("#"):
+            continue
+        paragraphs.append(value)
+    if not paragraphs:
+        return ""
+
+    selected = []
+
+    def add(value: str) -> None:
+        value = value.strip()
+        if value and value not in selected:
+            selected.append(value)
+
+    for value in paragraphs[:4]:
+        add(value)
+    for value in paragraphs:
+        if re.search(r"\d", value):
+            add(value)
+        if len(selected) >= 10:
+            break
+    for value in paragraphs[-2:]:
+        add(value)
+    result = "\n".join(selected)
+    if len(result) <= limit:
+        return result
+    return result[:limit].rsplit("\n", 1)[0].rstrip()
+
+
+def _section_excerpts(text: str, limit: int = 2400) -> dict[str, str]:
+    """Split a structured reading copy into compact principal-section briefs."""
+    excerpts = {}
+    current_title = ""
+    current_lines: list[str] = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^#\s+(.+?)\s*$", line)
+        if match:
+            if current_title:
+                excerpts[current_title] = _compact_planning_text(
+                    "\n".join(current_lines), limit
+                )
+            current_title = match.group(1).strip()
+            current_lines = []
+        elif current_title:
+            current_lines.append(line)
+    if current_title:
+        excerpts[current_title] = _compact_planning_text(
+            "\n".join(current_lines), limit
+        )
+    return {title: value for title, value in excerpts.items() if value}
+
+
+def _subsection_excerpts(text: str, limit: int = 6000) -> dict[str, str]:
+    """Preserve each second-level section as an addressable evidence unit."""
+    excerpts = {}
+    chapter_intro: list[str] = []
+    current_title = ""
+    current_lines: list[str] = []
+    chapter_has_unit = False
+
+    def flush() -> None:
+        if current_title:
+            excerpts[current_title] = "\n".join(current_lines).strip()[:limit]
+
+    for line in str(text or "").splitlines():
+        first_level = re.match(r"^#\s+(.+?)\s*$", line)
+        if first_level:
+            flush()
+            chapter_intro = []
+            chapter_has_unit = False
+            current_title = ""
+            current_lines = []
+            continue
+        match = re.match(r"^##\s+(.+?)\s*$", line)
+        if match:
+            flush()
+            current_title = match.group(1).strip()
+            current_lines = [] if chapter_has_unit else list(chapter_intro)
+            chapter_has_unit = True
+        elif current_title:
+            current_lines.append(line)
+        else:
+            chapter_intro.append(line)
+    flush()
+    return {title: value for title, value in excerpts.items() if value}
 
 
 def workspace(data_root: Path, project_id: str, job_id: str) -> Path:
@@ -98,6 +194,7 @@ def prepare_reference_material(
     if not sections:
         return {"files": [], "outline": "", "characters": 0}
     combined = "\n\n".join(sections)
+    source_numeric_tokens = numeric_tokens(combined)
     reference_md = sources / "reference.md"
     reference_md.write_text(combined, encoding="utf-8")
     outline_lines = [
@@ -107,12 +204,34 @@ def prepare_reference_material(
     ]
     outline = "\n".join(outline_lines[:500])
     (sources / "reference-outline.md").write_text(outline + "\n", encoding="utf-8")
+    excerpts = _section_excerpts(combined, limit=4000)
+    source_units = _subsection_excerpts(combined)
+    source_unit_briefs = {
+        title: _compact_planning_text(value, limit=700)
+        for title, value in source_units.items()
+    }
+    if excerpts:
+        per_section_limit = max(
+            400,
+            min(2400, 15000 // max(1, len(excerpts))),
+        )
+        planning_brief = "\n\n".join(
+            f"## {title}\n{value[:per_section_limit]}"
+            for title, value in excerpts.items()
+        )[:16000]
+    else:
+        planning_brief = _compact_planning_text(combined, limit=12000)
     return {
         "files": files,
         "outline": outline[:20000],
         "characters": len(combined),
         "referenceFile": str(reference_md.relative_to(target_workspace)),
         "outlineFile": "sources/reference-outline.md",
+        "planningBrief": planning_brief,
+        "sectionExcerpts": excerpts,
+        "subsectionExcerpts": source_units,
+        "sourceUnitBriefs": source_unit_briefs,
+        "numericTokens": source_numeric_tokens,
     }
 
 
@@ -131,7 +250,13 @@ def yaml_parse_issue(page_path: str, exc: BaseException) -> dict:
     }
 
 
-def deck_status(entry: Path):
+def page_has_content(page_data: dict) -> bool:
+    """A declared page is complete only after it has renderable elements."""
+    elements = page_data.get('elements') if isinstance(page_data, dict) else None
+    return isinstance(elements, list) and len(elements) > 0
+
+
+def deck_status(entry: Path, *, require_content: bool = False):
     """Read the declared deck and distinguish valid, absent and malformed pages."""
     from pptd_engine.document import load_yaml
 
@@ -146,17 +271,53 @@ def deck_status(entry: Path):
             missing.append(path)
             continue
         try:
-            load_yaml(page_path)
+            page_data = load_yaml(page_path)
         except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
             invalid.append(yaml_parse_issue(path, exc))
         else:
-            existing.append(path)
+            if require_content and not page_has_content(page_data):
+                missing.append(path)
+                invalid.append(
+                    {
+                        'path': path,
+                        'location': path,
+                        'code': 'page-empty',
+                        'message': f'{path} 只有页面元数据，尚未写入可渲染元素',
+                    }
+                )
+            elif require_content:
+                from .pptd_validation import validate_document
+
+                structural = validate_document(
+                    {
+                        'document': {**document, 'pages': [path]},
+                        'pages': [{'path': path, 'data': page_data}],
+                    },
+                    resource_root=entry.parent,
+                )
+                if structural:
+                    missing.append(path)
+                    invalid.extend(
+                        {
+                            **issue,
+                            'path': path,
+                            'pagePath': path,
+                        }
+                        for issue in structural
+                    )
+                else:
+                    existing.append(path)
+            else:
+                existing.append(path)
     return document, paths, existing, missing, invalid
 
 
-def deck_progress(entry: Path):
+def deck_progress(entry: Path, *, require_content: bool = False):
     """Read the declared deck without treating malformed pages as complete."""
-    document, paths, existing, _, _ = deck_status(entry)
+    document, paths, existing, _, _ = deck_status(
+        entry,
+        require_content=require_content,
+    )
     missing = [path for path in paths if path not in existing]
     return document, paths, existing, missing
 
@@ -178,20 +339,28 @@ def recovery_checkpoint(data_root: Path, project_id: str, job_id: str) -> dict |
     if not entries:
         return None
     try:
-        _, paths, existing, missing, invalid = deck_status(entries[0])
+        _, paths, existing, missing, invalid = deck_status(
+            entries[0],
+            require_content=True,
+        )
     except (OSError, ValueError, yaml.YAMLError):
         return None
     if not paths:
         return None
+    invalid_paths = {
+        str(issue.get('path') or issue.get('pagePath') or issue.get('location'))
+        for issue in invalid
+        if isinstance(issue, dict)
+    }
     checkpoint = {
         "stage": "pages",
         "completedPages": len(existing),
         "totalPages": len(paths),
-        "missingPages": len(missing) + len(invalid),
+        "missingPages": len(set(missing) | invalid_paths),
         "summary": f"已保留 {len(existing)}/{len(paths)} 页",
     }
     if invalid:
-        checkpoint["invalidPages"] = len(invalid)
+        checkpoint["invalidPages"] = len(invalid_paths)
     return checkpoint
 
 
@@ -238,10 +407,17 @@ def find_entry(target_workspace: Path) -> Path:
     return entries[0]
 
 
+def load_document(entry: Path) -> dict:
+    """Read the deck manifest without requiring its declared pages to exist yet."""
+    from pptd_engine.document import load_yaml
+
+    return load_yaml(entry)
+
+
 def load_deck(entry: Path):
     from pptd_engine.document import load_yaml
 
-    document = load_yaml(entry)
+    document = load_document(entry)
     pages = []
     for ref in document.get("pages", []):
         try:

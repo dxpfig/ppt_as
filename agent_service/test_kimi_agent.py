@@ -1,6 +1,7 @@
 """Unit and gated integration coverage for the agentic kimi-slides expert."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -15,6 +16,303 @@ from PIL import Image
 from agent_service import kimi_agent, kimi_preview
 
 
+class KimiAgentProgressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_stream_emits_model_and_tool_status_without_reasoning(self):
+        from agentscope.event import (
+            ModelCallEndEvent,
+            ModelCallStartEvent,
+            ReplyStartEvent,
+            ToolCallDeltaEvent,
+            ToolCallStartEvent,
+            ToolResultEndEvent,
+        )
+        from agentscope.message import Msg, ToolResultState
+
+        class StreamingAgent:
+            async def reply_stream(self, _message, **_kwargs):
+                yield ReplyStartEvent(
+                    session_id="session",
+                    reply_id="reply",
+                    name="PPT",
+                )
+                yield ModelCallStartEvent(
+                    reply_id="reply",
+                    model_name="fake",
+                )
+                yield ModelCallEndEvent(
+                    reply_id="reply",
+                    input_tokens=1234,
+                    output_tokens=56,
+                )
+                yield ToolCallStartEvent(
+                    reply_id="reply",
+                    tool_call_id="tool-1",
+                    tool_call_name="kimi_slides",
+                )
+                yield ToolResultEndEvent(
+                    reply_id="reply",
+                    tool_call_id="tool-1",
+                    state=ToolResultState.SUCCESS,
+                )
+                yield ToolCallStartEvent(
+                    reply_id="reply",
+                    tool_call_id="tool-2",
+                    tool_call_name="Edit",
+                )
+                yield ToolCallDeltaEvent(
+                    reply_id="reply",
+                    tool_call_id="tool-2",
+                    delta=json.dumps({
+                        "file_path": "/tmp/kimi-ws/deck/pages/6.page",
+                        "old_string": "private old content",
+                        "new_string": "private new content",
+                    }),
+                )
+                yield ToolResultEndEvent(
+                    reply_id="reply",
+                    tool_call_id="tool-2",
+                    state=ToolResultState.SUCCESS,
+                )
+                yield Msg(
+                    name="assistant",
+                    role="assistant",
+                    content=[{"type": "text", "text": "完成"}],
+                )
+
+        events = []
+
+        async def emit(phase, status, message, **fields):
+            events.append(
+                {
+                    'phase': phase,
+                    'status': status,
+                    'message': message,
+                    **fields,
+                }
+            )
+
+        result = await kimi_agent._reply_with_progress(
+            StreamingAgent(),
+            Msg(
+                name="user",
+                role="user",
+                content=[{"type": "text", "text": "修复页面"}],
+            ),
+            emit=emit,
+            phase="validate",
+            activity="第 6 页排版修复",
+            workspace=Path("/tmp/kimi-ws"),
+        )
+        self.assertEqual(kimi_agent._reply_text(result), "完成")
+        messages = [event['message'] for event in events]
+        self.assertTrue(any("等待模型返回下一步" in item for item in messages))
+        self.assertTrue(any("正在运行 PPT 检查或截图工具" in item for item in messages))
+        self.assertTrue(any("正在修改页面文件" in item for item in messages))
+        self.assertTrue(any("执行完成" in item for item in messages))
+        self.assertTrue(
+            any(
+                0 < event.get('progress', 0) <= 95
+                for event in events
+            )
+        )
+        self.assertNotIn("reasoning", json.dumps(events))
+        edit_completion = next(
+            event for event in events
+            if event["message"].endswith("Edit 执行完成，模型正在判断下一步")
+        )
+        self.assertEqual(edit_completion["detail"], "deck/pages/6.page")
+        self.assertNotIn("private old content", json.dumps(events))
+        self.assertNotIn("private new content", json.dumps(events))
+
+    async def test_agent_stream_stops_immediately_after_plan_submission(self):
+        from agentscope.event import (
+            ModelCallEndEvent,
+            ModelCallStartEvent,
+            ToolCallStartEvent,
+            ToolResultEndEvent,
+        )
+        from agentscope.message import Msg, ToolResultState
+
+        class StreamingAgent:
+            async def reply_stream(self, _message, **_kwargs):
+                yield ModelCallStartEvent(reply_id="reply", model_name="fake")
+                yield ModelCallEndEvent(
+                    reply_id="reply",
+                    input_tokens=3210,
+                    output_tokens=45,
+                )
+                yield ToolCallStartEvent(
+                    reply_id="reply",
+                    tool_call_id="plan-1",
+                    tool_call_name="submit_plan",
+                )
+                yield ToolResultEndEvent(
+                    reply_id="reply",
+                    tool_call_id="plan-1",
+                    state=ToolResultState.SUCCESS,
+                )
+                yield Msg(
+                    name="assistant",
+                    role="assistant",
+                    content=[{"type": "text", "text": "不应继续读取"}],
+                )
+
+        events = []
+
+        async def emit(phase, status, message, **fields):
+            events.append((phase, status, message, fields))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = await kimi_agent._reply_with_progress(
+                StreamingAgent(),
+                Msg(name="user", role="user", content=[{"type": "text", "text": "规划"}]),
+                emit=emit,
+                phase="plan",
+                activity="PPT 内容策划",
+                max_steps=6,
+                workspace=Path(tmp),
+                stop_when=lambda: True,
+                tool_result_detail=lambda _name: (
+                    "submit_plan 第 1 次：未通过；缺少 pages"
+                ),
+            )
+            usage = json.loads(
+                (Path(tmp) / ".model-usage.jsonl").read_text(encoding="utf-8")
+            )
+        self.assertTrue(result)
+        self.assertTrue(any("正在提交并校验完整计划" in item[2] for item in events))
+        self.assertFalse(any("不应继续读取" in item[2] for item in events))
+        self.assertTrue(any(
+            "缺少 pages" in str(item[3].get("detail", ""))
+            for item in events
+        ))
+        self.assertEqual(usage["inputTokens"], 3210)
+        self.assertEqual(usage["outputTokens"], 45)
+
+    async def test_page_gate_repairs_and_rechecks_before_returning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            deck = root / 'deck'
+            (deck / 'pages').mkdir(parents=True)
+            image = root / 'page.png'
+            image.write_bytes(b'png')
+            page_data = {
+                'elements': [{
+                    'elementId': 'title',
+                    'elementType': 'text',
+                    'bounds': [40, 40, 400, 60],
+                    'content': {
+                        'text': '待修复页面',
+                        'wrap': True,
+                        'align': ['left', 'top'],
+                    },
+                }],
+            }
+            entry = deck / 'deck.pptd'
+            entry.write_text(
+                'version: v2\nsize: [960, 540]\n'
+                'pages: [pages/one.page]\n',
+                encoding='utf-8',
+            )
+            (deck / 'pages' / 'one.page').write_text(
+                'elements: []\n',
+                encoding='utf-8',
+            )
+
+            class Publisher:
+                def __init__(self):
+                    self.calls = 0
+
+                async def check_page(self, index, path):
+                    self.calls += 1
+                    if self.calls == 1:
+                        return {
+                            'ok': True,
+                            'item': {
+                                'index': index,
+                                'path': path,
+                                'title': '第一页',
+                                'reviewStatus': 'issues',
+                                'reviewError': None,
+                            },
+                            'issues': [{
+                                'page': path,
+                                'location': f'{path}#title',
+                                'elementId': 'title',
+                                'code': 'text-overflow',
+                                'message': '标题溢出',
+                            }],
+                            'image': image,
+                            'layouts': {},
+                        }
+                    return {
+                        'ok': True,
+                        'item': {
+                            'index': index,
+                            'path': path,
+                            'title': '第一页',
+                            'reviewStatus': 'passed',
+                            'reviewError': None,
+                        },
+                        'issues': [],
+                    }
+
+            publisher = Publisher()
+            events = []
+            repaired = {
+                **page_data,
+                'elements': [{
+                    **page_data['elements'][0],
+                    'bounds': [40, 40, 520, 60],
+                }],
+            }
+
+            async def repair(_request, state, issues, **_kwargs):
+                self.assertEqual(state['document']['pages'], ['pages/one.page'])
+                self.assertEqual(issues[0]['code'], 'text-overflow')
+                return {
+                    **state,
+                    'pages': [{
+                        'path': 'pages/one.page',
+                        'data': repaired,
+                    }],
+                }
+
+            async def emit(_phase, _status, message, **fields):
+                events.append({'message': message, **fields})
+
+            with patch.object(
+                kimi_agent.visual_repair,
+                'repair_deck',
+                side_effect=repair,
+            ):
+                result = await kimi_agent._repair_page_until_pass(
+                    SimpleNamespace(
+                        project=SimpleNamespace(id='project'),
+                    ),
+                    workspace=root,
+                    entry=entry,
+                    deck_document={
+                        'version': 'v2',
+                        'size': [960, 540],
+                        'pages': ['pages/one.page'],
+                    },
+                    page_path='pages/one.page',
+                    page_index=0,
+                    page_data=page_data,
+                    publisher=publisher,
+                    emit=emit,
+                    max_repair_rounds=1,
+                )
+            written = (deck / 'pages' / 'one.page').read_text(encoding='utf-8')
+
+        self.assertEqual(publisher.calls, 2)
+        self.assertEqual(result['elements'][0]['bounds'], [40, 40, 520, 60])
+        self.assertIn('520', written)
+        self.assertTrue(any('修复通过前不会生成下一页' in item['message'] for item in events))
+        self.assertTrue(any('已通过结构、渲染和 AI 检视' in item['message'] for item in events))
+
+
 class KimiAgentUnitTests(unittest.TestCase):
     def setUp(self):
         preview_render = patch.object(
@@ -25,11 +323,204 @@ class KimiAgentUnitTests(unittest.TestCase):
         preview_render.start()
         self.addCleanup(preview_render.stop)
 
+    def test_grouped_institute_ids_expand_without_relaxing_other_units(self):
+        from agent_service.number_fidelity import numeric_tokens
+
+        source = numeric_tokens("电科15所、32所和52所，中船709所、716所。")
+        compact = numeric_tokens("电科15/32/52所，中船709/716所。")
+        self.assertEqual(compact, source)
+        self.assertIn("709所", source)
+        self.assertNotIn("709亿", source)
+        self.assertNotIn("709亿", compact)
+        self.assertIn("709亿", numeric_tokens("市场规模可达709亿元。"))
+
     def test_system_prompt_layers_skill_and_adapter(self):
         prompt = kimi_agent.kimi_system_prompt(Path("/tmp/kimi-ws"))
         self.assertIn("name: kimi-slides", prompt)
         self.assertIn("HOST ADAPTER", prompt)
         self.assertIn("kimi_slides", prompt)
+        self.assertIn("do not run the", prompt)
+
+    def test_page_agent_stops_after_repeated_exploration_without_writes(self):
+        from agentscope.event import ModelCallStartEvent, ReplyStartEvent
+
+        class StreamAgent:
+            async def reply_stream(self, _message, *, yield_final_msg=True):
+                yield ReplyStartEvent(
+                    session_id="test",
+                    reply_id="reply",
+                    name="assistant",
+                )
+                for index in range(6):
+                    yield ModelCallStartEvent(
+                        reply_id="reply",
+                        model_name=f"model-{index}",
+                    )
+
+        events = []
+
+        async def emit(phase, status, message, **fields):
+            events.append((phase, status, message, fields))
+
+        async def run():
+            await kimi_agent._reply_with_progress(
+                StreamAgent(),
+                SimpleNamespace(),
+                emit=emit,
+                phase="pages",
+                activity="逐页创作",
+                max_steps=12,
+                no_progress_after=5,
+            )
+
+        with self.assertRaises(kimi_agent.PageWriteStalled):
+            asyncio.run(run())
+        self.assertEqual(len(events), 7)
+
+    def test_workspace_file_tools_resolve_relative_paths_safely(self):
+        from agentscope.state import AgentState
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / 'deck' / 'pages').mkdir(parents=True)
+            write = kimi_agent._WorkspaceWrite(workspace)
+            edit = kimi_agent._WorkspaceEdit(workspace)
+            read = kimi_agent._WorkspaceRead(workspace)
+
+            asyncio.run(
+                write.call(
+                    'deck/pages/a.page',
+                    'elements:\n- elementId: title\n  text: old\n',
+                )
+            )
+            target = workspace / 'deck' / 'pages' / 'a.page'
+            self.assertIn('old', target.read_text(encoding='utf-8'))
+
+            asyncio.run(
+                edit.call(
+                    'deck/pages/a.page',
+                    'old',
+                    'new',
+                )
+            )
+            self.assertIn('new', target.read_text(encoding='utf-8'))
+            self.assertIn(
+                'new',
+                asyncio.run(read.call('deck/pages/a.page')).content[0].text,
+            )
+
+            state = AgentState()
+            asyncio.run(
+                write.call(
+                    'deck/pages/a.page',
+                    'elements:\n- elementId: title\n  text: replaced\n',
+                    _agent_state=state,
+                )
+            )
+            self.assertIn('replaced', target.read_text(encoding='utf-8'))
+
+            gated = kimi_agent._WorkspaceWrite(
+                workspace,
+                {'deck/pages/a.page'},
+            )
+            denied = asyncio.run(
+                gated.call(
+                    'deck/pages/other.page',
+                    'elements:\n- elementId: title\n',
+                )
+            )
+            self.assertEqual(denied.state, 'error')
+            self.assertFalse((workspace / 'deck' / 'pages' / 'other.page').exists())
+
+            sealed_write = kimi_agent._WorkspaceWrite(
+                workspace,
+                {'deck/pages/a.page'},
+                {'deck/pages/a.page'},
+            )
+            sealed = asyncio.run(
+                sealed_write.call(
+                    'deck/pages/a.page',
+                    'elements:\n- elementId: title\n',
+                )
+            )
+            self.assertEqual(sealed.state, 'error')
+            self.assertIn('replaced', target.read_text(encoding='utf-8'))
+
+            result = asyncio.run(write.call('../outside.page', 'bad'))
+            self.assertEqual(result.state, 'error')
+            self.assertFalse((workspace.parent / 'outside.page').exists())
+
+    def test_deck_status_does_not_treat_metadata_stub_as_generated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / 'deck.pptd'
+            (Path(tmp) / 'pages').mkdir()
+            entry.write_text(
+                'version: v2\nsize: [960, 540]\npages: [pages/one.page]\n',
+                encoding='utf-8',
+            )
+            (Path(tmp) / 'pages' / 'one.page').write_text(
+                'title: 空壳页\nmeta:\n  page: 1\nelements: []\n',
+                encoding='utf-8',
+            )
+
+            _, _, existing, missing, invalid = kimi_agent._deck_status(
+                entry,
+                require_content=True,
+            )
+            self.assertEqual(existing, [])
+            self.assertEqual(missing, ['pages/one.page'])
+            self.assertEqual(invalid[0]['code'], 'page-empty')
+
+    def test_page_structure_check_rejects_non_pptd_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            deck = workspace / 'deck'
+            (deck / 'pages').mkdir(parents=True)
+            (deck / 'deck.pptd').write_text(
+                'version: v2\nsize: [960, 540]\npages: [pages/one.page]\n',
+                encoding='utf-8',
+            )
+            target = deck / 'pages' / 'one.page'
+            target.write_text(
+                'page:\n'
+                '  elements:\n'
+                '    - type: text\n'
+                '      x: 10\n'
+                '      y: 10\n'
+                '      text: 错误结构\n',
+                encoding='utf-8',
+            )
+            issues = kimi_agent._page_structure_issues(
+                workspace,
+                'deck/pages/one.page',
+            )
+            self.assertTrue(issues)
+            self.assertTrue(all(issue['pagePath'] == 'pages/one.page' for issue in issues))
+
+    def test_page_structure_check_catches_yaml_parser_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            deck = workspace / 'deck'
+            (deck / 'pages').mkdir(parents=True)
+            (deck / 'deck.pptd').write_text(
+                'version: v2\nsize: [960, 540]\npages: [pages/one.page]\n',
+                encoding='utf-8',
+            )
+            (deck / 'pages' / 'one.page').write_text(
+                'elements:\n'
+                '- elementId: title\n'
+                '  elementType: text\n'
+                '  bounds: [1, 2, 3, 4]\n'
+                '  content:\n'
+                '    text: "broken"}\n',
+                encoding='utf-8',
+            )
+            issues = kimi_agent._page_structure_issues(
+                workspace,
+                'deck/pages/one.page',
+            )
+            self.assertEqual(issues[0]['code'], 'yaml-invalid')
+            self.assertEqual(issues[0]['pagePath'], 'pages/one.page')
 
     def test_reply_text_strips_reasoning(self):
         class Block:
@@ -88,9 +579,10 @@ class KimiAgentUnitTests(unittest.TestCase):
                 {},
                 requirements,
             )
-            self.assertIn("template-pptd", message)
-            self.assertIn("严禁", message)
-            self.assertIn("Using a template", message)
+            self.assertIn("submit_plan", message)
+            self.assertIn("不要读取模板文件或截图", message)
+            self.assertNotIn("template-pptd", message)
+            self.assertNotIn("template-screenshots", message)
             with_references = kimi_agent._planning_message(
                 SimpleNamespace(
                     prompt="p", audience="a", pageCount=None,
@@ -104,8 +596,9 @@ class KimiAgentUnitTests(unittest.TestCase):
                 ),
             )
             payload = json.loads(with_references)
-            self.assertEqual(payload["references"], "附件事实：完成率 83%。")
+            self.assertEqual(payload["references"], "")
             self.assertEqual(payload["referenceCharacters"], len("附件事实：完成率 83%。"))
+            self.assertEqual(payload["planningBrief"], "附件事实：完成率 83%。")
             self.assertIn("首要事实来源", payload["note"])
 
     def test_long_reference_is_externalized_with_structure_for_the_agent(self):
@@ -143,8 +636,557 @@ class KimiAgentUnitTests(unittest.TestCase):
                 kimi_agent.plan_requirements(request, info),
             ))
             self.assertEqual(payload["references"], "")
-            self.assertEqual(payload["referenceFile"], "sources/reference.md")
-            self.assertIn("reference-outline.md", payload["note"])
+            self.assertIsNone(payload["referenceFile"])
+            self.assertIn("第 1 章", payload["planningBrief"])
+            self.assertLessEqual(len(payload["planningBrief"]), 12000)
+            self.assertNotIn("sources/reference.md", payload["note"])
+            self.assertIn("不要读取文件", payload["note"])
+
+    def test_planning_brief_keeps_chapter_evidence_without_full_text(self):
+        from types import SimpleNamespace
+
+        references = (
+            "# 一、现状\n\n"
+            "## 1.1 细分现状\n\n"
+            + "背景段落。" * 300
+            + "\n\n市场规模达到 142.6 亿元，同比增长 11.2%。"
+            + "\n\n# 二、规划\n\n"
+            "## 2.1 细分规划\n\n"
+            + "规划段落。" * 300
+            + "\n\n2028 年完成型号突破。"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            info = kimi_agent._prepare_reference_material(
+                workspace,
+                "brief",
+                SimpleNamespace(references=references),
+                workspace,
+            )
+        brief = info["planningBrief"]
+        self.assertLess(len(brief), len(references))
+        self.assertIn("142.6 亿元", brief)
+        self.assertIn("2028 年", brief)
+        self.assertEqual(set(info["sectionExcerpts"]), {"一、现状", "二、规划"})
+        self.assertEqual(
+            set(info["sourceUnitBriefs"]),
+            {"1.1 细分现状", "2.1 细分规划"},
+        )
+
+    def test_long_plan_requires_a_second_page_agenda(self):
+        from types import SimpleNamespace
+
+        outline = "\n".join([
+            "# 一、现状",
+            "## 1.1 全球现状",
+            "# 二、规划",
+            "## 2.1 发展目标",
+        ])
+        info = {"characters": 18000, "outline": outline}
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=None),
+            info,
+        )
+        self.assertTrue(requirements["requiresAgendaPage"])
+        self.assertEqual(requirements["agendaPagePosition"], 2)
+        plan = {
+            "deckTitle": "测试报告",
+            "pages": [
+                {
+                    "path": "pages/01-cover.page",
+                    "title": "测试报告",
+                    "readerTask": "建立主题",
+                    "content": "报告主题",
+                    "visualPlan": "模板封面",
+                    "sourceSections": [],
+                },
+                {
+                    "path": "pages/02-content.page",
+                    "title": "现状",
+                    "readerTask": "理解现状",
+                    "content": "现状事实",
+                    "visualPlan": "证据页",
+                    "sourceSections": ["一、现状"],
+                },
+            ],
+        }
+        self.assertTrue(
+            kimi_agent.kimi_plan.ensure_required_agenda_page(
+                plan,
+                requirements,
+            )
+        )
+        self.assertEqual(plan["pages"][1]["title"], "目录")
+        self.assertEqual(plan["pages"][1]["kind"], "agenda")
+        self.assertEqual(
+            plan["pages"][1]["content"],
+            "一、现状；二、规划",
+        )
+
+    def test_content_pages_keep_the_page_model_by_default(self):
+        page = {
+            "path": "pages/03.page",
+            "title": "建设路线",
+            "readerTask": "理解阶段安排",
+            "content": "2026 年完成验证，2028 年完成定型。",
+            "visualPlan": "三阶段时间轴",
+            "sourceSections": ["四、发展规划"],
+            "sourceSubsections": [],
+        }
+        self.assertIsNone(
+            kimi_agent.build_planned_role_page(
+                index=2,
+                total=5,
+                page=page,
+                plan={"deckTitle": "测试"},
+                requirements={"principalSections": ["四、发展规划"]},
+                template_info={"pptd": "/missing-template"},
+                deck_dir=Path("/missing-deck"),
+            )
+        )
+        self.assertEqual(
+            kimi_agent.planned_layout_archetype(page),
+            "timeline",
+        )
+
+    def test_page_spec_carries_evidence_history_and_template_style(self):
+        payload = json.loads(kimi_agent._page_spec_message(
+            {
+                "title": "建设路线",
+                "visualPlan": "三阶段时间轴",
+                "recommendedArchetype": "timeline",
+            },
+            "2026 年完成验证，2028 年完成定型。",
+            layout_history=[
+                {"pageIndex": 3, "family": "cards"},
+                {"pageIndex": 4, "family": "comparison"},
+            ],
+            style_profile={
+                "fontFamily": "微软雅黑",
+                "colors": {"accent": "#E50011"},
+                "sizes": {"title": 30, "body": 13},
+            },
+        ))
+        self.assertIn("2028", payload["sourceEvidence"])
+        self.assertEqual(
+            [item["family"] for item in payload["layoutHistory"]],
+            ["cards", "comparison"],
+        )
+        self.assertEqual(
+            payload["templateStyle"]["fontFamily"],
+            "微软雅黑",
+        )
+        self.assertTrue(
+            payload["requirements"]["avoidLastTwoLayoutFamilies"]
+        )
+
+    def test_content_quality_rejects_missing_numbers_and_repeated_layouts(self):
+        page = {
+            "meta": {"sourcePath": "pages/03.page"},
+            "elements": [
+                {
+                    "elementId": "title",
+                    "elementType": "text",
+                    "bounds": [40, 30, 800, 50],
+                    "content": {"text": "建设路线", "fontSize": 28},
+                },
+                {
+                    "elementId": "body-1",
+                    "elementType": "text",
+                    "bounds": [40, 120, 800, 70],
+                    "content": {"text": "完成关键技术验证。", "fontSize": 13},
+                },
+                {
+                    "elementId": "body-2",
+                    "elementType": "text",
+                    "bounds": [40, 210, 800, 70],
+                    "content": {"text": "进入型号适配。", "fontSize": 13},
+                },
+                {
+                    "elementId": "body-3",
+                    "elementType": "text",
+                    "bounds": [40, 300, 800, 70],
+                    "content": {"text": "形成规模化交付。", "fontSize": 13},
+                },
+            ],
+        }
+        issues = kimi_agent.content_layout_issues(
+            page,
+            {
+                "content": (
+                    "2026 年完成原型验证并确认关键链路指标，"
+                    "2028 年完成型号适配，最终形成规模化交付能力。"
+                    "页面需要同时说明验证内容、关键指标、阶段衔接、"
+                    "型号适配边界、规模化交付条件以及后续推进责任。"
+                )
+            },
+            [
+                {"pageIndex": 1, "family": "editorial"},
+                {"pageIndex": 2, "family": "editorial"},
+            ],
+        )
+        codes = {item["code"] for item in issues}
+        self.assertIn("planned-number-missing", codes)
+        self.assertIn("planned-layout-too-sparse", codes)
+        self.assertIn("layout-repetition", codes)
+
+    def test_layout_compiler_inherits_template_typography_and_palette(self):
+        from agent_service import layout_engine
+
+        page = layout_engine.compile_page(
+            {
+                "title": "建设路线",
+                "archetype": "timeline",
+                "root": {
+                    "type": "text",
+                    "role": "body",
+                    "text": "2026 年完成验证。",
+                },
+            },
+            page_index=2,
+            page_path="pages/03.page",
+            style_profile={
+                "fontFamily": "MiSans",
+                "colors": {
+                    "accent": "#123456",
+                    "text": "#222222",
+                    "surface": "#FAFAFA",
+                },
+                "sizes": {"title": 32, "body": 14},
+            },
+        )
+        self.assertEqual(page["meta"]["archetype"], "timeline")
+        self.assertEqual(
+            page["elements"][0]["content"]["fontFamily"],
+            "MiSans",
+        )
+        self.assertEqual(
+            page["elements"][0]["content"]["color"],
+            "#123456",
+        )
+        self.assertEqual(
+            page["elements"][1]["content"]["fontFamily"],
+            "MiSans",
+        )
+
+    def test_card_children_flow_vertically_instead_of_overlapping(self):
+        from agent_service import layout_engine
+
+        page = layout_engine.compile_page(
+            {
+                "title": "研发进展",
+                "root": {
+                    "type": "card",
+                    "padding": 16,
+                    "gap": 8,
+                    "children": [
+                        {
+                            "type": "text",
+                            "role": "caption",
+                            "text": "节点 01｜2026年",
+                        },
+                        {
+                            "type": "text",
+                            "role": "heading",
+                            "text": "原型验证",
+                        },
+                        {
+                            "type": "text",
+                            "role": "metric",
+                            "text": "关键链路时延下降 30%",
+                        },
+                        {
+                            "type": "text",
+                            "role": "body",
+                            "text": "完成原型验证，进入技术验证阶段。",
+                        },
+                    ],
+                },
+            },
+            page_index=0,
+            page_path="pages/01.page",
+        )
+        texts = [
+            element
+            for element in page["elements"]
+            if element.get("elementType") == "text"
+            and element.get("elementId") != "p1-1-page-title"
+        ]
+        self.assertEqual(len(texts), 4)
+        for upper, lower in zip(texts, texts[1:]):
+            self.assertLessEqual(
+                upper["bounds"][1] + upper["bounds"][3],
+                lower["bounds"][1] + 0.01,
+            )
+
+    def test_exact_page_plan_rejects_a_missing_agenda(self):
+        from types import SimpleNamespace
+
+        outline = "\n".join([
+            "# 一、现状",
+            "# 二、规划",
+        ])
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=4),
+            {"characters": 1000, "outline": outline},
+        )
+        self.assertTrue(requirements["requiresAgendaPage"])
+        pages = [
+            {
+                "path": f"pages/{index}.page",
+                "title": title,
+                "readerTask": "说明",
+                "content": "内容",
+                "visualPlan": "正文",
+                "sourceSections": sections,
+            }
+            for index, (title, sections) in enumerate(
+                [
+                    ("封面", []),
+                    ("现状", ["一、现状"]),
+                    ("规划", ["二、规划"]),
+                    ("致谢", []),
+                ],
+                1,
+            )
+        ]
+        plan = {"deckTitle": "测试", "pages": pages}
+        self.assertFalse(
+            kimi_agent.kimi_plan.ensure_required_agenda_page(
+                plan,
+                requirements,
+            )
+        )
+        self.assertTrue(any(
+            "必须包含目录页" in issue
+            for issue in kimi_agent.audit_plan(plan, requirements)
+        ))
+
+    def test_plan_field_limits_are_normalized_before_validation(self):
+        requirements = {
+            "fieldLimits": {
+                "title": 60,
+                "readerTask": 120,
+                "content": 320,
+                "visualPlan": 200,
+            }
+        }
+        content = (
+            "第一章说明现状与趋势。" * 30
+            + "第二章说明发展需求。" * 20
+        )
+        plan = {
+            "pages": [{
+                "path": "pages/01.page",
+                "title": "结论",
+                "readerTask": "理解结论",
+                "content": content,
+                "visualPlan": "证据页",
+                "sourceSections": [],
+            }]
+        }
+        self.assertTrue(
+            kimi_agent.kimi_plan.normalize_plan_field_limits(
+                plan,
+                requirements,
+            )
+        )
+        self.assertLessEqual(len(plan["pages"][0]["content"]), 320)
+        self.assertTrue(plan["pages"][0]["content"].endswith("。"))
+
+    def test_plan_must_cover_every_second_level_section_and_keep_owner(self):
+        from types import SimpleNamespace
+
+        outline = "\n".join(
+            [
+                "# 一、现状",
+                "## 1.1 全球现状",
+                "### 1.1.1 全球演进",
+                "## 1.2 国内现状",
+                "### 1.2.1 国内产业",
+                "# 二、规划",
+                "## 2.1 发展目标",
+                "### 2.1.1 阶段目标",
+            ]
+        )
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=2),
+            {"characters": 1000, "outline": outline},
+        )
+        requirements["minimumPlanPages"] = 2
+        pages = [
+            {
+                "path": "pages/1.page",
+                "title": "现状",
+                "readerTask": "理解现状",
+                "content": "现状事实",
+                "visualPlan": "时间轴",
+                "sourceSections": ["一、现状"],
+                "sourceSubsections": ["1.1 全球现状"],
+            },
+            {
+                "path": "pages/2.page",
+                "title": "规划",
+                "readerTask": "理解规划",
+                "content": "规划事实",
+                "visualPlan": "路线图",
+                "sourceSections": ["二、规划"],
+                "sourceSubsections": ["2.1 发展目标"],
+            },
+        ]
+        issues = kimi_agent.audit_plan({"pages": pages}, requirements)
+        self.assertTrue(any("缺少：1.2 国内现状" in issue for issue in issues))
+
+        pages[0]["sourceSubsections"] = ["1.1 全球现状", "1.2 国内现状"]
+        kimi_agent.kimi_plan.attach_source_details(
+            {"pages": pages},
+            requirements,
+        )
+        self.assertEqual(kimi_agent.audit_plan({"pages": pages}, requirements), [])
+
+        pages[1]["sourceSubsections"] = ["1.2 国内现状"]
+        pages[1]["sourceSections"] = ["二、规划"]
+        kimi_agent.kimi_plan.attach_source_details(
+            {"pages": pages},
+            requirements,
+        )
+        issues = kimi_agent.audit_plan({"pages": pages}, requirements)
+        self.assertTrue(any("错误归属" in issue for issue in issues))
+
+    def test_page_batch_receives_source_evidence_for_assigned_subsections(self):
+        from types import SimpleNamespace
+
+        request = SimpleNamespace(
+            prompt="生成",
+            audience="团队",
+            pageCount=1,
+            references="",
+            attachments=[],
+        )
+        plan = {
+            "pages": [
+                {
+                    "path": "pages/1.page",
+                    "title": "现状",
+                    "readerTask": "理解现状",
+                    "content": "现状结论",
+                    "visualPlan": "时间轴",
+                    "sourceSections": ["一、现状"],
+                    "sourceSubsections": ["1.1 全球现状"],
+                }
+            ]
+        }
+        payload = json.loads(
+            kimi_agent._execution_message(
+                request,
+                None,
+                {
+                    "subsectionExcerpts": {
+                        "1.1 全球现状": "算力成为第三大战斗力要素，增长率 6.9%。"
+                    }
+                },
+                plan,
+                {"batch": 1, "batchPages": ["pages/1.page"]},
+            )
+        )
+        self.assertIn("第三大战斗力要素", payload["batchPagePlans"][0]["sourceEvidence"])
+        self.assertIn("不得改写枚举数量", payload["note"])
+        self.assertIn("elementId: title", payload["pptdPageTemplate"])
+        self.assertIn("禁止使用 page: 外层", payload["note"])
+
+    def test_plan_submitter_validates_then_stops_after_acceptance(self):
+        from types import SimpleNamespace
+
+        request = SimpleNamespace(pageCount=2)
+        requirements = kimi_agent.plan_requirements(request, {})
+        requirements["minimumPlanPages"] = 2
+        invalid = {"pages": [{"path": "pages/1.page"}]}
+        valid = {
+            "deckTitle": "测试",
+            "pages": [
+                {
+                    "path": f"pages/{index}.page",
+                    "title": f"第 {index} 页",
+                    "readerTask": "理解结论",
+                    "content": "事实与结论",
+                    "visualPlan": "卡片",
+                    "sourceSections": [],
+                }
+                for index in (1, 2)
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            submitter = kimi_agent._PlanSubmitter(Path(tmp), requirements)
+            rejected = json.loads(submitter.submit(invalid))
+            self.assertFalse(rejected["accepted"])
+            self.assertFalse(submitter.finished)
+            self.assertIn("submit_plan 第 1 次：未通过", submitter.describe_result("submit_plan"))
+            rejected_path = Path(tmp) / "deck" / "plan.rejected-1.json"
+            self.assertTrue(rejected_path.is_file())
+            self.assertTrue(json.loads(rejected_path.read_text())["issues"])
+            accepted = json.loads(submitter.submit(valid))
+            self.assertTrue(accepted["accepted"])
+            self.assertTrue(submitter.finished)
+            saved = json.loads((Path(tmp) / "deck" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, valid)
+
+    def test_plan_submit_tool_accepts_flat_model_arguments(self):
+        from types import SimpleNamespace
+
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=1),
+            {},
+        )
+        requirements["minimumPlanPages"] = 1
+        page = {
+            "path": "pages/1.page",
+            "title": "结论",
+            "readerTask": "理解结论",
+            "content": "事实与结论",
+            "visualPlan": "卡片",
+            "sourceSections": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            submitter = kimi_agent._PlanSubmitter(Path(tmp), requirements)
+            chunk = asyncio.run(
+                submitter.tool.call(deckTitle="测试", pages=[page])
+            )
+            self.assertIn("accepted", chunk.content[0].text)
+            saved = json.loads(
+                (Path(tmp) / "deck" / "plan.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(saved["deckTitle"], "测试")
+        self.assertEqual(saved["pages"], [page])
+
+    def test_plan_submit_tool_accepts_nested_and_json_string_plans(self):
+        from types import SimpleNamespace
+
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=1),
+            {},
+        )
+        requirements["minimumPlanPages"] = 1
+        page = {
+            "path": "pages/1.page",
+            "title": "结论",
+            "readerTask": "理解结论",
+            "content": "事实与结论",
+            "visualPlan": "卡片",
+            "sourceSections": [],
+        }
+        plan = {"deckTitle": "测试", "pages": [page]}
+        for mode, value in (
+            ("nested", {"plan": plan}),
+            ("string", {"plan": json.dumps(plan, ensure_ascii=False)}),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                submitter = kimi_agent._PlanSubmitter(Path(tmp), requirements)
+                chunk = asyncio.run(submitter.tool.call(**value))
+                self.assertIn("accepted", chunk.content[0].text)
+                saved = json.loads(
+                    (Path(tmp) / "deck" / "plan.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(saved["pages"], [page])
 
     def test_long_source_requires_a_complete_multi_chapter_plan(self):
         from types import SimpleNamespace
@@ -152,19 +1194,25 @@ class KimiAgentUnitTests(unittest.TestCase):
         outline = "\n".join([
             "# 军用计算报告.docx",
             "# 一、军用计算业务发展现状与趋势分析",
+            "## 1.1 全球军事智能化加速演进",
             "# 二、未来军用计算业务发展需求",
             "# 集团军用计算业务发展基础与现状",
             "# 四、集团军用计算业务高质量发展规划",
             "# 五、全方位保障措施",
-            "## 1.1 全球军事智能化加速演进",
         ])
         request = SimpleNamespace(pageCount=None)
-        info = {"characters": 47086, "outline": outline}
+        info = {
+            "characters": 47086,
+            "outline": outline,
+            "numericTokens": ["2026年", "6.9%", "1.94万亿"],
+        }
         requirements = kimi_agent.plan_requirements(request, info)
         self.assertEqual(len(requirements["principalSections"]), 5)
         self.assertEqual(requirements["minimumPlanPages"], 17)
+        self.assertEqual(requirements["recommendedPlanPages"], 17)
         self.assertEqual(requirements["maximumPlanPages"], 32)
-        self.assertEqual(requirements["fieldLimits"]["content"], 240)
+        self.assertEqual(requirements["fieldLimits"]["content"], 320)
+        self.assertIsNone(requirements["exactPlanPages"])
 
         five_page_plan = {
             "deckTitle": "军用计算",
@@ -187,21 +1235,76 @@ class KimiAgentUnitTests(unittest.TestCase):
         self.assertTrue(any("至少需要 2 页" in issue for issue in issues))
 
         oversized = {**five_page_plan, "pages": [dict(page) for page in five_page_plan["pages"]]}
-        oversized["pages"][0]["content"] = "过长" * 121
+        oversized["pages"][0]["content"] = "过长" * 161
         self.assertTrue(any(
             "content 过长" in issue
             for issue in kimi_agent.audit_plan(oversized, requirements)
         ))
+        invented = {
+            **five_page_plan,
+            "pages": [dict(page) for page in five_page_plan["pages"]],
+        }
+        invented["pages"][0]["content"] = "虚构增长 99.9%。"
+        self.assertTrue(any(
+            "不存在的数字：99.9%" in issue
+            for issue in kimi_agent.audit_plan(invented, requirements)
+        ))
 
         explicit = kimi_agent.plan_requirements(SimpleNamespace(pageCount=5), info)
+        self.assertEqual(explicit["preferredPlanPages"], 5)
+        self.assertEqual(explicit["minimumPlanPages"], 5)
+        self.assertEqual(explicit["recommendedPlanPages"], 5)
+        self.assertEqual(explicit["maximumPlanPages"], 5)
+        self.assertEqual(explicit["exactPlanPages"], 5)
         explicit_plan = {**five_page_plan, "pages": [dict(page) for page in five_page_plan["pages"]]}
         explicit_plan["pages"][3]["sourceSections"] = [
             requirements["principalSections"][1],
             requirements["principalSections"][2],
             requirements["principalSections"][3],
         ]
+        explicit_plan["pages"][2]["sourceSubsections"] = [
+            requirements["requiredSubsections"][0]
+        ]
         explicit_plan["pages"][4]["sourceSections"] = [requirements["principalSections"][4]]
-        self.assertEqual(kimi_agent.audit_plan(explicit_plan, explicit), [])
+        explicit_issues = kimi_agent.audit_plan(explicit_plan, explicit)
+        self.assertFalse(any("计划页数不足" in issue for issue in explicit_issues))
+        self.assertFalse(any("用户指定" in issue for issue in explicit_issues))
+
+    def test_explicit_single_page_count_is_an_exact_plan_contract(self):
+        from types import SimpleNamespace
+
+        requirements = kimi_agent.plan_requirements(
+            SimpleNamespace(pageCount=1),
+            {},
+        )
+        self.assertEqual(requirements["minimumPlanPages"], 1)
+        self.assertEqual(requirements["recommendedPlanPages"], 1)
+        self.assertEqual(requirements["maximumPlanPages"], 1)
+        self.assertEqual(requirements["exactPlanPages"], 1)
+        plan = {
+            "deckTitle": "单页封面",
+            "pages": [{
+                "path": "pages/01.page",
+                "title": "封面",
+                "readerTask": "建立主题",
+                "content": "单页内容",
+                "visualPlan": "封面",
+                "sourceSections": [],
+            }],
+        }
+        self.assertEqual(kimi_agent.audit_plan(plan, requirements), [])
+        plan["pages"].append({
+            "path": "pages/02.page",
+            "title": "多余页",
+            "readerTask": "额外内容",
+            "content": "不应生成",
+            "visualPlan": "正文",
+            "sourceSections": [],
+        })
+        self.assertTrue(any(
+            "计划页数超过上限" in issue
+            for issue in kimi_agent.audit_plan(plan, requirements)
+        ))
 
     def test_complete_plan_is_accepted_and_materialized_before_page_batches(self):
         outline = "\n".join([
@@ -257,7 +1360,7 @@ class KimiAgentUnitTests(unittest.TestCase):
             self.assertIn("只做完整内容规划", planning["note"])
             self.assertIn("禁止创建或修改任何 deck/pages", planning["note"])
             self.assertIn("紧凑的页面契约", planning["note"])
-            self.assertIn("content ≤ 240 字", planning["note"])
+            self.assertIn("content ≤ 320 字", planning["note"])
             self.assertNotIn("write at most the first five planned pages", planning["note"])
 
             execution = json.loads(kimi_agent._execution_message(
@@ -288,10 +1391,9 @@ class KimiAgentUnitTests(unittest.TestCase):
         calls = {
             "planning": 0,
             "execution": 0,
-            "batches": [],
-            "draft_present": [],
-            "validation_issues": [],
+            "pageCalls": [],
         }
+        agent_options = []
         plan = {
             "deckTitle": "分批测试",
             "pages": [
@@ -307,6 +1409,8 @@ class KimiAgentUnitTests(unittest.TestCase):
                 self.workspace = workspace
 
             async def reply(self, message):
+                from agentscope.message import Msg
+
                 text = message.get_text_content()
                 if "当前阶段只做完整内容规划" in text:
                     calls["planning"] += 1
@@ -316,40 +1420,35 @@ class KimiAgentUnitTests(unittest.TestCase):
                     draft = self.workspace / "deck" / "pages" / "draft.page"
                     draft.parent.mkdir(parents=True, exist_ok=True)
                     draft.write_text("elements: []\n", encoding="utf-8")
-                    return None
-                calls["execution"] += 1
-                calls["draft_present"].append(
-                    (self.workspace / "deck" / "pages" / "draft.page").exists()
-                )
-                payload = json.loads(text)
-                calls["validation_issues"].append(payload["pageValidationIssues"])
-                batch = payload["continuation"]["batchPages"]
-                calls["batches"].append(batch)
-                for index, path in enumerate(batch, 1):
-                    target = self.workspace / "deck" / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if calls["execution"] == 1 and index == 1:
-                        target.write_text(
-                            "elements:\n"
-                            "- elementId: malformed\n"
-                            "  inset:\n"
-                            "    - 0.0\n"
-                            "  - 0.0\n",
-                            encoding="utf-8",
-                        )
-                        continue
-                    target.write_text(
-                        "elements:\n"
-                        f"- elementId: title-{calls['execution']}-{index}\n"
-                        "  elementType: text\n"
-                        "  bounds: [40, 40, 400, 60]\n"
-                        "  content:\n"
-                        "    text: 分批页面\n"
-                        "    wrap: true\n"
-                        "    align: [left, top]\n",
-                        encoding="utf-8",
+                    return Msg(
+                        name="assistant",
+                        role="assistant",
+                        content=[{"type": "text", "text": "planned"}],
                     )
-                return None
+                calls["execution"] += 1
+                payload = json.loads(text)
+                page = payload["page"]
+                calls["pageCalls"].append(page["path"])
+                if calls["execution"] == 1:
+                    result = "{invalid json"
+                else:
+                    result = json.dumps(
+                        {
+                            "title": page["title"],
+                            "kind": "content",
+                            "root": {
+                                "type": "text",
+                                "role": "body",
+                                "text": "分批页面",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                return Msg(
+                    name="assistant",
+                    role="assistant",
+                    content=[{"type": "text", "text": result}],
+                )
 
         async def run(request, *, data_root, progress, on_event=None, project_id, job_id):
             return await kimi_agent.run_kimi(
@@ -370,11 +1469,35 @@ class KimiAgentUnitTests(unittest.TestCase):
             scenario="auto",
             templateId=None,
         )
+        async def page_gate(_publisher, index, path):
+            return {
+                'ok': True,
+                'item': {
+                    'path': path,
+                    'index': index,
+                    'title': plan['pages'][index]['title'],
+                    'reviewStatus': 'passed',
+                    'reviewError': None,
+                },
+                'issues': [],
+            }
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
+             patch.object(
+                 kimi_agent,
+                 "_make_agent",
+                 side_effect=lambda _model, ws, _sid, _iters, **kwargs: (
+                     agent_options.append(kwargs),
+                     Agent(ws),
+                 )[1],
+             ), \
              patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_report", return_value=([], {})), \
+             patch.object(
+                 kimi_agent.DraftPreviewPublisher,
+                 "check_page",
+                 new=page_gate,
+             ), \
+             patch.object(kimi_agent, "final_layout_issues", return_value=[]), \
              patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
             import asyncio
             result = asyncio.run(run(
@@ -386,16 +1509,14 @@ class KimiAgentUnitTests(unittest.TestCase):
             ))
 
         self.assertEqual(calls["planning"], 1)
-        self.assertEqual(calls["execution"], 3)
-        self.assertEqual(calls["draft_present"], [False, False, False])
-        self.assertEqual([len(batch) for batch in calls["batches"]], [2, 2, 1])
+        self.assertEqual(agent_options[0]["allowed_tools"], ("submit_plan",))
+        self.assertEqual(agent_options[0]["context_trigger_ratio"], 0.7)
+        self.assertIn("submit_plan", agent_options[0]["extra_tools"])
+        self.assertIn("content-planning", agent_options[0]["system_prompt"])
+        self.assertEqual(calls["execution"], 5)
         self.assertEqual(
-            [len(issues) for issues in calls["validation_issues"]],
-            [0, 1, 0],
-        )
-        self.assertEqual(
-            calls["validation_issues"][1][0]["path"],
-            "pages/1.page",
+            calls["pageCalls"],
+            ["pages/1.page", "pages/1.page", "pages/2.page", "pages/3.page", "pages/4.page"],
         )
 
     def test_run_kimi_repairs_layout_issue_before_commit(self):
@@ -430,29 +1551,56 @@ class KimiAgentUnitTests(unittest.TestCase):
                 self.workspace = workspace
 
             async def reply(self, message):
+                from agentscope.message import Msg
+
                 text = message.get_text_content()
                 if "当前阶段只做完整内容规划" in text:
                     target = self.workspace / "deck" / "plan.json"
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-                    return None
+                    return Msg(
+                        name="assistant",
+                        role="assistant",
+                        content=[{"type": "text", "text": "planned"}],
+                    )
                 if "本轮只处理这些页面" in text:
                     calls["layout_repairs"] += 1
+                    calls["layout_prompt"] = text
                     target = self.workspace / "deck" / "pages" / "1.page"
                     target.write_text(page_markup.format(index="repaired"), encoding="utf-8")
-                    return None
+                    return Msg(
+                        name="assistant",
+                        role="assistant",
+                        content=[{"type": "text", "text": "repaired"}],
+                    )
                 payload = json.loads(text)
-                for index, path in enumerate(payload["continuation"]["batchPages"], 1):
-                    target = self.workspace / "deck" / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(page_markup.format(index=index), encoding="utf-8")
-                return None
+                page = payload["page"]
+                return Msg(
+                    name="assistant",
+                    role="assistant",
+                    content=[{
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "title": page["title"],
+                                "kind": "content",
+                                "root": {
+                                    "type": "text",
+                                    "role": "body",
+                                    "text": "页面内容",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }],
+                )
 
         request = SimpleNamespace(
             prompt="生成演示", audience="团队", pageCount=None, references="",
             attachments=[], scenario="auto", templateId=None,
         )
         layout_calls = {"count": 0}
+        page_checks = []
 
         def layout(*_args, **_kwargs):
             layout_calls["count"] += 1
@@ -461,11 +1609,33 @@ class KimiAgentUnitTests(unittest.TestCase):
                          "elementId": "title-1", "code": "text-overflow", "message": "需要修复"}]
             return []
 
+        def page_check(_directory, page_spec, _severity, _level):
+            page_checks.append(page_spec)
+            return []
+        async def page_gate(_publisher, index, path):
+            return {
+                'ok': True,
+                'item': {
+                    'path': path,
+                    'index': index,
+                    'title': plan['pages'][index]['title'],
+                    'reviewStatus': 'passed',
+                    'reviewError': None,
+                },
+                'issues': [],
+            }
+
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(kimi_agent, "make_model", return_value=model), \
              patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
              patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_report", side_effect=lambda *args, **kwargs: (layout(*args, **kwargs), {})), \
+             patch.object(
+                 kimi_agent.DraftPreviewPublisher,
+                 "check_page",
+                 new=page_gate,
+             ), \
+             patch.object(kimi_agent, "final_layout_issues", side_effect=layout), \
+             patch("pptd_engine.check.check_deck", side_effect=page_check), \
              patch.object(kimi_agent, "visual_overview_issues", return_value=[]):
             import asyncio
             result = asyncio.run(kimi_agent.run_kimi(
@@ -474,392 +1644,13 @@ class KimiAgentUnitTests(unittest.TestCase):
             ))
 
         self.assertEqual(calls["layout_repairs"], 1)
+        self.assertIn("check deck -p 1 --level auto", calls["layout_prompt"])
+        self.assertIn("不要在本批次内运行整份", calls["layout_prompt"])
+        self.assertEqual(page_checks, ["1"])
         self.assertEqual(layout_calls["count"], 2)
         self.assertEqual(result["warnings"], [])
         self.assertEqual(len(result["pages"]), 4)
         self.assertEqual(result["revision"], 1)
-
-    def test_layout_agent_without_page_changes_stops_before_another_render(self):
-        class Client:
-            async def close(self):
-                pass
-
-        model = SimpleNamespace(
-            model="fake", max_retries=0, budget_enabled=True, client=Client()
-        )
-        calls = {"repairs": 0}
-        plan = {
-            "deckTitle": "零修改测试",
-            "pages": [
-                {
-                    "path": f"pages/{index}.page",
-                    "title": title,
-                    "readerTask": "说明",
-                    "content": "内容",
-                    "visualPlan": "文本",
-                    "sourceSections": [],
-                }
-                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
-            ],
-        }
-        page_markup = (
-            "elements:\n"
-            "- elementId: title-{index}\n"
-            "  elementType: text\n"
-            "  bounds: [40, 40, 400, 60]\n"
-            "  content:\n"
-            "    text: 页面内容\n"
-            "    wrap: true\n"
-            "    align: [left, top]\n"
-        )
-
-        class Agent:
-            def __init__(self, workspace):
-                self.workspace = workspace
-
-            async def reply(self, message):
-                text = message.get_text_content()
-                if "当前阶段只做完整内容规划" in text:
-                    target = self.workspace / "deck" / "plan.json"
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(
-                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
-                    )
-                    return None
-                if "本轮只处理这些页面" in text:
-                    calls["repairs"] += 1
-                    return None
-                payload = json.loads(text)
-                for index, path in enumerate(
-                    payload["continuation"]["batchPages"], 1
-                ):
-                    target = self.workspace / "deck" / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(
-                        page_markup.format(index=index), encoding="utf-8"
-                    )
-                return None
-
-        events = []
-        request = SimpleNamespace(
-            prompt="生成演示",
-            audience="团队",
-            pageCount=None,
-            references="",
-            attachments=[],
-            scenario="auto",
-            templateId=None,
-        )
-        issue = {
-            "page": "pages/1.page",
-            "location": "pages/1.page#title-1",
-            "elementId": "title-1",
-            "code": "text-overflow",
-            "message": "需要修复",
-        }
-        checks = {"count": 0}
-
-        def report(*_args, **_kwargs):
-            checks["count"] += 1
-            return [issue], {}
-
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
-             patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_report", side_effect=report):
-            import asyncio
-            result = asyncio.run(kimi_agent.run_kimi(
-                request,
-                data_root=Path(tmp),
-                progress=lambda *_: None,
-                on_event=lambda event: events.append(event),
-                project_id="layout-noop",
-                job_id="job-layout-noop",
-            ))
-
-        self.assertEqual(calls["repairs"], 1)
-        self.assertEqual(checks["count"], 1)
-        self.assertEqual(len(result["warnings"]), 1)
-        self.assertTrue(any(
-            "没有修改任何页面" in event["message"] for event in events
-        ))
-
-    def test_identical_layout_findings_stop_before_a_second_agent_round(self):
-        class Client:
-            async def close(self):
-                pass
-
-        model = SimpleNamespace(
-            model="fake", max_retries=0, budget_enabled=True, client=Client()
-        )
-        calls = {"repairs": 0, "checks": 0}
-        plan = {
-            "deckTitle": "重复问题测试",
-            "pages": [
-                {
-                    "path": f"pages/{index}.page",
-                    "title": title,
-                    "readerTask": "说明",
-                    "content": "内容",
-                    "visualPlan": "文本",
-                    "sourceSections": [],
-                }
-                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
-            ],
-        }
-        page_markup = (
-            "elements:\n"
-            "- elementId: title-{index}\n"
-            "  elementType: text\n"
-            "  bounds: [40, 40, {width}, 60]\n"
-            "  content:\n"
-            "    text: 页面内容\n"
-            "    wrap: true\n"
-            "    align: [left, top]\n"
-        )
-
-        class Agent:
-            def __init__(self, workspace):
-                self.workspace = workspace
-
-            async def reply(self, message):
-                text = message.get_text_content()
-                if "当前阶段只做完整内容规划" in text:
-                    target = self.workspace / "deck" / "plan.json"
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(
-                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
-                    )
-                    return None
-                if "本轮只处理这些页面" in text:
-                    calls["repairs"] += 1
-                    target = self.workspace / "deck" / "pages" / "1.page"
-                    target.write_text(
-                        page_markup.format(index=1, width=401), encoding="utf-8"
-                    )
-                    return None
-                payload = json.loads(text)
-                for index, path in enumerate(
-                    payload["continuation"]["batchPages"], 1
-                ):
-                    target = self.workspace / "deck" / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(
-                        page_markup.format(index=index, width=400),
-                        encoding="utf-8",
-                    )
-                return None
-
-        issue = {
-            "page": "pages/1.page",
-            "location": "pages/1.page#title-1",
-            "elementId": "title-1",
-            "code": "text-overflow",
-            "message": "需要修复",
-        }
-
-        def report(*_args, **_kwargs):
-            calls["checks"] += 1
-            return [issue], {}
-
-        request = SimpleNamespace(
-            prompt="生成演示",
-            audience="团队",
-            pageCount=None,
-            references="",
-            attachments=[],
-            scenario="auto",
-            templateId=None,
-        )
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
-             patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_report", side_effect=report):
-            import asyncio
-            result = asyncio.run(kimi_agent.run_kimi(
-                request,
-                data_root=Path(tmp),
-                progress=lambda *_: None,
-                project_id="layout-stalled",
-                job_id="job-layout-stalled",
-            ))
-
-        self.assertEqual(calls["repairs"], 1)
-        self.assertEqual(calls["checks"], 2)
-        self.assertEqual(len(result["warnings"]), 1)
-
-    def test_measured_overflow_autofits_without_calling_the_agent(self):
-        class Client:
-            async def close(self):
-                pass
-
-        model = SimpleNamespace(
-            model="fake", max_retries=0, budget_enabled=True, client=Client()
-        )
-        calls = {"repairs": 0, "checks": 0}
-        plan = {
-            "deckTitle": "自适应测试",
-            "pages": [
-                {
-                    "path": f"pages/{index}.page",
-                    "title": title,
-                    "readerTask": "说明",
-                    "content": "内容",
-                    "visualPlan": "文本",
-                    "sourceSections": [],
-                }
-                for index, title in enumerate(("封面", "目录", "正文", "致谢"), 1)
-            ],
-        }
-        page_markup = (
-            "elements:\n"
-            "- elementId: title-1\n"
-            "  elementType: text\n"
-            "  bounds: [40, 40, 400, 60]\n"
-            "  content:\n"
-            "    text: '<p><span style=\"font-size:12px\">页面内容</span></p>'\n"
-            "    wrap: true\n"
-            "    align: [left, top]\n"
-        )
-
-        class Agent:
-            def __init__(self, workspace):
-                self.workspace = workspace
-
-            async def reply(self, message):
-                text = message.get_text_content()
-                if "当前阶段只做完整内容规划" in text:
-                    target = self.workspace / "deck" / "plan.json"
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(
-                        json.dumps(plan, ensure_ascii=False), encoding="utf-8"
-                    )
-                    return None
-                if "本轮只处理这些页面" in text:
-                    calls["repairs"] += 1
-                    return None
-                payload = json.loads(text)
-                for path in payload["continuation"]["batchPages"]:
-                    target = self.workspace / "deck" / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(page_markup, encoding="utf-8")
-                return None
-
-        issue = {
-            "page": "pages/1.page",
-            "location": "pages/1.page#title-1",
-            "elementId": "title-1",
-            "code": "text-overflow",
-            "message": "文字溢出",
-        }
-        layouts = {
-            "pages/1.page": {
-                "elements": [
-                    {
-                        "elementId": "title-1",
-                        "availableSize": [100, 50],
-                        "measuredTextSize": [100, 100],
-                    }
-                ]
-            }
-        }
-
-        def report(*_args, **_kwargs):
-            calls["checks"] += 1
-            return ([issue], layouts) if calls["checks"] == 1 else ([], {})
-
-        request = SimpleNamespace(
-            prompt="生成演示",
-            audience="团队",
-            pageCount=None,
-            references="",
-            attachments=[],
-            scenario="auto",
-            templateId=None,
-        )
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(kimi_agent, "make_model", return_value=model), \
-             patch.object(kimi_agent, "_make_agent", side_effect=lambda _model, ws, _sid, _iters, **_kwargs: Agent(ws)), \
-             patch.object(kimi_agent, "_render_pages", return_value=None), \
-             patch.object(kimi_agent, "final_layout_report", side_effect=report):
-            import asyncio
-            result = asyncio.run(kimi_agent.run_kimi(
-                request,
-                data_root=Path(tmp),
-                progress=lambda *_: None,
-                project_id="layout-autofit",
-                job_id="job-layout-autofit",
-            ))
-
-        self.assertEqual(calls["repairs"], 0)
-        self.assertEqual(calls["checks"], 2)
-        self.assertEqual(result["warnings"], [])
-        text = result["pages"][0]["data"]["elements"][0]["content"]["text"]
-        self.assertIn("font-size:8.5px", text)
-
-    def test_repair_attempts_survive_workspace_restore(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            parent = kimi_agent._workspace(root, "project", "parent")
-            parent.mkdir(parents=True)
-            kimi_agent._save_repair_state(parent, {
-                "attempts": {"pages/1.page": 2},
-                "noops": {"pages/1.page": 1},
-                "autofitAttempts": 1,
-                "baselineIssueCount": 4,
-                "issueCount": 4,
-                "issueFingerprint": "same",
-            })
-            kimi_agent.restore_workspace(root, "project", "child", "parent")
-            child = kimi_agent._workspace(root, "project", "child")
-            state = kimi_agent._load_repair_state(child)
-        self.assertEqual(state["attempts"]["pages/1.page"], 2)
-        self.assertEqual(state["noops"]["pages/1.page"], 1)
-        self.assertEqual(state["autofitAttempts"], 1)
-        self.assertEqual(state["issueFingerprint"], "same")
-
-    def test_model_retry_is_visible_and_has_no_fake_progress(self):
-        class Error(Exception):
-            status_code = 529
-
-        attempts = {"count": 0}
-
-        async def api(*_args, **_kwargs):
-            attempts["count"] += 1
-            if attempts["count"] == 1:
-                raise Error("provider overloaded")
-            return "ok"
-
-        model = SimpleNamespace(
-            _call_api=api,
-            retry_delay=1.5,
-            _ppt_event_phase="validate",
-        )
-        events = []
-
-        async def emit(phase, status, message, **fields):
-            events.append({
-                "phase": phase,
-                "status": status,
-                "message": message,
-                **fields,
-            })
-
-        async def run():
-            kimi_agent._observe_model_retries(model, emit)
-            with self.assertRaises(Error):
-                await model._call_api()
-            self.assertEqual(await model._call_api(), "ok")
-
-        import asyncio
-        asyncio.run(run())
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["status"], "retrying")
-        self.assertIn("HTTP 529", events[0]["message"])
-        self.assertNotIn("progress", events[0])
-        self.assertNotIn("overloaded", events[0]["message"])
 
     def test_find_entry_requires_new_deck(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -882,12 +1673,20 @@ class KimiAgentUnitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (entry.parent / "pages" / "one.page").write_text(
-                "elements: []\n", encoding="utf-8"
+                "elements:\n"
+                "- elementId: title\n"
+                "  elementType: text\n"
+                "  bounds: [40, 40, 400, 60]\n"
+                "  content:\n"
+                "    text: 已完成页面\n",
+                encoding="utf-8",
             )
             _, paths, existing, missing = kimi_agent._deck_progress(entry)
+            document = kimi_agent._load_document(entry)
         self.assertEqual(paths, ["pages/one.page", "pages/two.page"])
         self.assertEqual(existing, ["pages/one.page"])
         self.assertEqual(missing, ["pages/two.page"])
+        self.assertEqual(document["pages"], paths)
 
     def test_malformed_page_is_not_reported_as_complete(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -999,7 +1798,13 @@ class KimiAgentUnitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (entry.parent / "pages" / "one.page").write_text(
-                "elements: []\n", encoding="utf-8"
+                "elements:\n"
+                "- elementId: title\n"
+                "  elementType: text\n"
+                "  bounds: [40, 40, 400, 60]\n"
+                "  content:\n"
+                "    text: 已完成页面\n",
+                encoding="utf-8",
             )
             checkpoint = kimi_agent.recovery_checkpoint(root, "project", "job")
         self.assertEqual(checkpoint["completedPages"], 1)
@@ -1019,7 +1824,13 @@ class KimiAgentUnitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (entry.parent / "pages" / "one.page").write_text(
-                "elements: []\n", encoding="utf-8"
+                "elements:\n"
+                "- elementId: title\n"
+                "  elementType: text\n"
+                "  bounds: [40, 40, 400, 60]\n"
+                "  content:\n"
+                "    text: 已完成页面\n",
+                encoding="utf-8",
             )
             (entry.parent / "pages" / "two.page").write_text(
                 "elements:\n"
@@ -1086,6 +1897,12 @@ class KimiAgentUnitTests(unittest.TestCase):
             ids = [e["elementId"] for e in pages[0]["data"]["elements"]]
             self.assertEqual(len(ids), 4)
             self.assertEqual(len(set(ids)), 4)
+            kimi_agent._apply_chrome(deck, document, pages, chrome, template)
+            repeated_ids = [
+                e["elementId"]
+                for e in pages[0]["data"]["elements"]
+            ]
+            self.assertEqual(repeated_ids, ids)
             self.assertTrue((deck / "media" / "top.png").is_file())
             self.assertTrue((deck / "media" / "logo.png").is_file())
 
