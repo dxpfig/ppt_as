@@ -9,7 +9,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
-import fcntl
 import html
 import json
 import math
@@ -17,6 +16,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sys
 import tempfile
 import uuid
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -82,6 +82,20 @@ class DocumentStore:
     @contextmanager
     def _lock(self, project_id):
         with (self.locks / (self._id(project_id) + '.lock')).open('a+b') as lock:
+            if sys.platform == 'win32':
+                import msvcrt
+
+                # msvcrt locks a byte range starting at the current position.
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                return
+            import fcntl
+
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 yield
@@ -221,12 +235,34 @@ class DocumentStore:
             history = (previous['versions'] if previous else []) + [version]
             (version_dir / 'metadata.json').write_text(json.dumps({'revision': revision, 'versions': history}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
             # Flush the entire snapshot before making it reachable by readers.
+            # Windows' FlushFileBuffers rejects a read-only descriptor, so the
+            # file is opened for update there; POSIX keeps the original mode.
+            mode = 'r+b' if os.name == 'nt' else 'rb'
             for path in version_dir.rglob('*'):
                 if path.is_file():
-                    with path.open('rb') as handle:
+                    with path.open(mode) as handle:
                         os.fsync(handle.fileno())
             pending_pointer.symlink_to(os.path.relpath(source, self.documents), target_is_directory=True)
-            os.replace(pending_pointer, self.documents / project_id)
+            pointer = self.documents / project_id
+            retired = None
+            if os.name == 'nt' and pointer.is_symlink():
+                # Windows cannot replace an existing directory symlink in one step
+                # (MoveFileEx refuses a directory target), so the previous pointer
+                # is renamed aside and restored when the swap does not complete.
+                retired = self.documents / ('.' + project_id + '-' + version_id + '-retired')
+                os.replace(pointer, retired)
+            try:
+                os.replace(pending_pointer, pointer)
+            except OSError:
+                if retired is not None:
+                    try:
+                        os.replace(retired, pointer)
+                    except OSError:
+                        pass
+                raise
+            finally:
+                if retired is not None and retired.is_symlink():
+                    os.rmdir(retired)
             published = True
             return {'document': deepcopy(document), 'pages': deepcopy(pages), 'revision': revision, 'versions': history}
         finally:

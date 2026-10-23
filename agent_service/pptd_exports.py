@@ -115,7 +115,11 @@ async def _run_process(*args, timeout=300, env=None):
         if process.returncode is None:
             # Chromium and font/math child processes must not survive cancellation.
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                killpg = getattr(os, 'killpg', None)
+                if killpg is not None:
+                    killpg(process.pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
+                else:  # Windows has no process groups.
+                    process.kill()
             except ProcessLookupError:
                 pass
             await process.wait()
